@@ -43,7 +43,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _history,
             ShowTranscriptPreview,
             ShowCleanupWarning,
-            OnTranscriptUpdate);
+            OnTranscriptUpdate,
+            () => _settings.TranscriptCorrections);
 
         _trayIcon = TrayIconFactory.Create();
         _notifyIcon = new NotifyIcon

@@ -78,6 +78,201 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    public void SettingsFormExplainsHoldAndToggleHotkeysWithoutPathEditors()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+            form.UseSettings(AppSettings.Default);
+
+            StringAssert.Contains(form.SummaryTextForTest, "Right Ctrl");
+            StringAssert.Contains(form.SummaryTextForTest, "Right Shift");
+            Assert.IsFalse(form.HasRuntimePathEditorForTest);
+            Assert.IsFalse(form.HasModelPathEditorForTest);
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormDisablesModelDownloadWhenSelectedModelIsPresent()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            var downloaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ModelRegistry.DefaultModelId
+            };
+            using var form = new SettingsForm(
+                new AppSettingsStore(path),
+                ModelRegistry.CreateDefault(),
+                (_, _) => Task.FromResult("downloaded.gguf"),
+                model => downloaded.Contains(model.Id));
+            form.UseSettings(AppSettings.Default);
+
+            Assert.IsFalse(form.ModelDownloadEnabledForTest);
+            Assert.AreEqual("Downloaded", form.ModelDownloadTextForTest);
+
+            form.SelectedModelIdForTest = "tdt-0.6b-v3-f16";
+
+            Assert.IsTrue(form.ModelDownloadEnabledForTest);
+            Assert.AreEqual("Download", form.ModelDownloadTextForTest);
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormDownloadButtonSavesSelectedModelPath()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            var downloaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using var form = new SettingsForm(
+                new AppSettingsStore(path),
+                ModelRegistry.CreateDefault(),
+                (model, _) =>
+                {
+                    downloaded.Add(model.Id);
+                    return Task.FromResult($"C:\\models\\{Path.GetFileName(model.DownloadUrl.LocalPath)}");
+                },
+                model => downloaded.Contains(model.Id));
+            form.UseSettings(AppSettings.Default);
+
+            form.SelectedModelIdForTest = "tdt-0.6b-v3-f16";
+            form.DownloadSelectedModelForTest();
+            var settings = form.BuildSettingsForTest();
+
+            Assert.AreEqual("tdt-0.6b-v3-f16", settings.SelectedModelId);
+            Assert.AreEqual("C:\\models\\tdt-0.6b-v3-f16.gguf", settings.ModelPath);
+            Assert.IsFalse(form.ModelDownloadEnabledForTest);
+            Assert.AreEqual("Downloaded", form.ModelDownloadTextForTest);
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormDisablesModelSelectorWhileDownloadIsInFlight()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            var download = new TaskCompletionSource<string>();
+            var downloaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using var form = new SettingsForm(
+                new AppSettingsStore(path),
+                ModelRegistry.CreateDefault(),
+                (model, _) =>
+                {
+                    downloaded.Add(model.Id);
+                    return download.Task;
+                },
+                model => downloaded.Contains(model.Id));
+            form.UseSettings(AppSettings.Default);
+            form.SelectedModelIdForTest = "tdt-0.6b-v3-f16";
+
+            var task = form.DownloadSelectedModelTaskForTest();
+            Application.DoEvents();
+
+            Assert.IsFalse(form.ModelSelectorEnabledForTest);
+
+            download.SetResult("C:\\models\\tdt-0.6b-v3-f16.gguf");
+            while (!task.IsCompleted)
+            {
+                Application.DoEvents();
+                Thread.Sleep(1);
+            }
+
+            task.GetAwaiter().GetResult();
+
+            Assert.IsTrue(form.ModelSelectorEnabledForTest);
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormKeepsDownloadFailureVisible()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(
+                new AppSettingsStore(path),
+                ModelRegistry.CreateDefault(),
+                (_, _) => throw new InvalidOperationException("network unavailable"),
+                _ => false);
+            form.UseSettings(AppSettings.Default);
+
+            form.DownloadSelectedModelForTest();
+
+            StringAssert.Contains(form.ModelStatusTextForTest, "Download failed");
+            StringAssert.Contains(form.ModelStatusTextForTest, "network unavailable");
+            Assert.IsTrue(form.ModelDownloadEnabledForTest);
+            Assert.AreEqual("Download", form.ModelDownloadTextForTest);
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormTreatsExistingPersistedModelPathAsDownloaded()
+    {
+        RunOnStaThread(() =>
+        {
+            var settingsPath = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            var modelPath = Path.Combine(Path.GetTempPath(), $"parakeet-model-{Guid.NewGuid():N}.gguf");
+            File.WriteAllText(modelPath, "custom model");
+
+            try
+            {
+                using var form = new SettingsForm(
+                    new AppSettingsStore(settingsPath),
+                    ModelRegistry.CreateDefault(),
+                    (_, _) => Task.FromResult(modelPath),
+                    _ => false);
+                form.UseSettings(AppSettings.Default with
+                {
+                    SelectedModelId = "tdt-0.6b-v3-f16",
+                    ModelPath = modelPath
+                });
+
+                Assert.IsFalse(form.ModelDownloadEnabledForTest);
+                Assert.AreEqual("Downloaded", form.ModelDownloadTextForTest);
+            }
+            finally
+            {
+                File.Delete(modelPath);
+            }
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormBuildsTranscriptCorrectionsAndShowsPreview()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+            form.UseSettings(AppSettings.Default with
+            {
+                TranscriptCorrections =
+                [
+                    new TranscriptCorrection("kuda", "CUDA")
+                ]
+            });
+
+            form.CorrectionPreviewInputForTest = "kuda likes c sharp";
+
+            Assert.AreEqual("CUDA likes c sharp", form.CorrectionPreviewOutputForTest);
+
+            form.SetCorrectionDraftForTest("c sharp", "C#");
+            form.AddCorrectionForTest();
+            form.CorrectionPreviewInputForTest = "kuda likes c sharp";
+            var settings = form.BuildSettingsForTest();
+
+            Assert.AreEqual("CUDA likes C#", form.CorrectionPreviewOutputForTest);
+            Assert.AreEqual(2, settings.TranscriptCorrections.Count);
+            Assert.AreEqual("c sharp", settings.TranscriptCorrections[1].HeardAs);
+            Assert.AreEqual("C#", settings.TranscriptCorrections[1].ReplaceWith);
+        });
+    }
+
+    [TestMethod]
     public void StatusOverlayAutoHidesCompletionStatesWithoutShowingWindow()
     {
         RunOnStaThread(() =>

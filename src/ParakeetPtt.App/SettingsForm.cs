@@ -7,27 +7,49 @@ internal sealed class SettingsForm : Form
 {
     private readonly AppSettingsStore _settingsStore;
     private readonly ModelRegistry _modelRegistry;
+    private readonly Func<ModelInfo, CancellationToken, Task<string>> _downloadModelAsync;
+    private readonly Func<ModelInfo, bool> _isModelDownloaded;
     private readonly ComboBox _model = new();
+    private readonly Button _downloadModel = DarkTheme.Button("Download");
+    private readonly Label _summary = new();
+    private readonly Label _modelStatus = DarkTheme.HelpText(string.Empty);
     private readonly TextBox _hotkey = new();
-    private readonly TextBox _runtimePath = new();
-    private readonly TextBox _modelPath = new();
     private readonly ComboBox _mode = new();
     private readonly ComboBox _device = new();
     private readonly CheckBox _notifications = new();
     private readonly CheckBox _sounds = new();
+    private readonly ListBox _corrections = new();
+    private readonly TextBox _correctionHeardAs = new();
+    private readonly TextBox _correctionReplaceWith = new();
+    private readonly TextBox _correctionPreviewInput = new();
+    private readonly TextBox _correctionPreviewOutput = new();
     private AppSettings _settings = AppSettings.Default;
+    private string? _runtimePathOverride;
+    private string? _modelPathOverride;
+    private List<TranscriptCorrection> _transcriptCorrections = [];
 
     public event EventHandler<AppSettings>? SettingsSaved;
     public event EventHandler? QuitRequested;
 
     public SettingsForm(AppSettingsStore settingsStore, ModelRegistry modelRegistry)
+        : this(settingsStore, modelRegistry, DownloadModelWithDefaultManagerAsync, DefaultModelIsDownloaded)
+    {
+    }
+
+    internal SettingsForm(
+        AppSettingsStore settingsStore,
+        ModelRegistry modelRegistry,
+        Func<ModelInfo, CancellationToken, Task<string>> downloadModelAsync,
+        Func<ModelInfo, bool> isModelDownloaded)
     {
         _settingsStore = settingsStore;
         _modelRegistry = modelRegistry;
+        _downloadModelAsync = downloadModelAsync;
+        _isModelDownloaded = isModelDownloaded;
 
         Text = "Parakeet PTT - Settings";
-        MinimumSize = new Size(720, 680);
-        Size = new Size(760, 720);
+        MinimumSize = new Size(640, 560);
+        Size = new Size(720, 620);
 
         DarkTheme.Apply(this);
         BuildLayout();
@@ -70,16 +92,13 @@ internal sealed class SettingsForm : Form
             Margin = new Padding(0, 0, 0, 6)
         };
 
-        var summary = new Label
-        {
-            Text = "Hold Right Ctrl to record. Runtime and model paths may stay blank; Parakeet PTT will download them on first dictation.",
-            AutoSize = false,
-            Height = 44,
-            Dock = DockStyle.Top,
-            ForeColor = DarkTheme.MutedText,
-            BackColor = Color.Transparent,
-            Margin = new Padding(0, 0, 0, 16)
-        };
+        _summary.Text = "Hold Right Ctrl to record. Press Right Shift to toggle recording on or off.";
+        _summary.AutoSize = false;
+        _summary.Height = 44;
+        _summary.Dock = DockStyle.Top;
+        _summary.ForeColor = DarkTheme.MutedText;
+        _summary.BackColor = Color.Transparent;
+        _summary.Margin = new Padding(0, 0, 0, 16);
 
         var fields = new TableLayoutPanel
         {
@@ -96,16 +115,15 @@ internal sealed class SettingsForm : Form
         _model.DropDownStyle = ComboBoxStyle.DropDownList;
         _model.DisplayMember = nameof(ModelInfo.DisplayName);
         _model.Items.AddRange(_modelRegistry.Models.Cast<object>().ToArray());
-        _model.SelectedIndexChanged += (_, _) => RefreshModeOptions(SelectedModelFromControl());
+        _model.SelectedIndexChanged += (_, _) =>
+        {
+            var selectedModel = SelectedModelFromControl();
+            RefreshModeOptions(selectedModel);
+            RefreshModelDownloadState(selectedModel);
+        };
 
         _mode.Dock = DockStyle.Top;
         _mode.DropDownStyle = ComboBoxStyle.DropDownList;
-
-        _runtimePath.Dock = DockStyle.Fill;
-        _runtimePath.PlaceholderText = "Auto-download on first dictation";
-
-        _modelPath.Dock = DockStyle.Fill;
-        _modelPath.PlaceholderText = "Auto-download on first dictation";
 
         _device.Dock = DockStyle.Top;
         _device.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -123,11 +141,10 @@ internal sealed class SettingsForm : Form
         _sounds.Margin = new Padding(0, 4, 0, 8);
 
         AddField(fields, "Push-to-talk hotkey", _hotkey);
-        AddField(fields, "Model", _model);
+        AddModelField(fields);
         AddField(fields, "Transcription mode", _mode);
-        AddPathField(fields, "Runtime path (optional)", _runtimePath, "Blank uses %LOCALAPPDATA%\\ParakeetPtt\\runtimes and downloads the selected runtime automatically.");
-        AddPathField(fields, "Model path (optional)", _modelPath, "Blank uses %LOCALAPPDATA%\\ParakeetPtt\\models and downloads the selected model automatically.");
         AddField(fields, "Device preference", _device);
+        AddCorrectionEditor(fields);
         fields.Controls.Add(_notifications);
         fields.Controls.Add(_sounds);
 
@@ -165,7 +182,7 @@ internal sealed class SettingsForm : Form
             BackColor = DarkTheme.Background
         };
         header.Controls.Add(title);
-        header.Controls.Add(summary);
+        header.Controls.Add(_summary);
 
         root.Controls.Add(header, 0, 0);
         root.Controls.Add(fields, 0, 1);
@@ -182,9 +199,9 @@ internal sealed class SettingsForm : Form
         fields.Controls.Add(control);
     }
 
-    private static void AddPathField(TableLayoutPanel fields, string labelText, TextBox textBox, string helpText)
+    private void AddModelField(TableLayoutPanel fields)
     {
-        fields.Controls.Add(DarkTheme.Label(labelText));
+        fields.Controls.Add(DarkTheme.Label("Model"));
 
         var row = new TableLayoutPanel
         {
@@ -195,37 +212,86 @@ internal sealed class SettingsForm : Form
             Margin = new Padding(0, 0, 0, 2)
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
 
-        var browse = DarkTheme.Button("Browse");
-        browse.Dock = DockStyle.Fill;
-        browse.Margin = new Padding(8, 0, 0, 0);
-        browse.Click += (_, _) =>
-        {
-            using var dialog = new OpenFileDialog
-            {
-                CheckFileExists = false,
-                FileName = textBox.Text
-            };
+        _downloadModel.Dock = DockStyle.Fill;
+        _downloadModel.Margin = new Padding(8, 0, 0, 0);
+        _downloadModel.Click += async (_, _) => await DownloadSelectedModelAsync();
 
-            if (dialog.ShowDialog() == DialogResult.OK)
-            {
-                textBox.Text = dialog.FileName;
-            }
-        };
-
-        textBox.Dock = DockStyle.Fill;
-        row.Controls.Add(textBox, 0, 0);
-        row.Controls.Add(browse, 1, 0);
+        row.Controls.Add(_model, 0, 0);
+        row.Controls.Add(_downloadModel, 1, 0);
         fields.Controls.Add(row);
-        fields.Controls.Add(DarkTheme.HelpText(helpText));
+        _modelStatus.Height = 52;
+        fields.Controls.Add(_modelStatus);
+    }
+
+    private void AddCorrectionEditor(TableLayoutPanel fields)
+    {
+        fields.Controls.Add(DarkTheme.Label("Corrections"));
+
+        _corrections.Dock = DockStyle.Top;
+        _corrections.Height = 76;
+        _corrections.DisplayMember = nameof(CorrectionListItem.DisplayText);
+        fields.Controls.Add(_corrections);
+
+        var editRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 4,
+            Height = 34,
+            BackColor = DarkTheme.Background,
+            Margin = new Padding(0, 6, 0, 2)
+        };
+        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
+
+        _correctionHeardAs.Dock = DockStyle.Fill;
+        _correctionHeardAs.PlaceholderText = "Heard as";
+        _correctionReplaceWith.Dock = DockStyle.Fill;
+        _correctionReplaceWith.PlaceholderText = "Replace with";
+
+        var add = DarkTheme.Button("Add");
+        add.Dock = DockStyle.Fill;
+        add.Margin = new Padding(8, 0, 0, 0);
+        add.Click += (_, _) => AddCorrection();
+
+        var delete = DarkTheme.Button("Delete");
+        delete.Dock = DockStyle.Fill;
+        delete.Margin = new Padding(8, 0, 0, 0);
+        delete.Click += (_, _) => DeleteSelectedCorrection();
+
+        editRow.Controls.Add(_correctionHeardAs, 0, 0);
+        editRow.Controls.Add(_correctionReplaceWith, 1, 0);
+        editRow.Controls.Add(add, 2, 0);
+        editRow.Controls.Add(delete, 3, 0);
+        fields.Controls.Add(editRow);
+
+        fields.Controls.Add(DarkTheme.Label("Correction preview"));
+
+        _correctionPreviewInput.Dock = DockStyle.Top;
+        _correctionPreviewInput.Height = 48;
+        _correctionPreviewInput.Multiline = true;
+        _correctionPreviewInput.PlaceholderText = "Preview text";
+        _correctionPreviewInput.TextChanged += (_, _) => RefreshCorrectionPreview();
+        fields.Controls.Add(_correctionPreviewInput);
+
+        _correctionPreviewOutput.Dock = DockStyle.Top;
+        _correctionPreviewOutput.Height = 48;
+        _correctionPreviewOutput.Multiline = true;
+        _correctionPreviewOutput.ReadOnly = true;
+        _correctionPreviewOutput.PlaceholderText = "Corrected preview";
+        _correctionPreviewOutput.Margin = new Padding(0, 4, 0, 8);
+        fields.Controls.Add(_correctionPreviewOutput);
     }
 
     private void ApplySettings(AppSettings settings)
     {
         _hotkey.Text = settings.Hotkey;
-        _runtimePath.Text = settings.RuntimePath ?? string.Empty;
-        _modelPath.Text = settings.ModelPath ?? string.Empty;
+        _runtimePathOverride = settings.RuntimePath;
+        _modelPathOverride = settings.ModelPath;
+        _transcriptCorrections = settings.TranscriptCorrections.ToList();
         _device.SelectedItem = settings.DevicePreference;
         _mode.SelectedItem = settings.TranscriptionMode;
         _notifications.Checked = settings.NotificationsEnabled;
@@ -237,6 +303,9 @@ internal sealed class SettingsForm : Form
         _mode.SelectedItem = ModeSupportedByModel(settings.TranscriptionMode, selected)
             ? settings.TranscriptionMode
             : TranscriptionMode.Auto;
+        RefreshModelDownloadState(selected);
+        RefreshCorrectionsList();
+        RefreshCorrectionPreview();
     }
 
     private async Task SaveAsync()
@@ -256,7 +325,7 @@ internal sealed class SettingsForm : Form
         var selectedMode = ModeSupportedByModel(requestedMode, selectedModel)
             ? requestedMode
             : TranscriptionMode.Auto;
-        var modelPath = EmptyToNull(_modelPath.Text);
+        var modelPath = EmptyToNull(_modelPathOverride);
         if (!string.Equals(selectedModelId, _settings.SelectedModelId, StringComparison.OrdinalIgnoreCase)
             && IsPreviousAutoModelPath(modelPath))
         {
@@ -268,11 +337,12 @@ internal sealed class SettingsForm : Form
             Hotkey = string.IsNullOrWhiteSpace(_hotkey.Text) ? AppSettings.Default.Hotkey : _hotkey.Text.Trim(),
             SelectedModelId = selectedModelId,
             TranscriptionMode = selectedMode,
-            RuntimePath = EmptyToNull(_runtimePath.Text),
+            RuntimePath = EmptyToNull(_runtimePathOverride),
             ModelPath = modelPath,
             DevicePreference = _device.SelectedItem is DevicePreference preference ? preference : DevicePreference.Cuda,
             NotificationsEnabled = _notifications.Checked,
-            AudibleStatusEnabled = _sounds.Checked
+            AudibleStatusEnabled = _sounds.Checked,
+            TranscriptCorrections = _transcriptCorrections.ToList()
         };
     }
 
@@ -304,6 +374,46 @@ internal sealed class SettingsForm : Form
         _mode.SelectedItem = ModeSupportedByModel(selected, model) ? selected : TranscriptionMode.Auto;
     }
 
+    private void RefreshModelDownloadState(ModelInfo model)
+    {
+        var isDownloaded = ModelPathOverrideExists(model) || _isModelDownloaded(model);
+        _downloadModel.Enabled = !isDownloaded;
+        _downloadModel.Text = isDownloaded ? "Downloaded" : "Download";
+        _modelStatus.Text = isDownloaded
+            ? $"{model.LanguageNotes}. {model.Quantization} is ready locally."
+            : $"{model.LanguageNotes}. {model.Quantization} downloads when you click Download or on first dictation.";
+    }
+
+    private async Task DownloadSelectedModelAsync()
+    {
+        var model = SelectedModelFromControl();
+        var modelSelectorWasEnabled = _model.Enabled;
+        _model.Enabled = false;
+        _downloadModel.Enabled = false;
+        _downloadModel.Text = "Downloading";
+        _modelStatus.Text = $"Downloading {model.DisplayName}...";
+
+        try
+        {
+            _modelPathOverride = await _downloadModelAsync(model, CancellationToken.None);
+            _settings = BuildSettingsFromControls();
+            await _settingsStore.SaveAsync(_settings, CancellationToken.None);
+            SettingsSaved?.Invoke(this, _settings);
+            _modelStatus.Text = $"{model.DisplayName} is ready locally.";
+            RefreshModelDownloadState(model);
+        }
+        catch (Exception ex)
+        {
+            _modelStatus.Text = $"Download failed: {ex.Message}";
+            _downloadModel.Enabled = true;
+            _downloadModel.Text = "Download";
+        }
+        finally
+        {
+            _model.Enabled = modelSelectorWasEnabled;
+        }
+    }
+
     private static bool ModeSupportedByModel(TranscriptionMode mode, ModelInfo model)
     {
         return mode switch
@@ -329,9 +439,80 @@ internal sealed class SettingsForm : Form
                 StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string? EmptyToNull(string value)
+    private bool ModelPathOverrideExists(ModelInfo model)
+    {
+        return string.Equals(model.Id, _settings.SelectedModelId, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(_modelPathOverride)
+            && File.Exists(_modelPathOverride);
+    }
+
+    private static string? EmptyToNull(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static Task<string> DownloadModelWithDefaultManagerAsync(ModelInfo model, CancellationToken cancellationToken)
+    {
+        var manager = new AssetManager(AppPaths.RootDirectory, new HttpFileDownloader());
+        return manager.EnsureModelAsync(model, cancellationToken);
+    }
+
+    private static bool DefaultModelIsDownloaded(ModelInfo model)
+    {
+        var path = Path.Combine(AppPaths.RootDirectory, "models", Path.GetFileName(model.DownloadUrl.LocalPath));
+        return File.Exists(path) && new FileInfo(path).Length >= model.MinimumBytes;
+    }
+
+    private void AddCorrection()
+    {
+        var heardAs = _correctionHeardAs.Text.Trim();
+        var replaceWith = _correctionReplaceWith.Text.Trim();
+        if (heardAs.Length == 0 || replaceWith.Length == 0)
+        {
+            return;
+        }
+
+        var replacement = new TranscriptCorrection(heardAs, replaceWith);
+        var existing = _transcriptCorrections.FindIndex(
+            correction => string.Equals(correction.HeardAs, heardAs, StringComparison.OrdinalIgnoreCase));
+        if (existing >= 0)
+        {
+            _transcriptCorrections[existing] = replacement;
+        }
+        else
+        {
+            _transcriptCorrections.Add(replacement);
+        }
+
+        RefreshCorrectionsList();
+        RefreshCorrectionPreview();
+    }
+
+    private void DeleteSelectedCorrection()
+    {
+        if (_corrections.SelectedItem is not CorrectionListItem selected)
+        {
+            return;
+        }
+
+        _transcriptCorrections.Remove(selected.Correction);
+        RefreshCorrectionsList();
+        RefreshCorrectionPreview();
+    }
+
+    private void RefreshCorrectionsList()
+    {
+        _corrections.Items.Clear();
+        foreach (var correction in _transcriptCorrections)
+        {
+            _corrections.Items.Add(new CorrectionListItem(correction));
+        }
+    }
+
+    private void RefreshCorrectionPreview()
+    {
+        _correctionPreviewOutput.Text = new TranscriptCorrectionDictionary(_transcriptCorrections)
+            .Apply(_correctionPreviewInput.Text);
     }
 
     [Browsable(false)]
@@ -355,7 +536,65 @@ internal sealed class SettingsForm : Form
     internal string SelectedModelIdForTest
     {
         get => SelectedModelIdFromControl();
-        set => _model.SelectedItem = _modelRegistry.Find(value) ?? _modelRegistry.DefaultModel;
+        set
+        {
+            _model.SelectedItem = _modelRegistry.Find(value) ?? _modelRegistry.DefaultModel;
+            RefreshModelDownloadState(SelectedModelFromControl());
+        }
+    }
+
+    internal string SummaryTextForTest => _summary.Text;
+
+    internal bool HasRuntimePathEditorForTest => false;
+
+    internal bool HasModelPathEditorForTest => false;
+
+    internal bool ModelDownloadEnabledForTest => _downloadModel.Enabled;
+
+    internal string ModelDownloadTextForTest => _downloadModel.Text;
+
+    internal string ModelStatusTextForTest => _modelStatus.Text;
+
+    internal bool ModelSelectorEnabledForTest => _model.Enabled;
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal string CorrectionPreviewInputForTest
+    {
+        get => _correctionPreviewInput.Text;
+        set => _correctionPreviewInput.Text = value;
+    }
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal string CorrectionPreviewOutputForTest => _correctionPreviewOutput.Text;
+
+    internal void SetCorrectionDraftForTest(string heardAs, string replaceWith)
+    {
+        _correctionHeardAs.Text = heardAs;
+        _correctionReplaceWith.Text = replaceWith;
+    }
+
+    internal void AddCorrectionForTest()
+    {
+        AddCorrection();
+    }
+
+    internal void DownloadSelectedModelForTest()
+    {
+        var task = DownloadSelectedModelAsync();
+        while (!task.IsCompleted)
+        {
+            Application.DoEvents();
+            Thread.Sleep(1);
+        }
+
+        task.GetAwaiter().GetResult();
+    }
+
+    internal Task DownloadSelectedModelTaskForTest()
+    {
+        return DownloadSelectedModelAsync();
     }
 
     internal void SaveForTest()
@@ -378,5 +617,10 @@ internal sealed class SettingsForm : Form
         }
 
         base.OnFormClosing(e);
+    }
+
+    private sealed record CorrectionListItem(TranscriptCorrection Correction)
+    {
+        public string DisplayText => $"{Correction.HeardAs} -> {Correction.ReplaceWith}";
     }
 }

@@ -45,16 +45,16 @@ Implementation highlights:
 - **Runtime management:** CUDA is preferred by default, with an automatic CPU retry path if CUDA transcription fails.
 - **Asset integrity:** Runtime zip files and built-in GGUF models use pinned SHA-256 checks; extracted runtime files are revalidated through a manifest.
 - **Archive hardening:** Runtime zip entries are checked before extraction so archive paths cannot escape the runtime directory.
-- **Operational polish:** Process timeout/cancellation handling, single-instance guard, best-effort clipboard restoration, session-only transcript history, and cleanup warnings if a temporary WAV cannot be deleted.
+- **Operational polish:** Process timeout/cancellation handling, single-instance guard, local transcript corrections with preview, best-effort clipboard restoration, session-only transcript history, and cleanup warnings if a temporary WAV cannot be deleted.
 
 ## Privacy
 
-Parakeet PTT is designed for local dictation. Temporary recordings are made on the local machine while dictation is active, transcription is performed by a local `parakeet-cli` runtime, and transcript history is session-only. The app does download runtime/model assets on first use unless you configure local paths in settings.
+Parakeet PTT is designed for local dictation. Temporary recordings are made on the local machine while dictation is active, transcription is performed by a local `parakeet-cli` runtime, and transcript history is session-only. The app does download runtime/model assets on first use or when you choose a model download in settings.
 
 Trust-boundary notes:
 
 - Paste is implemented through the Windows clipboard. The app temporarily places the transcript on the clipboard, sends paste to the active window, and attempts to restore the previous clipboard contents afterward. Other local apps with clipboard access may observe clipboard contents while paste is in progress.
-- Runtime and model path overrides execute the local files you select. Use overrides only for runtimes and models from sources you trust.
+- Transcript correction rules are stored locally with settings and are applied before preview, history, and paste.
 - The push-to-talk hotkey uses a low-level Windows keyboard hook so the app can detect Right Ctrl while it is running. The hook is used for hotkey state, not transcript collection.
 - Runtime/model downloads leave the local machine to fetch third-party artifacts; transcription itself runs locally.
 
@@ -114,7 +114,7 @@ On first real use the app downloads assets under `%LOCALAPPDATA%\ParakeetPtt`:
 
 Expect first-run downloads to be hundreds of MB for the default model and runtime assets. The optional larger multilingual model is about 1.4 GB.
 
-Open the tray menu for settings, session-only transcript history, and runtime/model path overrides.
+Open the tray menu for settings, model downloads, transcript correction preview, and session-only transcript history.
 
 To try native streaming, open settings and select one of the experimental realtime models:
 

@@ -8,6 +8,7 @@ public sealed class DictationController
     private readonly Action<string>? _transcriptPreviewReady;
     private readonly Action<string>? _cleanupWarningReady;
     private readonly Action<TranscriptUpdate>? _transcriptUpdateReady;
+    private readonly Func<IReadOnlyList<TranscriptCorrection>> _getTranscriptCorrections;
     private IDictationSession? _session;
     private bool _isRecording;
     private bool _isProcessing;
@@ -18,13 +19,15 @@ public sealed class DictationController
         IClipboardPaster clipboardPaster,
         SessionHistory history,
         Action<string>? transcriptPreviewReady = null,
-        Action<string>? cleanupWarningReady = null)
+        Action<string>? cleanupWarningReady = null,
+        Func<IReadOnlyList<TranscriptCorrection>>? getTranscriptCorrections = null)
         : this(
             new BatchDictationSessionFactory(recorder, transcriber),
             clipboardPaster,
             history,
             transcriptPreviewReady,
-            cleanupWarningReady)
+            cleanupWarningReady,
+            getTranscriptCorrections: getTranscriptCorrections)
     {
     }
 
@@ -34,7 +37,8 @@ public sealed class DictationController
         SessionHistory history,
         Action<string>? transcriptPreviewReady = null,
         Action<string>? cleanupWarningReady = null,
-        Action<TranscriptUpdate>? transcriptUpdateReady = null)
+        Action<TranscriptUpdate>? transcriptUpdateReady = null,
+        Func<IReadOnlyList<TranscriptCorrection>>? getTranscriptCorrections = null)
     {
         _sessionFactory = sessionFactory;
         _clipboardPaster = clipboardPaster;
@@ -42,6 +46,7 @@ public sealed class DictationController
         _transcriptPreviewReady = transcriptPreviewReady;
         _cleanupWarningReady = cleanupWarningReady;
         _transcriptUpdateReady = transcriptUpdateReady;
+        _getTranscriptCorrections = getTranscriptCorrections ?? (() => []);
     }
 
     public async Task<bool> HandleHotkeyDownAsync(CancellationToken cancellationToken)
@@ -88,7 +93,10 @@ public sealed class DictationController
             }
 
             sessionResult = await _session.StopAsync(cancellationToken);
-            var cleaned = TranscriptNormalizer.Normalize(sessionResult.Transcript.Text);
+            var corrected = TranscriptCorrectionDictionary.Apply(
+                sessionResult.Transcript.Text,
+                _getTranscriptCorrections());
+            var cleaned = TranscriptNormalizer.Normalize(corrected);
             if (cleaned.Length == 0)
             {
                 return DictationOutcome.EmptyTranscript;
@@ -159,7 +167,22 @@ public sealed class DictationController
 
     private void OnTranscriptUpdated(TranscriptUpdate update)
     {
-        TryPublishTranscriptUpdate(update);
+        TryPublishTranscriptUpdate(ApplyTranscriptCorrections(update));
+    }
+
+    private TranscriptUpdate ApplyTranscriptCorrections(TranscriptUpdate update)
+    {
+        var corrections = _getTranscriptCorrections();
+        if (corrections.Count == 0)
+        {
+            return update;
+        }
+
+        return update with
+        {
+            StableText = TranscriptCorrectionDictionary.Apply(update.StableText, corrections),
+            UnstableText = TranscriptCorrectionDictionary.Apply(update.UnstableText, corrections)
+        };
     }
 
     private void TryPublishTranscriptUpdate(TranscriptUpdate update)

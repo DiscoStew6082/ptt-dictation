@@ -7,6 +7,21 @@ namespace ParakeetPtt.Tests;
 public sealed class CoreBehaviorTests
 {
     [TestMethod]
+    public void TranscriptCorrectionsApplyPhrasesAndWholeWords()
+    {
+        var corrections = new TranscriptCorrectionDictionary(
+            [
+                new TranscriptCorrection("kuda", "CUDA"),
+                new TranscriptCorrection("parakeet p t t", "Parakeet PTT"),
+                new TranscriptCorrection("c sharp", "C#")
+            ]);
+
+        var corrected = corrections.Apply("kuda is not a barracuda. parakeet p t t likes c sharp");
+
+        Assert.AreEqual("CUDA is not a barracuda. Parakeet PTT likes C#", corrected);
+    }
+
+    [TestMethod]
     public async Task ReleaseTranscribesAndPastesCleanedText()
     {
         var recorder = new FakeAudioRecorder("utterance.wav");
@@ -47,6 +62,33 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
+    public async Task ReleaseAppliesTranscriptCorrectionsBeforePreviewHistoryAndPaste()
+    {
+        string? preview = null;
+        var history = new SessionHistory();
+        var paster = new FakeClipboardPaster();
+        var controller = new DictationController(
+            new FakeAudioRecorder("utterance.wav"),
+            new FakeTranscriber("  kuda likes c sharp  "),
+            paster,
+            history,
+            text => preview = text,
+            getTranscriptCorrections: () =>
+            [
+                new TranscriptCorrection("kuda", "CUDA"),
+                new TranscriptCorrection("c sharp", "C#")
+            ]);
+
+        await controller.HandleHotkeyDownAsync(CancellationToken.None);
+        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+
+        Assert.AreEqual(DictationOutcome.Pasted, outcome);
+        Assert.AreEqual("CUDA likes C#.", preview);
+        Assert.AreEqual("CUDA likes C#.", paster.PastedText);
+        CollectionAssert.AreEqual(new[] { "CUDA likes C#." }, history.Items.ToArray());
+    }
+
+    [TestMethod]
     public async Task IncrementalSessionPublishesPartialTextButOnlyPastesFinalTranscript()
     {
         var session = new FakeDictationSession("  final text  ");
@@ -76,6 +118,30 @@ public sealed class CoreBehaviorTests
         CollectionAssert.AreEqual(new[] { "Final text." }, history.Items.ToArray());
         Assert.AreEqual(1, session.StartCount);
         Assert.AreEqual(1, session.StopCount);
+    }
+
+    [TestMethod]
+    public async Task IncrementalSessionPublishesCorrectedPartialTextForPreview()
+    {
+        var session = new FakeDictationSession("final text");
+        var updates = new List<TranscriptUpdate>();
+        var controller = new DictationController(
+            new FakeDictationSessionFactory(session),
+            new FakeClipboardPaster(),
+            new SessionHistory(),
+            transcriptUpdateReady: updates.Add,
+            getTranscriptCorrections: () =>
+            [
+                new TranscriptCorrection("kuda", "CUDA"),
+                new TranscriptCorrection("c sharp", "C#")
+            ]);
+
+        await controller.HandleHotkeyDownAsync(CancellationToken.None);
+        session.PublishPartial("kuda likes c sharp");
+
+        Assert.AreEqual(1, updates.Count);
+        Assert.AreEqual(TranscriptUpdateKind.Partial, updates[0].Kind);
+        Assert.AreEqual("CUDA likes C#", updates[0].StableText);
     }
 
     [TestMethod]
@@ -542,7 +608,12 @@ public sealed class CoreBehaviorTests
             TranscriptionMode = TranscriptionMode.Streaming,
             DevicePreference = DevicePreference.Cpu,
             NotificationsEnabled = false,
-            AudibleStatusEnabled = false
+            AudibleStatusEnabled = false,
+            TranscriptCorrections =
+            [
+                new TranscriptCorrection("kuda", "CUDA"),
+                new TranscriptCorrection("c sharp", "C#")
+            ]
         };
 
         await store.SaveAsync(saved, CancellationToken.None);
@@ -553,6 +624,9 @@ public sealed class CoreBehaviorTests
         Assert.AreEqual(DevicePreference.Cpu, loaded.DevicePreference);
         Assert.IsFalse(loaded.NotificationsEnabled);
         Assert.IsFalse(loaded.AudibleStatusEnabled);
+        Assert.AreEqual(2, loaded.TranscriptCorrections.Count);
+        Assert.AreEqual("kuda", loaded.TranscriptCorrections[0].HeardAs);
+        Assert.AreEqual("CUDA", loaded.TranscriptCorrections[0].ReplaceWith);
         File.Delete(path);
     }
 
