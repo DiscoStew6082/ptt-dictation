@@ -7,7 +7,8 @@ internal sealed class LazyAssetTranscriber(
     AppSettingsStore settingsStore,
     Func<AppSettings> getSettings,
     Action<AppSettings> updateSettings,
-    Action<string> reportStatus) : ITranscriber
+    Action<string> reportStatus,
+    TranscriptionMode? modeOverride = null) : ITranscriber
 {
     private readonly SemaphoreSlim _setupLock = new(1, 1);
     private ITranscriber? _inner;
@@ -39,7 +40,7 @@ internal sealed class LazyAssetTranscriber(
 
     private async Task<ITranscriber> EnsureInnerAsync(CancellationToken cancellationToken)
     {
-        var startingSettings = getSettings();
+        var startingSettings = EffectiveSettings(getSettings());
         if (_inner is not null && _cacheKey?.Matches(startingSettings) == true)
         {
             return _inner;
@@ -48,7 +49,7 @@ internal sealed class LazyAssetTranscriber(
         await _setupLock.WaitAsync(cancellationToken);
         try
         {
-            if (_inner is not null && _cacheKey?.Matches(getSettings()) == true)
+            if (_inner is not null && _cacheKey?.Matches(EffectiveSettings(getSettings())) == true)
             {
                 return _inner;
             }
@@ -77,15 +78,16 @@ internal sealed class LazyAssetTranscriber(
             updateSettings(settings);
             await settingsStore.SaveAsync(settings, cancellationToken);
 
-            var kind = TranscriberSelection.Resolve(settings, model);
+            var effectiveSettings = EffectiveSettings(settings);
+            var kind = TranscriberSelection.Resolve(effectiveSettings, model);
             var options = new CliTranscriberOptions(runtimePath, modelPath, TimeSpan.FromMinutes(5));
             _inner = kind == TranscriberKind.Streaming
                 ? new ParakeetStreamingCliTranscriber(options, new SystemProcessRunner())
                 : new ParakeetCliTranscriber(options, new SystemProcessRunner());
             _cacheKey = new TranscriberCacheKey(
-                settings.SelectedModelId,
-                settings.TranscriptionMode,
-                settings.DevicePreference,
+                effectiveSettings.SelectedModelId,
+                effectiveSettings.TranscriptionMode,
+                effectiveSettings.DevicePreference,
                 runtimePath,
                 modelPath);
             return _inner;
@@ -94,6 +96,13 @@ internal sealed class LazyAssetTranscriber(
         {
             _setupLock.Release();
         }
+    }
+
+    private AppSettings EffectiveSettings(AppSettings settings)
+    {
+        return modeOverride is { } mode
+            ? settings with { TranscriptionMode = mode }
+            : settings;
     }
 
     private sealed record TranscriberCacheKey(

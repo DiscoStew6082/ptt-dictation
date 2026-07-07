@@ -1,18 +1,36 @@
 namespace ParakeetPtt.Core;
 
-public sealed class ChunkedTranscribingDictationSessionFactory(
-    IChunkedAudioRecorder recorder,
-    ITranscriber transcriber) : IDictationSessionFactory
+public sealed class ChunkedTranscribingDictationSessionFactory : IDictationSessionFactory
 {
+    private readonly IChunkedAudioRecorder _recorder;
+    private readonly ITranscriber _previewTranscriber;
+    private readonly ITranscriber _finalTranscriber;
+
+    public ChunkedTranscribingDictationSessionFactory(IChunkedAudioRecorder recorder, ITranscriber transcriber)
+        : this(recorder, transcriber, transcriber)
+    {
+    }
+
+    public ChunkedTranscribingDictationSessionFactory(
+        IChunkedAudioRecorder recorder,
+        ITranscriber previewTranscriber,
+        ITranscriber finalTranscriber)
+    {
+        _recorder = recorder;
+        _previewTranscriber = previewTranscriber;
+        _finalTranscriber = finalTranscriber;
+    }
+
     public IDictationSession CreateSession()
     {
-        return new ChunkedTranscribingDictationSession(recorder, transcriber);
+        return new ChunkedTranscribingDictationSession(_recorder, _previewTranscriber, _finalTranscriber);
     }
 }
 
 public sealed class ChunkedTranscribingDictationSession(
     IChunkedAudioRecorder recorder,
-    ITranscriber transcriber) : IDictationSession
+    ITranscriber previewTranscriber,
+    ITranscriber finalTranscriber) : IDictationSession
 {
     private readonly object _gate = new();
     private readonly IncrementalTranscriptAssembler _assembler = new();
@@ -22,6 +40,11 @@ public sealed class ChunkedTranscribingDictationSession(
     private bool _stopping;
 
     public event Action<TranscriptUpdate>? TranscriptUpdated;
+
+    public ChunkedTranscribingDictationSession(IChunkedAudioRecorder recorder, ITranscriber transcriber)
+        : this(recorder, transcriber, transcriber)
+    {
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -72,7 +95,7 @@ public sealed class ChunkedTranscribingDictationSession(
             recorder.AudioChunkReady -= OnAudioChunkReady;
             CancelChunkProcessing();
             await WaitForChunkProcessingToSettleAsync();
-            var finalTranscript = await transcriber.TranscribeAsync(finalAudio.Path, cancellationToken);
+            var finalTranscript = await finalTranscriber.TranscribeAsync(finalAudio.Path, cancellationToken);
             return new DictationSessionResult(finalTranscript, finalAudio);
         }
         catch
@@ -135,7 +158,7 @@ public sealed class ChunkedTranscribingDictationSession(
     {
         try
         {
-            var transcript = await transcriber.TranscribeAsync(chunk.Path, cancellationToken);
+            var transcript = await previewTranscriber.TranscribeAsync(chunk.Path, cancellationToken);
             if (cancellationToken.IsCancellationRequested)
             {
                 return;

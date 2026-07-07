@@ -181,6 +181,37 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
+    public async Task ChunkedSessionUsesPreviewTranscriberForChunksAndFinalTranscriberForStop()
+    {
+        var chunk = Path.Combine(Path.GetTempPath(), $"parakeet-chunk-{Guid.NewGuid():N}.wav");
+        var finalAudio = Path.Combine(Path.GetTempPath(), $"parakeet-final-{Guid.NewGuid():N}.wav");
+        await File.WriteAllTextAsync(chunk, "chunk");
+        await File.WriteAllTextAsync(finalAudio, "final");
+        var recorder = new FakeChunkedAudioRecorder(finalAudio);
+        var previewTranscriber = new FakeMappedTranscriber(new Dictionary<string, string>
+        {
+            [chunk] = "preview text"
+        });
+        var finalTranscriber = new FakeMappedTranscriber(new Dictionary<string, string>
+        {
+            [finalAudio] = "final text"
+        });
+        var session = new ChunkedTranscribingDictationSession(recorder, previewTranscriber, finalTranscriber);
+        var updates = new List<TranscriptUpdate>();
+        session.TranscriptUpdated += updates.Add;
+
+        await session.StartAsync(CancellationToken.None);
+        recorder.PublishChunk(chunk);
+        await WaitUntilAsync(() => updates.Count == 1);
+        var result = await session.StopAsync(CancellationToken.None);
+
+        Assert.AreEqual("preview text", updates[0].StableText);
+        Assert.AreEqual("final text", result.Transcript.Text);
+        Assert.IsFalse(File.Exists(chunk));
+        File.Delete(finalAudio);
+    }
+
+    [TestMethod]
     public async Task ChunkedSessionUsesWordTimestampsToDropOverlappedPartialWords()
     {
         var chunkOne = Path.Combine(Path.GetTempPath(), $"parakeet-chunk-{Guid.NewGuid():N}-1.wav");

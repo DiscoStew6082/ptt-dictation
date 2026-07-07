@@ -31,14 +31,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         _recorder = new WaveInAudioRecorder(AppPaths.RootDirectory);
         _recorder.AudioLevelChanged += OnAudioLevelChanged;
-        var transcriber = new LazyAssetTranscriber(
+        var finalTranscriber = new LazyAssetTranscriber(
             AppPaths.RootDirectory,
             _settingsStore,
             () => _settings,
             settings => _settings = settings,
             message => ShowTrayNotification("Parakeet PTT", message, ToolTipIcon.Info));
+        var previewTranscriber = new LazyAssetTranscriber(
+            AppPaths.RootDirectory,
+            _settingsStore,
+            () => _settings,
+            settings => _settings = settings,
+            message => ShowTrayNotification("Parakeet PTT", message, ToolTipIcon.Info),
+            TranscriptionMode.Batch);
         _dictationController = new DictationController(
-            new ChunkedTranscribingDictationSessionFactory(_recorder, transcriber),
+            new ChunkedTranscribingDictationSessionFactory(_recorder, previewTranscriber, finalTranscriber),
             new ClipboardPaster(),
             _history,
             ShowTranscriptPreview,
@@ -263,7 +270,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private async Task StopRecordingAndTranscribeAsync()
     {
         _lastTranscriptPreview = null;
-        _listeningPreviewActive = false;
         PlayStatusSound(StatusSound.Transcribing);
         ShowStatus(DictationStatusCatalog.Transcribing, ToolTipIcon.Info);
         try
@@ -290,6 +296,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             PlayStatusSound(StatusSound.Error);
             ShowStatus(DictationStatusCatalog.Error(ex.Message), ToolTipIcon.Error);
+        }
+        finally
+        {
+            _listeningPreviewActive = false;
         }
     }
 
