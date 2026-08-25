@@ -72,6 +72,13 @@ flowchart LR
 - **Operational behavior:** process timeout/cancellation handling, single-instance enforcement, best-effort clipboard restoration, session-only transcript history, and cleanup warnings when temporary audio cannot be deleted.
 - **Release engineering:** Windows CI, locked NuGet restore, dependency audit, release packaging, SHA-256 checksums, CycloneDX SBOM generation, and public-build artifact attestation.
 
+
+## Start with the interesting code
+
+- [`ChunkedTranscribingDictationSession.cs`](src/ParakeetPtt.Core/ChunkedTranscribingDictationSession.cs) — overlapping-chunk scheduling and incremental transcript assembly.
+- [`ParakeetCliTranscriber.cs`](src/ParakeetPtt.Core/ParakeetCliTranscriber.cs) — `parakeet.cpp` process integration, streaming, cancellation, and CUDA-to-CPU fallback.
+- [`CoreBehaviorTests.cs`](tests/ParakeetPtt.Tests/CoreBehaviorTests.cs) — behavioral coverage for chunk reconciliation, transcription modes, asset validation, and failure paths.
+
 ## Privacy and trust boundaries
 
 Parakeet PTT is designed for local dictation. Audio recording and transcription happen on the local machine, and transcript history is session-only. First use may download the selected `parakeet.cpp` runtime and model unless local paths are configured.
