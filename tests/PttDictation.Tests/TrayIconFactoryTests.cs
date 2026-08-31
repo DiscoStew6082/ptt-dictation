@@ -14,7 +14,8 @@ public sealed class TrayIconFactoryTests
         Assert.IsNotNull(icon);
         Assert.AreEqual(new Size(16, 16), icon.Size);
         Assert.AreNotEqual(SystemIcons.Application.Handle, icon.Handle);
-        Assert.IsTrue(bitmap.GetPixel(8, 4).A > 0);
-        Assert.IsTrue(bitmap.GetPixel(8, 4).G > bitmap.GetPixel(8, 4).R);
+        Assert.AreEqual(0, bitmap.GetPixel(0, 0).A);
+        Assert.IsTrue(bitmap.GetPixel(8, 8).A > 0);
+        Assert.IsTrue(bitmap.GetPixel(1, 8).G > bitmap.GetPixel(1, 8).R);
     }
 }
