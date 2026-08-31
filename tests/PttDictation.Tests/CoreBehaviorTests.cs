@@ -772,6 +772,8 @@ public sealed class CoreBehaviorTests
         var store = new AppSettingsStore(path);
         var saved = AppSettings.Default with
         {
+            HoldHotkey = DictationHotkey.F8,
+            ToggleHotkey = DictationHotkey.F9,
             SelectedModelId = "tdt-0.6b-v3-f16",
             TranscriptionMode = TranscriptionMode.Streaming,
             DevicePreference = DevicePreference.Cpu,
@@ -787,6 +789,8 @@ public sealed class CoreBehaviorTests
         await store.SaveAsync(saved, CancellationToken.None);
         var loaded = await store.LoadAsync(CancellationToken.None);
 
+        Assert.AreEqual(DictationHotkey.F8, loaded.HoldHotkey);
+        Assert.AreEqual(DictationHotkey.F9, loaded.ToggleHotkey);
         Assert.AreEqual(saved.SelectedModelId, loaded.SelectedModelId);
         Assert.AreEqual(TranscriptionMode.Streaming, loaded.TranscriptionMode);
         Assert.AreEqual(DevicePreference.Cpu, loaded.DevicePreference);

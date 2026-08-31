@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/DiscoStew6082/ptt-dictation/actions/workflows/ci.yml/badge.svg)](https://github.com/DiscoStew6082/ptt-dictation/actions/workflows/ci.yml)
 
-PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold Right Ctrl, speak, and release: the app records a temporary 16 kHz mono WAV, transcribes it, normalizes the result, pastes it into the active app, and restores the previous clipboard contents when possible.
+PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold your selected hold-to-talk key, speak, and release: the app records a temporary 16 kHz mono WAV, transcribes it, normalizes the result, pastes it into the active app, and restores the previous clipboard contents when possible. The defaults are Right Ctrl for hold-to-talk and Right Shift for toggle-to-talk.
 
 It is named for the workflow rather than a particular AI vendor or model. The built-in transcription engine currently uses Parakeet models through `parakeet.cpp`, while the application core talks to a replaceable transcription interface.
 
@@ -17,8 +17,7 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 
 ## Features
 
-- Right Ctrl push-to-talk dictation from the system tray.
-- Optional Right Shift toggle dictation mode.
+- Independently configurable hold-to-talk and toggle-to-talk keys.
 - Live recording text plus a final corrected preview; click the final preview to edit before paste.
 - Visible first-use runtime/model download progress with cancellable finalization.
 - Local transcription with downloadable Parakeet runtime/model assets.
@@ -28,7 +27,7 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 
 ## How it works
 
-![PTT Dictation workflow: hold Right Ctrl and speak, capture audio locally, transcribe on your PC, normalize and preview, paste into the original app, then restore the clipboard and delete temporary audio.](docs/ptt-dictation-flow.svg)
+![PTT Dictation workflow: hold the selected key and speak, capture audio locally, transcribe on your PC, normalize and preview, paste into the original app, then restore the clipboard and delete temporary audio.](docs/ptt-dictation-flow.svg)
 
 Implementation highlights:
 
@@ -57,7 +56,7 @@ Trust-boundary notes:
 
 - Paste is implemented through the Windows clipboard. The app remembers the foreground window where recording began, restores that target before paste, temporarily places the reviewed transcript on the clipboard, and attempts to restore the previous clipboard contents afterward. Other local apps with clipboard access may observe clipboard contents while paste is in progress.
 - Transcript correction rules are stored locally with settings and are applied before preview, history, and paste.
-- The push-to-talk hotkey uses a low-level Windows keyboard hook so the app can detect Right Ctrl while it is running. The hook is used for hotkey state, not transcript collection.
+- The configurable hold and toggle keys use a low-level Windows keyboard hook. The hook consumes only the selected keys and is used for hotkey state, not transcript collection.
 - Runtime/model downloads leave the local machine to fetch third-party artifacts; transcription itself runs locally.
 
 ## Requirements
@@ -79,7 +78,7 @@ Release builds are self-contained, so users do not need to install the .NET SDK 
 
 ## First Run
 
-Launch `PttDictation.exe` and leave it running in the system tray. Hold Right Ctrl while speaking, then release it to transcribe and paste. Right Shift starts or stops toggle dictation mode.
+Launch `PttDictation.exe` and leave it running in the system tray. By default, hold Right Ctrl while speaking and release it to transcribe and paste; Right Shift starts or stops toggle dictation mode. Open Settings to choose separate keys for both actions.
 
 On first use the app downloads assets under `%LOCALAPPDATA%\PttDictation`:
 
@@ -120,7 +119,7 @@ Release builds from this repository publish the zip, checksum, and CycloneDX SBO
 ## Current limitations
 
 - Supported builds target Windows 10/11 on x64 only.
-- The current controls are Right Ctrl for push-to-talk and Right Shift for toggle dictation.
+- Hotkey choices currently include left/right Ctrl, Shift, and Alt plus F1 through F24.
 - First use requires large runtime/model downloads unless you configure trusted local paths.
 - Release artifacts are not code-signed yet, so Windows SmartScreen may warn on broad public distribution.
 
@@ -166,7 +165,7 @@ Model: `tdt_ctc-110m-f16.gguf` (`f16`)
 | chunk 2 | 149 ms | to talk. |
 | full sample | 199 ms | Hello parakeet push to talk. |
 
-Manual microphone validation still needs to confirm end-to-end overlay latency and final paste quality on a real input device:
+Manual microphone validation using the default keys still needs to confirm end-to-end overlay latency and final paste quality on a real input device:
 
 ```text
 1. Start PTT Dictation from a local build.

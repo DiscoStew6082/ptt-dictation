@@ -2,9 +2,12 @@ namespace PttDictation.App;
 
 internal static class ListeningStatusFormatter
 {
-    public static string Format(TimeSpan elapsed, ListeningTriggerMode mode = ListeningTriggerMode.PushToTalk)
+    public static string Format(
+        TimeSpan elapsed,
+        ListeningTriggerMode mode = ListeningTriggerMode.PushToTalk,
+        string? hotkeyName = null)
     {
-        return $"{FormatElapsed(elapsed)}{Environment.NewLine}{FormatHint(mode)}";
+        return $"{FormatElapsed(elapsed)}{Environment.NewLine}{FormatHint(mode, hotkeyName)}";
     }
 
     public static string FormatElapsed(TimeSpan elapsed)
@@ -13,11 +16,16 @@ internal static class ListeningStatusFormatter
         return $"Recording {(int)clamped.TotalMinutes:00}:{clamped.Seconds:00}";
     }
 
-    public static string FormatHint(ListeningTriggerMode mode)
+    public static string FormatHint(ListeningTriggerMode mode, string? hotkeyName = null)
     {
-        return mode == ListeningTriggerMode.Toggle
-            ? "Press Right Shift to transcribe"
-            : "Release to transcribe";
+        if (mode == ListeningTriggerMode.Toggle)
+        {
+            return $"Press {hotkeyName ?? "Right Shift"} to transcribe";
+        }
+
+        return string.IsNullOrWhiteSpace(hotkeyName)
+            ? "Release to transcribe"
+            : $"Release {hotkeyName} to transcribe";
     }
 }
 

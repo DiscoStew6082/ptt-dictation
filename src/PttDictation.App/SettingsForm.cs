@@ -14,7 +14,8 @@ internal sealed class SettingsForm : Form
     private readonly Button _downloadModel = DarkTheme.Button("Download");
     private readonly Label _summary = new();
     private readonly Label _modelStatus = DarkTheme.HelpText(string.Empty);
-    private readonly TextBox _hotkey = new();
+    private readonly ComboBox _holdHotkey = new();
+    private readonly ComboBox _toggleHotkey = new();
     private readonly ComboBox _mode = new();
     private readonly ComboBox _device = new();
     private readonly CheckBox _notifications = new();
@@ -153,7 +154,7 @@ internal sealed class SettingsForm : Form
             Margin = new Padding(0, 0, 0, 8)
         });
 
-        _summary.Text = "Hold Right Ctrl to record   •   Right Shift toggles recording";
+        RefreshHotkeySummary();
         _summary.AutoSize = false;
         _summary.Height = 36;
         _summary.Dock = DockStyle.Top;
@@ -171,7 +172,8 @@ internal sealed class SettingsForm : Form
         ConfigureControls();
 
         var recording = CreateStack(DarkTheme.Surface);
-        AddField(recording, "Push-to-talk hotkey", _hotkey);
+        AddField(recording, "Hold-to-talk key", _holdHotkey);
+        AddField(recording, "Toggle-to-talk key", _toggleHotkey);
         recording.Controls.Add(_notifications);
         recording.Controls.Add(_sounds);
 
@@ -210,9 +212,10 @@ internal sealed class SettingsForm : Form
 
     private void ConfigureControls()
     {
-        StyleInput(_hotkey);
-        _hotkey.Dock = DockStyle.Top;
-        _hotkey.PlaceholderText = "RightCtrl";
+        ConfigureHotkeySelector(_holdHotkey, AppSettings.Default.HoldHotkey);
+        ConfigureHotkeySelector(_toggleHotkey, AppSettings.Default.ToggleHotkey);
+        _holdHotkey.SelectedIndexChanged += (_, _) => RefreshHotkeySummary();
+        _toggleHotkey.SelectedIndexChanged += (_, _) => RefreshHotkeySummary();
 
         StyleSelector(_model);
         _model.Dock = DockStyle.Top;
@@ -238,6 +241,15 @@ internal sealed class SettingsForm : Form
             "Play status sounds",
             42,
             Padding.Empty);
+    }
+
+    private static void ConfigureHotkeySelector(ComboBox selector, DictationHotkey selected)
+    {
+        StyleSelector(selector);
+        selector.Dock = DockStyle.Top;
+        selector.DisplayMember = nameof(DictationHotkeyOption.DisplayName);
+        selector.Items.AddRange(DictationHotkeyCatalog.Options.Cast<object>().ToArray());
+        selector.SelectedItem = DictationHotkeyCatalog.Option(selected);
     }
 
     private static void ConfigureCheckBox(CheckBox checkBox, string text, int height, Padding margin)
@@ -676,7 +688,9 @@ internal sealed class SettingsForm : Form
 
     private void ApplySettings(AppSettings settings)
     {
-        _hotkey.Text = settings.Hotkey;
+        SelectHotkey(_holdHotkey, settings.HoldHotkey);
+        SelectHotkey(_toggleHotkey, settings.ToggleHotkey);
+        RefreshHotkeySummary();
         _runtimePathOverride = settings.RuntimePath;
         _modelPathOverride = settings.ModelPath;
         _transcriptCorrections = settings.TranscriptCorrections.ToList();
@@ -698,7 +712,15 @@ internal sealed class SettingsForm : Form
 
     private async Task SaveAsync()
     {
-        _settings = BuildSettingsFromControls();
+        try
+        {
+            _settings = BuildSettingsFromControls();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, "Choose different hotkeys", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
 
         await _settingsStore.SaveAsync(_settings, CancellationToken.None);
         SettingsSaved?.Invoke(this, _settings);
@@ -720,9 +742,17 @@ internal sealed class SettingsForm : Form
             modelPath = null;
         }
 
+        var holdHotkey = SelectedHotkeyFromControl(_holdHotkey, AppSettings.Default.HoldHotkey);
+        var toggleHotkey = SelectedHotkeyFromControl(_toggleHotkey, AppSettings.Default.ToggleHotkey);
+        if (holdHotkey == toggleHotkey)
+        {
+            throw new InvalidOperationException("Choose different keys for hold-to-talk and toggle-to-talk.");
+        }
+
         return _settings with
         {
-            Hotkey = string.IsNullOrWhiteSpace(_hotkey.Text) ? AppSettings.Default.Hotkey : _hotkey.Text.Trim(),
+            HoldHotkey = holdHotkey,
+            ToggleHotkey = toggleHotkey,
             SelectedModelId = selectedModelId,
             TranscriptionMode = selectedMode,
             RuntimePath = EmptyToNull(_runtimePathOverride),
@@ -732,6 +762,23 @@ internal sealed class SettingsForm : Form
             AudibleStatusEnabled = _sounds.Checked,
             TranscriptCorrections = _transcriptCorrections.ToList()
         };
+    }
+
+    private void RefreshHotkeySummary()
+    {
+        var hold = SelectedHotkeyFromControl(_holdHotkey, AppSettings.Default.HoldHotkey);
+        var toggle = SelectedHotkeyFromControl(_toggleHotkey, AppSettings.Default.ToggleHotkey);
+        _summary.Text = $"Hold {DictationHotkeyCatalog.DisplayName(hold)} to record   •   {DictationHotkeyCatalog.DisplayName(toggle)} toggles recording";
+    }
+
+    private static void SelectHotkey(ComboBox selector, DictationHotkey hotkey)
+    {
+        selector.SelectedItem = DictationHotkeyCatalog.Option(hotkey);
+    }
+
+    private static DictationHotkey SelectedHotkeyFromControl(ComboBox selector, DictationHotkey fallback)
+    {
+        return selector.SelectedItem is DictationHotkeyOption option ? option.Value : fallback;
     }
 
     private string SelectedModelIdFromControl()
@@ -933,6 +980,22 @@ internal sealed class SettingsForm : Form
 
     internal string SummaryTextForTest => _summary.Text;
 
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal DictationHotkey SelectedHoldHotkeyForTest
+    {
+        get => SelectedHotkeyFromControl(_holdHotkey, AppSettings.Default.HoldHotkey);
+        set => SelectHotkey(_holdHotkey, value);
+    }
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal DictationHotkey SelectedToggleHotkeyForTest
+    {
+        get => SelectedHotkeyFromControl(_toggleHotkey, AppSettings.Default.ToggleHotkey);
+        set => SelectHotkey(_toggleHotkey, value);
+    }
+
     internal bool HasRuntimePathEditorForTest => false;
 
     internal bool HasModelPathEditorForTest => false;
@@ -940,7 +1003,13 @@ internal sealed class SettingsForm : Form
     internal string[] SectionTitlesForTest => [.. _sectionTitles];
 
     internal bool SelectorsUseDarkFlatStyleForTest =>
-        new[] { _model, _mode, _device }.All(selector =>
+        new[] { _holdHotkey, _toggleHotkey, _model, _mode, _device }.All(selector =>
+            selector.FlatStyle == FlatStyle.Flat
+            && selector.BackColor == DarkTheme.SurfaceRaised
+            && selector.ForeColor == DarkTheme.Text);
+
+    internal bool HotkeySelectorsUseDarkFlatStyleForTest =>
+        new[] { _holdHotkey, _toggleHotkey }.All(selector =>
             selector.FlatStyle == FlatStyle.Flat
             && selector.BackColor == DarkTheme.SurfaceRaised
             && selector.ForeColor == DarkTheme.Text);

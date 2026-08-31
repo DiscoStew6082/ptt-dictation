@@ -27,8 +27,8 @@
     <rect class="step" x="54" y="40" width="612" height="96" rx="16"/>
     <circle class="number" cx="100" cy="88" r="23"/>
     <text class="number-text" x="100" y="88">1</text>
-    <text class="title" x="140" y="81">Hold Right Ctrl and speak</text>
-    <text class="detail" x="140" y="110">Right Shift can toggle recording</text>
+    <text class="title" x="140" y="81">Hold your selected key and speak</text>
+    <text class="detail" x="140" y="110">A separate selected key can toggle recording</text>
   </g>
 
   <g>

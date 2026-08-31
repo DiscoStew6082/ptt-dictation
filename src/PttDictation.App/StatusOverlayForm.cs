@@ -25,6 +25,7 @@ internal sealed class StatusOverlayForm : Form
     private readonly System.Windows.Forms.Timer _liveActivityTimer = new();
     private DateTimeOffset _listeningStartedAt;
     private ListeningTriggerMode _listeningTriggerMode = ListeningTriggerMode.PushToTalk;
+    private string? _listeningHotkeyName;
     private string? _liveTranscriptText;
     private bool _activityMeterRequestedVisible;
     private DictationStatusKind _statusKind;
@@ -169,13 +170,13 @@ internal sealed class StatusOverlayForm : Form
 
     public void ShowStatus(DictationStatus status)
     {
-        ShowStatus(status, ListeningTriggerMode.PushToTalk);
+        ShowStatus(status, ListeningTriggerMode.PushToTalk, null);
     }
 
-    public void ShowStatus(DictationStatus status, ListeningTriggerMode mode)
+    public void ShowStatus(DictationStatus status, ListeningTriggerMode mode, string? hotkeyName = null)
     {
         _hideTimer.Stop();
-        ApplyStatus(status, mode);
+        ApplyStatus(status, mode, hotkeyName);
         PositionBottomCenter();
 
         if (!Visible)
@@ -188,13 +189,16 @@ internal sealed class StatusOverlayForm : Form
 
     internal void ApplyStatusForTest(DictationStatus status)
     {
-        ApplyStatusForTest(status, ListeningTriggerMode.PushToTalk);
+        ApplyStatusForTest(status, ListeningTriggerMode.PushToTalk, null);
     }
 
-    internal void ApplyStatusForTest(DictationStatus status, ListeningTriggerMode mode)
+    internal void ApplyStatusForTest(
+        DictationStatus status,
+        ListeningTriggerMode mode,
+        string? hotkeyName = null)
     {
         _hideTimer.Stop();
-        ApplyStatus(status, mode);
+        ApplyStatus(status, mode, hotkeyName);
         StartAutoHideIfNeeded(status);
     }
 
@@ -218,7 +222,10 @@ internal sealed class StatusOverlayForm : Form
         _activityMeter.Level = level;
     }
 
-    public void ShowListeningTranscript(string transcript, ListeningTriggerMode mode)
+    public void ShowListeningTranscript(
+        string transcript,
+        ListeningTriggerMode mode,
+        string? hotkeyName = null)
     {
         if (string.IsNullOrWhiteSpace(transcript))
         {
@@ -228,10 +235,11 @@ internal sealed class StatusOverlayForm : Form
         _hideTimer.Stop();
         if (!_activityMeterRequestedVisible)
         {
-            StartLiveActivity(DictationStatusCatalog.Listening, mode);
+            StartLiveActivity(DictationStatusCatalog.Listening, mode, hotkeyName);
         }
 
         _listeningTriggerMode = mode;
+        _listeningHotkeyName = hotkeyName ?? _listeningHotkeyName;
         _liveTranscriptText = transcript.Trim();
         UpdateLiveActivity();
         PositionBottomCenter();
@@ -241,15 +249,19 @@ internal sealed class StatusOverlayForm : Form
         }
     }
 
-    internal void ApplyListeningTranscriptForTest(string transcript, ListeningTriggerMode mode)
+    internal void ApplyListeningTranscriptForTest(
+        string transcript,
+        ListeningTriggerMode mode,
+        string? hotkeyName = null)
     {
         _hideTimer.Stop();
         if (!_activityMeterRequestedVisible)
         {
-            StartLiveActivity(DictationStatusCatalog.Listening, mode);
+            StartLiveActivity(DictationStatusCatalog.Listening, mode, hotkeyName);
         }
 
         _listeningTriggerMode = mode;
+        _listeningHotkeyName = hotkeyName ?? _listeningHotkeyName;
         _liveTranscriptText = transcript.Trim();
         UpdateLiveActivity();
     }
@@ -284,12 +296,12 @@ internal sealed class StatusOverlayForm : Form
         };
     }
 
-    private void ApplyStatus(DictationStatus status, ListeningTriggerMode mode)
+    private void ApplyStatus(DictationStatus status, ListeningTriggerMode mode, string? hotkeyName)
     {
         _statusKind = status.Kind;
         if (status.Kind == DictationStatusKind.Listening)
         {
-            StartLiveActivity(status, mode);
+            StartLiveActivity(status, mode, hotkeyName);
             return;
         }
 
@@ -317,7 +329,7 @@ internal sealed class StatusOverlayForm : Form
         _hideTimer.Start();
     }
 
-    private void StartLiveActivity(DictationStatus status, ListeningTriggerMode mode)
+    private void StartLiveActivity(DictationStatus status, ListeningTriggerMode mode, string? hotkeyName)
     {
         ConfigureStandardTextPanel();
         UseOverlaySize(ListeningOverlaySize);
@@ -325,6 +337,7 @@ internal sealed class StatusOverlayForm : Form
         _title.Text = status.Title;
         _listeningStartedAt = DateTimeOffset.UtcNow;
         _listeningTriggerMode = mode;
+        _listeningHotkeyName = hotkeyName;
         _liveTranscriptText = null;
         _activityMeterRequestedVisible = true;
         _activityMeter.Visible = true;
@@ -390,13 +403,13 @@ internal sealed class StatusOverlayForm : Form
         var elapsed = DateTimeOffset.UtcNow - _listeningStartedAt;
         if (string.IsNullOrWhiteSpace(_liveTranscriptText))
         {
-            _message.Text = ListeningStatusFormatter.Format(elapsed, _listeningTriggerMode);
+            _message.Text = ListeningStatusFormatter.Format(elapsed, _listeningTriggerMode, _listeningHotkeyName);
         }
         else
         {
             _title.Text = ListeningStatusFormatter.FormatElapsed(elapsed);
             var latestWords = LiveTranscriptPreviewFormatter.LatestWords(_liveTranscriptText);
-            _message.Text = $"{ListeningStatusFormatter.FormatHint(_listeningTriggerMode)}{Environment.NewLine}{latestWords}";
+            _message.Text = $"{ListeningStatusFormatter.FormatHint(_listeningTriggerMode, _listeningHotkeyName)}{Environment.NewLine}{latestWords}";
         }
 
         _activityMeter.Decay();

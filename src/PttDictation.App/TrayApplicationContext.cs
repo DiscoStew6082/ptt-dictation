@@ -12,7 +12,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly DictationController _dictationController;
     private readonly Icon _trayIcon;
     private readonly NotifyIcon _notifyIcon;
-    private readonly RightCtrlHotkeySource _hotkeySource;
+    private readonly GlobalHotkeySource _hotkeySource;
     private readonly StatusOverlayForm _statusOverlay = new();
     private readonly SynchronizationContext _uiContext;
     private readonly CancellationTokenSource _lifetime = new();
@@ -74,7 +74,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 ShowSettings();
             }
         };
-        _hotkeySource = new RightCtrlHotkeySource();
+        _hotkeySource = new GlobalHotkeySource();
         _hotkeySource.Pressed += () => PostToUi(OnHotkeyPressedAsync);
         _hotkeySource.Released += () => PostToUi(OnHotkeyReleasedAsync);
         _hotkeySource.ToggleRequested += () => PostToUi(OnToggleRequestedAsync);
@@ -134,8 +134,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            _settings = await _settingsStore.LoadAsync(_lifetime.Token);
-            UpdateTrayText();
+            ApplySettings(await _settingsStore.LoadAsync(_lifetime.Token));
         }
         catch (OperationCanceledException) when (_exiting)
         {
@@ -168,8 +167,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var form = new SettingsForm(_settingsStore, _modelRegistry);
         form.SettingsSaved += (_, settings) =>
         {
-            _settings = settings;
-            UpdateTrayText();
+            ApplySettings(settings);
             ShowTrayNotification("Settings saved", "PTT Dictation settings were updated.", ToolTipIcon.Info);
         };
         form.QuitRequested += (_, _) => ExitApplication();
@@ -234,7 +232,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _acceptedRecordingStart = true;
             _listeningPreviewActive = true;
             PlayStatusSound(StatusSound.Listening);
-            ShowStatus(DictationStatusCatalog.Listening, ToolTipIcon.Info, mode: ListeningTriggerMode.PushToTalk);
+            var hotkeyName = DictationHotkeyCatalog.DisplayName(_settings.HoldHotkey);
+            ShowStatus(
+                DictationStatusCatalog.Listening,
+                ToolTipIcon.Info,
+                notifyMessage: ListeningStatusFormatter.FormatHint(ListeningTriggerMode.PushToTalk, hotkeyName),
+                mode: ListeningTriggerMode.PushToTalk,
+                listeningHotkeyName: hotkeyName);
         }
     }
 
@@ -273,11 +277,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _toggleRecordingActive = true;
             _listeningPreviewActive = true;
             PlayStatusSound(StatusSound.Listening);
+            var hotkeyName = DictationHotkeyCatalog.DisplayName(_settings.ToggleHotkey);
             ShowStatus(
                 DictationStatusCatalog.Listening,
                 ToolTipIcon.Info,
-                notifyMessage: ListeningStatusFormatter.FormatHint(ListeningTriggerMode.Toggle),
-                mode: ListeningTriggerMode.Toggle);
+                notifyMessage: ListeningStatusFormatter.FormatHint(ListeningTriggerMode.Toggle, hotkeyName),
+                mode: ListeningTriggerMode.Toggle,
+                listeningHotkeyName: hotkeyName);
         }
     }
 
@@ -465,13 +471,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         ToolTipIcon icon,
         bool notify = true,
         string? notifyMessage = null,
-        ListeningTriggerMode mode = ListeningTriggerMode.PushToTalk)
+        ListeningTriggerMode mode = ListeningTriggerMode.PushToTalk,
+        string? listeningHotkeyName = null)
     {
-        _statusOverlay.ShowStatus(status, mode);
+        _statusOverlay.ShowStatus(status, mode, listeningHotkeyName);
         if (notify)
         {
             ShowTrayNotification(status.Title, notifyMessage ?? status.Message, icon);
         }
+    }
+
+    private void ApplySettings(AppSettings settings)
+    {
+        _hotkeySource.Configure(settings.HoldHotkey, settings.ToggleHotkey);
+        _settings = settings;
+        UpdateTrayText();
     }
 
     private void OnAudioLevelChanged(double level)

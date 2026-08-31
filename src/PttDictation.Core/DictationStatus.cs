@@ -22,7 +22,7 @@ public static class DictationStatusCatalog
     public static DictationStatus Listening { get; } = new(
         DictationStatusKind.Listening,
         "Listening",
-        "Release Right Ctrl to transcribe.",
+        "Release the hold-to-talk key to transcribe.",
         AutoHide: false);
 
     public static DictationStatus Transcribing { get; } = new(

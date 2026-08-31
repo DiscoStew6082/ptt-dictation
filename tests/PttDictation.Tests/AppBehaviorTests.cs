@@ -78,7 +78,7 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
-    public void SettingsFormExplainsHoldAndToggleHotkeysWithoutPathEditors()
+    public void SettingsFormBuildsIndependentHoldAndToggleHotkeys()
     {
         RunOnStaThread(() =>
         {
@@ -86,10 +86,33 @@ public sealed class AppBehaviorTests
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
             form.UseSettings(AppSettings.Default);
 
-            StringAssert.Contains(form.SummaryTextForTest, "Right Ctrl");
-            StringAssert.Contains(form.SummaryTextForTest, "Right Shift");
+            form.SelectedHoldHotkeyForTest = DictationHotkey.F8;
+            form.SelectedToggleHotkeyForTest = DictationHotkey.F9;
+            var settings = form.BuildSettingsForTest();
+
+            Assert.AreEqual(DictationHotkey.F8, settings.HoldHotkey);
+            Assert.AreEqual(DictationHotkey.F9, settings.ToggleHotkey);
+            StringAssert.Contains(form.SummaryTextForTest, "F8");
+            StringAssert.Contains(form.SummaryTextForTest, "F9");
+            Assert.IsTrue(form.HotkeySelectorsUseDarkFlatStyleForTest);
             Assert.IsFalse(form.HasRuntimePathEditorForTest);
             Assert.IsFalse(form.HasModelPathEditorForTest);
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormRejectsMatchingHoldAndToggleHotkeys()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+            form.UseSettings(AppSettings.Default);
+
+            form.SelectedHoldHotkeyForTest = DictationHotkey.F8;
+            form.SelectedToggleHotkeyForTest = DictationHotkey.F8;
+
+            Assert.ThrowsExactly<InvalidOperationException>(() => form.BuildSettingsForTest());
         });
     }
 
@@ -453,6 +476,36 @@ public sealed class AppBehaviorTests
 
         Assert.AreEqual("Recording 00:09" + Environment.NewLine + "Press Right Shift to transcribe", text);
         StringAssert.DoesNotMatch(text, new System.Text.RegularExpressions.Regex("Release"));
+    }
+
+    [TestMethod]
+    public void ListeningStatusFormatterUsesConfiguredHotkeyName()
+    {
+        var holdText = ListeningStatusFormatter.Format(
+            TimeSpan.FromSeconds(2),
+            ListeningTriggerMode.PushToTalk,
+            "F8");
+        var toggleText = ListeningStatusFormatter.Format(
+            TimeSpan.FromSeconds(2),
+            ListeningTriggerMode.Toggle,
+            "F9");
+
+        StringAssert.Contains(holdText, "Release F8 to transcribe");
+        StringAssert.Contains(toggleText, "Press F9 to transcribe");
+    }
+
+    [TestMethod]
+    public void StatusOverlayKeepsConfiguredToggleKeyInLiveTranscriptHint()
+    {
+        RunOnStaThread(() =>
+        {
+            using var overlay = new StatusOverlayForm();
+            overlay.ApplyStatusForTest(DictationStatusCatalog.Listening, ListeningTriggerMode.Toggle, "F9");
+
+            overlay.ApplyListeningTranscriptForTest("Testing configurable keys.", ListeningTriggerMode.Toggle);
+
+            StringAssert.Contains(overlay.MessageTextForTest, "Press F9 to transcribe");
+        });
     }
 
     [TestMethod]

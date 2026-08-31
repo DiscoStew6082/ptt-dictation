@@ -5,7 +5,8 @@ namespace PttDictation.Core;
 
 public sealed record AppSettings
 {
-    public string Hotkey { get; init; } = "RightCtrl";
+    public DictationHotkey HoldHotkey { get; init; } = DictationHotkey.RightControl;
+    public DictationHotkey ToggleHotkey { get; init; } = DictationHotkey.RightShift;
     public string SelectedModelId { get; init; } = ModelRegistry.DefaultModelId;
     public TranscriptionMode TranscriptionMode { get; init; } = TranscriptionMode.Auto;
     public string? RuntimePath { get; init; }
@@ -16,6 +17,41 @@ public sealed record AppSettings
     public List<TranscriptCorrection> TranscriptCorrections { get; init; } = [];
 
     public static AppSettings Default { get; } = new();
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<DictationHotkey>))]
+public enum DictationHotkey
+{
+    RightControl,
+    LeftControl,
+    RightShift,
+    LeftShift,
+    RightAlt,
+    LeftAlt,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    F13,
+    F14,
+    F15,
+    F16,
+    F17,
+    F18,
+    F19,
+    F20,
+    F21,
+    F22,
+    F23,
+    F24
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<TranscriptionMode>))]
