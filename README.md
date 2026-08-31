@@ -54,6 +54,12 @@ Implementation highlights:
 
 The current app downloads and runs `parakeet.cpp` with a supported Parakeet GGUF model. That is an implementation choice, not the product identity. Core recording and dictation flows depend on the `ITranscriber` contract, so another local engine can be added behind the same session, preview, correction, history, and paste workflow.
 
+## Start with the interesting code
+
+- [`ChunkedTranscribingDictationSession.cs`](src/PttDictation.Core/ChunkedTranscribingDictationSession.cs) — overlapping-chunk scheduling and incremental transcript assembly.
+- [`ParakeetCliTranscriber.cs`](src/PttDictation.Core/ParakeetCliTranscriber.cs) — `parakeet.cpp` process integration, streaming, cancellation, and CUDA-to-CPU fallback.
+- [`CoreBehaviorTests.cs`](tests/PttDictation.Tests/CoreBehaviorTests.cs) — behavioral coverage for chunk reconciliation, transcription modes, asset validation, and failure paths.
+
 ## Privacy
 
 PTT Dictation is designed for local dictation. Temporary recordings are made on the local machine while dictation is active, transcription is performed by a local `parakeet-cli` runtime, and transcript history is session-only. The app does download runtime/model assets on first use or when you choose a model download in settings.
