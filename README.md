@@ -68,52 +68,25 @@ Trust-boundary notes:
 ## Requirements
 
 - Windows 11, or Windows 10 installations still receiving security updates.
-- .NET 10 SDK for development.
 - A working audio input device.
+- An internet connection for the first runtime/model download.
 
-Supported releases target Windows 10/11 on x64. The app targets .NET 10 LTS, which is supported until November 14, 2028.
+Supported releases target Windows 10/11 on x64. An NVIDIA GPU is optional; the app can fall back to the CPU runtime.
 
-## Build
+## Install
 
-Run the tests:
+1. Open the [GitHub Releases page](https://github.com/DiscoStew6082/ptt-dictation/releases).
+2. Download `PttDictation-win-x64.zip` and its `.sha256` checksum from the latest release.
+3. Optionally verify the download using the command in [Release Verification](#release-verification).
+4. Extract the zip to a folder you control and run `PttDictation.exe`.
 
-```powershell
-dotnet test PttDictation.sln
-```
+Release builds are self-contained, so users do not need to install the .NET SDK or runtime. The app is not code-signed yet, so Windows SmartScreen may display a warning.
 
-Publish a portable Windows x64 build:
+## First Run
 
-```powershell
-dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
-```
+Launch `PttDictation.exe` and leave it running in the system tray. Hold Right Ctrl while speaking, then release it to transcribe and paste. Right Shift starts or stops toggle dictation mode.
 
-Package the published folder as a zip:
-
-```powershell
-Compress-Archive -Path publish\ptt-dictation-win-x64\* -DestinationPath publish\PttDictation-win-x64.zip -Force
-```
-
-Create a checksum for release verification:
-
-```powershell
-Get-FileHash publish\PttDictation-win-x64.zip -Algorithm SHA256
-```
-
-## Try It Locally
-
-Build output is published to:
-
-```text
-publish\ptt-dictation-win-x64\PttDictation.exe
-```
-
-Portable zip:
-
-```text
-publish\PttDictation-win-x64.zip
-```
-
-On first real use the app downloads assets under `%LOCALAPPDATA%\PttDictation`:
+On first use the app downloads assets under `%LOCALAPPDATA%\PttDictation`:
 
 - `parakeet.cpp` `v0.4.0` Windows CUDA runtime plus the matching CUDA runtime dependency archive.
 - CPU fallback runtime.
@@ -155,6 +128,17 @@ Release builds from this repository publish the zip, checksum, and CycloneDX SBO
 - The current controls are Right Ctrl for push-to-talk and Right Shift for toggle dictation.
 - First use requires large runtime/model downloads unless you configure trusted local paths.
 - Release artifacts are not code-signed yet, so Windows SmartScreen may warn on broad public distribution.
+
+## Build from Source
+
+Contributors need the .NET 10 SDK. Run the test suite and create a self-contained Windows build with:
+
+```powershell
+dotnet test PttDictation.sln
+dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
+```
+
+The executable will be written to `publish\ptt-dictation-win-x64\PttDictation.exe`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development and release workflow.
 
 ## Validation
 
