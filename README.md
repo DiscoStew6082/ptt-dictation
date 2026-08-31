@@ -29,16 +29,13 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 ## How it works
 
 ```mermaid
-flowchart LR
-    A[Right Ctrl push-to-talk<br/>or Right Shift toggle] --> B[WASAPI records<br/>16 kHz mono WAV]
-    B --> C[parakeet-cli<br/>transcribe --json]
-    C --> D[Normalize and preview transcript]
-    D --> E[Optional click-to-edit review]
-    E --> F[Restore original target<br/>and paste through clipboard]
-    F --> J[Restore prior clipboard<br/>and delete temp WAV]
-    G[First use] --> H[Download runtime/model<br/>under %LOCALAPPDATA%]
-    H --> I[Verify SHA-256<br/>and validate archive paths]
-    I --> C
+flowchart TD
+    A["Hold Right Ctrl and speak"] --> B["Capture audio locally"]
+    B --> C["Transcribe with the selected local engine"]
+    C --> D["Normalize and preview<br/>Click to edit if needed"]
+    D --> E["Paste into the original app"]
+    E --> F["Restore the clipboard<br/>Delete temporary audio"]
+    G["First use only:<br/>download and verify runtime + model"] -.-> C
 ```
 
 Implementation highlights:

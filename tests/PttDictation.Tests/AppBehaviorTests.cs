@@ -182,12 +182,10 @@ public sealed class AppBehaviorTests
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
-            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault())
-            {
-                Size = new Size(1400, 1000)
-            };
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
             form.UseSettings(AppSettings.Default);
             form.Show();
+            form.Size = new Size(1400, 1000);
             Application.DoEvents();
             form.ApplyWideLayoutForTest();
             form.PerformLayout();
