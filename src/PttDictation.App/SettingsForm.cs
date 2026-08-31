@@ -62,8 +62,6 @@ internal sealed class SettingsForm : Form
         _isModelDownloaded = isModelDownloaded;
 
         Text = "PTT Dictation - Settings";
-        AutoScaleDimensions = new SizeF(96F, 96F);
-        AutoScaleMode = AutoScaleMode.Dpi;
         MinimumSize = new Size(800, 700);
         Size = new Size(1100, 900);
 
