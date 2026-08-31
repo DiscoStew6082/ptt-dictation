@@ -28,15 +28,7 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 
 ## How it works
 
-```mermaid
-flowchart TD
-    A["Hold Right Ctrl and speak"] --> B["Capture audio locally"]
-    B --> C["Transcribe with the selected local engine"]
-    C --> D["Normalize and preview<br/>Click to edit if needed"]
-    D --> E["Paste into the original app"]
-    E --> F["Restore the clipboard<br/>Delete temporary audio"]
-    G["First use only:<br/>download and verify runtime + model"] -.-> C
-```
+![PTT Dictation workflow: hold Right Ctrl and speak, capture audio locally, transcribe on your PC, normalize and preview, paste into the original app, then restore the clipboard and delete temporary audio.](docs/ptt-dictation-flow.svg)
 
 Implementation highlights:
 

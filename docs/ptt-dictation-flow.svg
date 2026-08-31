@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="860" viewBox="0 0 720 860" role="img" aria-labelledby="title description">
+  <title id="title">PTT Dictation workflow</title>
+  <desc id="description">Six steps from holding the push-to-talk key through local transcription, paste, clipboard restoration, and temporary audio cleanup.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6da7ff"/>
+    </marker>
+    <style>
+      .title { fill: #f3f6fa; font: 600 25px "Segoe UI", Arial, sans-serif; }
+      .detail { fill: #b6c0cd; font: 18px "Segoe UI", Arial, sans-serif; }
+      .step { fill: #17263c; stroke: #6da7ff; stroke-width: 2; }
+      .number { fill: #6da7ff; }
+      .number-text { fill: #10151d; font: 700 21px "Segoe UI", Arial, sans-serif; text-anchor: middle; dominant-baseline: central; }
+      .arrow { stroke: #6da7ff; stroke-width: 4; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="720" height="860" rx="24" fill="#181b21"/>
+
+  <line class="arrow" x1="360" y1="136" x2="360" y2="164"/>
+  <line class="arrow" x1="360" y1="256" x2="360" y2="284"/>
+  <line class="arrow" x1="360" y1="406" x2="360" y2="434"/>
+  <line class="arrow" x1="360" y1="556" x2="360" y2="584"/>
+  <line class="arrow" x1="360" y1="676" x2="360" y2="704"/>
+
+  <g>
+    <rect class="step" x="54" y="40" width="612" height="96" rx="16"/>
+    <circle class="number" cx="100" cy="88" r="23"/>
+    <text class="number-text" x="100" y="88">1</text>
+    <text class="title" x="140" y="81">Hold Right Ctrl and speak</text>
+    <text class="detail" x="140" y="110">Right Shift can toggle recording</text>
+  </g>
+
+  <g>
+    <rect class="step" x="54" y="164" width="612" height="92" rx="16"/>
+    <circle class="number" cx="100" cy="210" r="23"/>
+    <text class="number-text" x="100" y="210">2</text>
+    <text class="title" x="140" y="202">Capture audio locally</text>
+    <text class="detail" x="140" y="231">16 kHz mono WAV</text>
+  </g>
+
+  <g>
+    <rect class="step" x="54" y="284" width="612" height="122" rx="16"/>
+    <circle class="number" cx="100" cy="345" r="23"/>
+    <text class="number-text" x="100" y="345">3</text>
+    <text class="title" x="140" y="326">Transcribe on your PC</text>
+    <text class="detail" x="140" y="356">Use the selected local engine</text>
+    <text class="detail" x="140" y="383">First use downloads and verifies its assets</text>
+  </g>
+
+  <g>
+    <rect class="step" x="54" y="434" width="612" height="122" rx="16"/>
+    <circle class="number" cx="100" cy="495" r="23"/>
+    <text class="number-text" x="100" y="495">4</text>
+    <text class="title" x="140" y="480">Normalize and preview</text>
+    <text class="detail" x="140" y="511">Apply saved corrections</text>
+    <text class="detail" x="140" y="538">Click the preview to edit if needed</text>
+  </g>
+
+  <g>
+    <rect class="step" x="54" y="584" width="612" height="92" rx="16"/>
+    <circle class="number" cx="100" cy="630" r="23"/>
+    <text class="number-text" x="100" y="630">5</text>
+    <text class="title" x="140" y="622">Paste into the original app</text>
+    <text class="detail" x="140" y="651">Return focus to where dictation started</text>
+  </g>
+
+  <g>
+    <rect class="step" x="54" y="704" width="612" height="112" rx="16"/>
+    <circle class="number" cx="100" cy="760" r="23"/>
+    <text class="number-text" x="100" y="760">6</text>
+    <text class="title" x="140" y="748">Clean up</text>
+    <text class="detail" x="140" y="780">Restore the clipboard and delete temporary audio</text>
+  </g>
+</svg>

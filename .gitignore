@@ -1,6 +1,7 @@
 bin/
 obj/
 .vs/
+.codex-remote-attachments/
 .dotnet/
 .dotnet-install.ps1
 *.user
