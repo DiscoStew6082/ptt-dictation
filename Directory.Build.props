@@ -2,11 +2,11 @@
   <PropertyGroup>
     <Authors>discostew6082</Authors>
     <Company>discostew6082</Company>
-    <Product>Parakeet PTT</Product>
-    <Description>Local Windows push-to-talk dictation tray app powered by parakeet.cpp.</Description>
+    <Product>PTT Dictation</Product>
+    <Description>Local, extensible push-to-talk dictation for Windows, with Parakeet models as the built-in transcription engine.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
-    <RepositoryUrl>https://github.com/discostew6082/par-win-ptt</RepositoryUrl>
+    <RepositoryUrl>https://github.com/DiscoStew6082/ptt-dictation</RepositoryUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>

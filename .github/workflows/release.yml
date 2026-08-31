@@ -28,16 +28,16 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Restore
-        run: dotnet restore ParakeetPtt.sln --locked-mode
+        run: dotnet restore PttDictation.sln --locked-mode
 
       - name: Test
-        run: dotnet test ParakeetPtt.sln --configuration Release --no-restore
+        run: dotnet test PttDictation.sln --configuration Release --no-restore
 
       - name: Audit NuGet packages
-        run: dotnet list ParakeetPtt.sln package --vulnerable --include-transitive
+        run: dotnet list PttDictation.sln package --vulnerable --include-transitive
 
       - name: Publish
-        run: dotnet publish src\ParakeetPtt.App\ParakeetPtt.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o publish\win-x64
+        run: dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o publish\ptt-dictation-win-x64
 
       - name: Install SBOM tool
         run: dotnet tool install --global CycloneDX --version 6.2.0
@@ -46,29 +46,29 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
-          dotnet-CycloneDX ParakeetPtt.sln -o publish -fn ParakeetPtt.cdx.json -F Json -t --set-name ParakeetPtt --set-version $env:GITHUB_REF_NAME
+          dotnet-CycloneDX PttDictation.sln -o publish -fn PttDictation.cdx.json -F Json -t --set-name PttDictation --set-version $env:GITHUB_REF_NAME
 
       - name: Package
         shell: pwsh
         run: |
-          Compress-Archive -Path publish\win-x64\* -DestinationPath publish\ParakeetPtt-win-x64.zip -Force
-          $hash = (Get-FileHash publish\ParakeetPtt-win-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  ParakeetPtt-win-x64.zip" | Set-Content -NoNewline -Encoding ascii publish\ParakeetPtt-win-x64.zip.sha256
+          Compress-Archive -Path publish\ptt-dictation-win-x64\* -DestinationPath publish\PttDictation-win-x64.zip -Force
+          $hash = (Get-FileHash publish\PttDictation-win-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  PttDictation-win-x64.zip" | Set-Content -NoNewline -Encoding ascii publish\PttDictation-win-x64.zip.sha256
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ParakeetPtt-win-x64
+          name: PttDictation-win-x64
           path: |
-            publish/ParakeetPtt-win-x64.zip
-            publish/ParakeetPtt-win-x64.zip.sha256
-            publish/ParakeetPtt.cdx.json
+            publish/PttDictation-win-x64.zip
+            publish/PttDictation-win-x64.zip.sha256
+            publish/PttDictation.cdx.json
 
       - name: Attest release artifact
         if: ${{ github.event.repository.private == false }}
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: publish/ParakeetPtt-win-x64.zip
+          subject-path: publish/PttDictation-win-x64.zip
 
   publish:
     name: Draft GitHub release
@@ -82,7 +82,7 @@ jobs:
       - name: Download release artifact
         uses: actions/download-artifact@v4
         with:
-          name: ParakeetPtt-win-x64
+          name: PttDictation-win-x64
           path: publish
 
       - name: Create GitHub release
@@ -91,9 +91,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create $env:GITHUB_REF_NAME `
-            publish\ParakeetPtt-win-x64.zip `
-            publish\ParakeetPtt-win-x64.zip.sha256 `
-            publish\ParakeetPtt.cdx.json `
+            publish\PttDictation-win-x64.zip `
+            publish\PttDictation-win-x64.zip.sha256 `
+            publish\PttDictation.cdx.json `
             --draft `
             --repo $env:GITHUB_REPOSITORY `
             --title $env:GITHUB_REF_NAME `

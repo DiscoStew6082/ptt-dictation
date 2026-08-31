@@ -24,10 +24,10 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Restore
-        run: dotnet restore ParakeetPtt.sln --locked-mode
+        run: dotnet restore PttDictation.sln --locked-mode
 
       - name: Test
-        run: dotnet test ParakeetPtt.sln --configuration Release --no-restore
+        run: dotnet test PttDictation.sln --configuration Release --no-restore
 
       - name: Audit NuGet packages
-        run: dotnet list ParakeetPtt.sln package --vulnerable --include-transitive
+        run: dotnet list PttDictation.sln package --vulnerable --include-transitive

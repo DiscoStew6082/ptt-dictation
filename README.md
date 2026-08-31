@@ -1,24 +1,26 @@
-# Parakeet PTT
+# PTT Dictation
 
-[![CI](https://github.com/discostew6082/par-win-ptt/actions/workflows/ci.yml/badge.svg)](https://github.com/discostew6082/par-win-ptt/actions/workflows/ci.yml)
+[![CI](https://github.com/DiscoStew6082/ptt-dictation/actions/workflows/ci.yml/badge.svg)](https://github.com/DiscoStew6082/ptt-dictation/actions/workflows/ci.yml)
 
-Parakeet PTT is a local Windows push-to-talk dictation tray app. Hold Right Ctrl, speak, release, and the app records a temporary 16 kHz mono WAV, transcribes it with `parakeet-cli`, normalizes the transcript, pastes it into the active app, and restores your previous clipboard when possible.
+PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold Right Ctrl, speak, and release: the app records a temporary 16 kHz mono WAV, transcribes it, normalizes the result, pastes it into the active app, and restores the previous clipboard contents when possible.
 
-## 30-second proof
+It is named for the workflow rather than a particular AI vendor or model. The built-in transcription engine currently uses Parakeet models through `parakeet.cpp`, while the application core talks to a replaceable transcription interface.
 
-- **Problem:** Fast dictation should not require a cloud speech service or a browser tab.
-- **System:** Native Windows tray app that captures audio, runs local Parakeet speech-to-text, and pastes the cleaned transcript into the active app.
-- **Boundary:** Audio and transcripts stay local during transcription; first-use runtime/model downloads are explicit third-party asset fetches.
-- **Safety:** Downloaded runtimes and built-in models are checked with pinned SHA-256 hashes, runtime archives are validated before extraction, and temporary recordings are deleted after use.
-- **Proof surface:** Windows CI, locked NuGet restore, package audit, release packaging, SHA-256 checksum, CycloneDX SBOM, and public-build artifact attestation.
-- **Stack:** C#, .NET 10, Windows Forms, WinMM audio capture, low-level keyboard hook, `parakeet.cpp`, GGUF models, GitHub Actions.
+## Overview
 
-**Recruiter signal:** This project demonstrates local-AI product integration, native Windows API work, secure asset handling, and release engineering rather than only model prompting.
+- **Local by design:** Audio and transcripts stay on the machine during transcription. Network access is used only to download selected runtime and model assets.
+- **Native Windows workflow:** Global push-to-talk capture, local inference, transcript review, and paste work from the system tray without requiring a browser tab.
+- **Replaceable AI boundary:** Dictation orchestration depends on `ITranscriber`; the current adapter provisions `parakeet.cpp` and Parakeet GGUF models.
+- **Defensive asset handling:** Built-in downloads use pinned SHA-256 hashes, runtime archives are checked before extraction, and temporary recordings are deleted after use.
+- **Reproducible delivery:** Windows CI uses locked NuGet restore, dependency auditing, release packaging, checksums, a CycloneDX SBOM, and build provenance attestations.
+- **Stack:** C#, .NET 10, Windows Forms, WASAPI, Windows keyboard hooks, `parakeet.cpp`, GGUF models, and GitHub Actions.
 
 ## Features
 
 - Right Ctrl push-to-talk dictation from the system tray.
 - Optional Right Shift toggle dictation mode.
+- Live recording text plus a final corrected preview; click the final preview to edit before paste.
+- Visible first-use runtime/model download progress with cancellable finalization.
 - Local transcription with downloadable Parakeet runtime/model assets.
 - Session-only transcript history.
 - Runtime/model path overrides for local experimentation.
@@ -28,11 +30,12 @@ Parakeet PTT is a local Windows push-to-talk dictation tray app. Hold Right Ctrl
 
 ```mermaid
 flowchart LR
-    A[Right Ctrl push-to-talk<br/>or Right Shift toggle] --> B[WinMM records<br/>16 kHz mono WAV]
+    A[Right Ctrl push-to-talk<br/>or Right Shift toggle] --> B[WASAPI records<br/>16 kHz mono WAV]
     B --> C[parakeet-cli<br/>transcribe --json]
-    C --> D[Normalize transcript]
-    D --> E[Paste into active app<br/>through clipboard]
-    E --> F[Restore prior clipboard<br/>and delete temp WAV]
+    C --> D[Normalize and preview transcript]
+    D --> E[Optional click-to-edit review]
+    E --> F[Restore original target<br/>and paste through clipboard]
+    F --> J[Restore prior clipboard<br/>and delete temp WAV]
     G[First use] --> H[Download runtime/model<br/>under %LOCALAPPDATA%]
     H --> I[Verify SHA-256<br/>and validate archive paths]
     I --> C
@@ -41,19 +44,23 @@ flowchart LR
 Implementation highlights:
 
 - **Native shell UX:** `NotifyIcon` tray app, dark Windows Forms settings/history windows, non-activating topmost status overlay, and audible state feedback.
-- **Audio path:** Direct WinMM capture writes 16-bit, 16 kHz, mono PCM WAV files for `parakeet-cli`.
+- **Audio path:** WASAPI shared-mode capture writes 16-bit, 16 kHz, mono PCM WAV files for `parakeet-cli`.
 - **Runtime management:** CUDA is preferred by default, with an automatic CPU retry path if CUDA transcription fails.
 - **Asset integrity:** Runtime zip files and built-in GGUF models use pinned SHA-256 checks; extracted runtime files are revalidated through a manifest.
 - **Archive hardening:** Runtime zip entries are checked before extraction so archive paths cannot escape the runtime directory.
 - **Operational polish:** Process timeout/cancellation handling, single-instance guard, local transcript corrections with preview, best-effort clipboard restoration, session-only transcript history, and cleanup warnings if a temporary WAV cannot be deleted.
 
+## Transcription engines
+
+The current app downloads and runs `parakeet.cpp` with a supported Parakeet GGUF model. That is an implementation choice, not the product identity. Core recording and dictation flows depend on the `ITranscriber` contract, so another local engine can be added behind the same session, preview, correction, history, and paste workflow.
+
 ## Privacy
 
-Parakeet PTT is designed for local dictation. Temporary recordings are made on the local machine while dictation is active, transcription is performed by a local `parakeet-cli` runtime, and transcript history is session-only. The app does download runtime/model assets on first use or when you choose a model download in settings.
+PTT Dictation is designed for local dictation. Temporary recordings are made on the local machine while dictation is active, transcription is performed by a local `parakeet-cli` runtime, and transcript history is session-only. The app does download runtime/model assets on first use or when you choose a model download in settings.
 
 Trust-boundary notes:
 
-- Paste is implemented through the Windows clipboard. The app temporarily places the transcript on the clipboard, sends paste to the active window, and attempts to restore the previous clipboard contents afterward. Other local apps with clipboard access may observe clipboard contents while paste is in progress.
+- Paste is implemented through the Windows clipboard. The app remembers the foreground window where recording began, restores that target before paste, temporarily places the reviewed transcript on the clipboard, and attempts to restore the previous clipboard contents afterward. Other local apps with clipboard access may observe clipboard contents while paste is in progress.
 - Transcript correction rules are stored locally with settings and are applied before preview, history, and paste.
 - The push-to-talk hotkey uses a low-level Windows keyboard hook so the app can detect Right Ctrl while it is running. The hook is used for hotkey state, not transcript collection.
 - Runtime/model downloads leave the local machine to fetch third-party artifacts; transcription itself runs locally.
@@ -71,25 +78,25 @@ Supported releases target Windows 10/11 on x64. The app targets .NET 10 LTS, whi
 Run the tests:
 
 ```powershell
-dotnet test ParakeetPtt.sln
+dotnet test PttDictation.sln
 ```
 
 Publish a portable Windows x64 build:
 
 ```powershell
-dotnet publish src\ParakeetPtt.App\ParakeetPtt.App.csproj -c Release -r win-x64 --self-contained true -o publish\win-x64
+dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
 ```
 
 Package the published folder as a zip:
 
 ```powershell
-Compress-Archive -Path publish\win-x64\* -DestinationPath publish\ParakeetPtt-win-x64.zip -Force
+Compress-Archive -Path publish\ptt-dictation-win-x64\* -DestinationPath publish\PttDictation-win-x64.zip -Force
 ```
 
 Create a checksum for release verification:
 
 ```powershell
-Get-FileHash publish\ParakeetPtt-win-x64.zip -Algorithm SHA256
+Get-FileHash publish\PttDictation-win-x64.zip -Algorithm SHA256
 ```
 
 ## Try It Locally
@@ -97,16 +104,16 @@ Get-FileHash publish\ParakeetPtt-win-x64.zip -Algorithm SHA256
 Build output is published to:
 
 ```text
-publish\win-x64\ParakeetPtt.App.exe
+publish\ptt-dictation-win-x64\PttDictation.exe
 ```
 
 Portable zip:
 
 ```text
-publish\ParakeetPtt-win-x64.zip
+publish\PttDictation-win-x64.zip
 ```
 
-On first real use the app downloads assets under `%LOCALAPPDATA%\ParakeetPtt`:
+On first real use the app downloads assets under `%LOCALAPPDATA%\PttDictation`:
 
 - `parakeet.cpp` `v0.4.0` Windows CUDA runtime plus the matching CUDA runtime dependency archive.
 - CPU fallback runtime.
@@ -137,7 +144,7 @@ Review the upstream repositories for their own license terms before redistributi
 Every published release should include a SHA-256 checksum for the downloadable zip. Users should compare the published checksum with:
 
 ```powershell
-Get-FileHash .\ParakeetPtt-win-x64.zip -Algorithm SHA256
+Get-FileHash .\PttDictation-win-x64.zip -Algorithm SHA256
 ```
 
 Release builds from this repository publish the zip, checksum, and CycloneDX SBOM. Public tag builds also create a GitHub artifact attestation. Tag builds create a draft GitHub Release so maintainers can review assets before publishing. Recommended additional hardening for broad public distribution includes code signing.
@@ -154,8 +161,8 @@ Release builds from this repository publish the zip, checksum, and CycloneDX SBO
 Run:
 
 ```powershell
-dotnet test ParakeetPtt.sln
-dotnet publish src\ParakeetPtt.App\ParakeetPtt.App.csproj -c Release -r win-x64 --self-contained true -o publish\win-x64
+dotnet test PttDictation.sln
+dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
 ```
 
 Real smoke test performed with `parakeet-v0.4.0-bin-win-cpu-x64.zip` and `tdt_ctc-110m-f16.gguf` against a generated speech WAV:
@@ -183,7 +190,7 @@ Model: `tdt_ctc-110m-f16.gguf` (`f16`)
 Manual microphone validation still needs to confirm end-to-end overlay latency and final paste quality on a real input device:
 
 ```text
-1. Start Parakeet PTT from a local build.
+1. Start PTT Dictation from a local build.
 2. Hold Right Ctrl and speak for at least 8 seconds with a pause near a chunk boundary.
 3. Confirm partial text appears while recording remains active.
 4. Release Right Ctrl and confirm the final pasted transcript is clean.
@@ -204,4 +211,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and pull request gu
 
 ## License
 
-Parakeet PTT is available under the [MIT License](LICENSE).
+PTT Dictation is available under the [MIT License](LICENSE).

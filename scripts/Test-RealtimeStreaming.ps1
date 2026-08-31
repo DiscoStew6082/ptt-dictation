@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $smokeRoot = Join-Path $repoRoot "smoke"
 $wav = Join-Path $smokeRoot "sample.wav"
-$modelCache = Join-Path $env:LOCALAPPDATA "ParakeetPtt\models"
+$modelCache = Join-Path $env:LOCALAPPDATA "PttDictation\models"
 $baselineModel = Join-Path $smokeRoot "tdt_ctc-110m-f16.gguf"
 $streamingModels = @(
     [pscustomobject]@{
@@ -90,7 +90,7 @@ function Get-CliContext {
         Name = "cuda"
         Cli = Join-Path $smokeRoot "runtime\parakeet-v0.4.0-bin-win-cuda-x64\parakeet-cli.exe"
         ExtraPath = @(
-            Join-Path $env:LOCALAPPDATA "ParakeetPtt\runtimes\win-cuda-x64\cudart-parakeet-bin-win-cuda-x64"
+            Join-Path $env:LOCALAPPDATA "PttDictation\runtimes\win-cuda-x64\cudart-parakeet-bin-win-cuda-x64"
         )
     }
 }

@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Parakeet PTT.
+Thanks for helping improve PTT Dictation.
 
 ## Development Setup
 
@@ -15,21 +15,21 @@ The app targets .NET 10 LTS, which is supported until November 14, 2028.
 Run the CI-equivalent checks before opening a pull request:
 
 ```powershell
-dotnet restore ParakeetPtt.sln --locked-mode
-dotnet test ParakeetPtt.sln --configuration Release --no-restore
-dotnet list ParakeetPtt.sln package --vulnerable --include-transitive
+dotnet restore PttDictation.sln --locked-mode
+dotnet test PttDictation.sln --configuration Release --no-restore
+dotnet list PttDictation.sln package --vulnerable --include-transitive
 ```
 
 Create a local release build with:
 
 ```powershell
-dotnet publish src\ParakeetPtt.App\ParakeetPtt.App.csproj -c Release -r win-x64 --self-contained true -o publish\win-x64
+dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
 ```
 
 Before publishing a release, verify the build and record a SHA-256 checksum for the zip:
 
 ```powershell
-Get-FileHash publish\ParakeetPtt-win-x64.zip -Algorithm SHA256
+Get-FileHash publish\PttDictation-win-x64.zip -Algorithm SHA256
 ```
 
 Public releases should also consider code signing, SBOM generation, and provenance attestations.

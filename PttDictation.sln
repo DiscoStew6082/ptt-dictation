@@ -1,0 +1,43 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{3FE9583D-BABC-4464-A074-6CCCF7584A81}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PttDictation.Tests", "tests\PttDictation.Tests\PttDictation.Tests.csproj", "{2C1B9A12-802A-4CF3-B456-17FD0160E2F1}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{25CF16F1-2591-4D07-B108-BE64FEF11D6B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PttDictation.App", "src\PttDictation.App\PttDictation.App.csproj", "{85CD433B-6DF8-4483-8200-121AE953E052}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PttDictation.Core", "src\PttDictation.Core\PttDictation.Core.csproj", "{A7CC5A29-393F-47F6-A0AE-74250B74463E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2C1B9A12-802A-4CF3-B456-17FD0160E2F1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2C1B9A12-802A-4CF3-B456-17FD0160E2F1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2C1B9A12-802A-4CF3-B456-17FD0160E2F1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2C1B9A12-802A-4CF3-B456-17FD0160E2F1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{85CD433B-6DF8-4483-8200-121AE953E052}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{85CD433B-6DF8-4483-8200-121AE953E052}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{85CD433B-6DF8-4483-8200-121AE953E052}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{85CD433B-6DF8-4483-8200-121AE953E052}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A7CC5A29-393F-47F6-A0AE-74250B74463E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A7CC5A29-393F-47F6-A0AE-74250B74463E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A7CC5A29-393F-47F6-A0AE-74250B74463E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A7CC5A29-393F-47F6-A0AE-74250B74463E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{2C1B9A12-802A-4CF3-B456-17FD0160E2F1} = {3FE9583D-BABC-4464-A074-6CCCF7584A81}
+		{85CD433B-6DF8-4483-8200-121AE953E052} = {25CF16F1-2591-4D07-B108-BE64FEF11D6B}
+		{A7CC5A29-393F-47F6-A0AE-74250B74463E} = {25CF16F1-2591-4D07-B108-BE64FEF11D6B}
+	EndGlobalSection
+EndGlobal

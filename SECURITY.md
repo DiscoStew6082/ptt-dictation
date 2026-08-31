@@ -1,6 +1,6 @@
 # Security Policy
 
-Parakeet PTT is a local Windows tray application. It records temporary audio only while dictation is active and uses local runtime/model assets for transcription.
+PTT Dictation is a local Windows tray application. It records temporary audio only while dictation is active and uses local runtime/model assets for transcription.
 
 ## Supported Versions
 
