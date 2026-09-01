@@ -89,6 +89,17 @@ public sealed class AppSettingsStore(string path)
             ?? AppSettings.Default;
     }
 
+    public AppSettings Load()
+    {
+        if (!File.Exists(path))
+        {
+            return AppSettings.Default;
+        }
+
+        return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions)
+            ?? AppSettings.Default;
+    }
+
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(path);

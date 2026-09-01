@@ -8,11 +8,20 @@ internal sealed class LazyAssetTranscriber(
     Func<AppSettings> getSettings,
     Action<AppSettings> updateSettings,
     Action<string> reportStatus,
-    TranscriptionMode? modeOverride = null) : ITranscriber
+    TranscriptionMode? modeOverride = null) : ITranscriber, IWarmableTranscriber, IDisposable
 {
     private readonly SemaphoreSlim _setupLock = new(1, 1);
     private ITranscriber? _inner;
     private TranscriberCacheKey? _cacheKey;
+
+    public async Task WarmUpAsync(CancellationToken cancellationToken)
+    {
+        var inner = await EnsureInnerAsync(cancellationToken);
+        if (inner is IWarmableTranscriber warmable)
+        {
+            await warmable.WarmUpAsync(cancellationToken);
+        }
+    }
 
     public async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
     {
@@ -31,8 +40,7 @@ internal sealed class LazyAssetTranscriber(
             };
             updateSettings(settings);
             await settingsStore.SaveAsync(settings, cancellationToken);
-            _inner = null;
-            _cacheKey = null;
+            ClearInner();
             inner = await EnsureInnerAsync(cancellationToken);
             return await inner.TranscribeAsync(wavPath, cancellationToken);
         }
@@ -81,11 +89,23 @@ internal sealed class LazyAssetTranscriber(
             await settingsStore.SaveAsync(settings, cancellationToken);
 
             var effectiveSettings = EffectiveSettings(settings);
-            var kind = TranscriberSelection.Resolve(effectiveSettings, model);
             var options = new CliTranscriberOptions(runtimePath, modelPath, TimeSpan.FromMinutes(5));
-            _inner = kind == TranscriberKind.Streaming
-                ? new ParakeetStreamingCliTranscriber(options, new SystemProcessRunner())
-                : new ParakeetCliTranscriber(options, new SystemProcessRunner());
+            var runtimeDirectory = Path.GetDirectoryName(runtimePath);
+            var serverPath = runtimeDirectory is null
+                ? null
+                : Path.Combine(runtimeDirectory, "parakeet-server.exe");
+            ClearInner();
+            if (serverPath is not null && File.Exists(serverPath))
+            {
+                _inner = new PersistentParakeetServerTranscriber(options, serverPath);
+            }
+            else
+            {
+                var kind = TranscriberSelection.Resolve(effectiveSettings, model);
+                _inner = kind == TranscriberKind.Streaming
+                    ? new ParakeetStreamingCliTranscriber(options, new SystemProcessRunner())
+                    : new ParakeetCliTranscriber(options, new SystemProcessRunner());
+            }
             _cacheKey = new TranscriberCacheKey(
                 effectiveSettings.SelectedModelId,
                 effectiveSettings.TranscriptionMode,
@@ -98,6 +118,22 @@ internal sealed class LazyAssetTranscriber(
         {
             _setupLock.Release();
         }
+    }
+
+    public void Dispose()
+    {
+        ClearInner();
+    }
+
+    private void ClearInner()
+    {
+        if (_inner is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
+        _inner = null;
+        _cacheKey = null;
     }
 
     private AppSettings EffectiveSettings(AppSettings settings)

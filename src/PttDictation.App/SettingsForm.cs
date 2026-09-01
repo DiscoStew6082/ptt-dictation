@@ -68,11 +68,12 @@ internal sealed class SettingsForm : Form
 
         DarkTheme.Apply(this);
         BuildLayout();
-        Shown += (_, _) =>
+        HandleCreated += (_, _) =>
         {
             ApplyInitialWindowSize();
             ApplyResponsiveLayout();
         };
+        Shown += (_, _) => ApplyResponsiveLayout();
         DpiChanged += (_, _) => BeginInvoke(ApplyResponsiveLayout);
         _contentHost.ClientSizeChanged += (_, _) => ApplyResponsiveLayout();
     }
@@ -139,7 +140,7 @@ internal sealed class SettingsForm : Form
         {
             Text = "PTT DICTATION",
             AutoSize = true,
-            Font = new Font("Segoe UI", 8F, FontStyle.Bold, GraphicsUnit.Point),
+            Font = new Font("Segoe UI Variable Text", 8F, FontStyle.Bold, GraphicsUnit.Point),
             ForeColor = DarkTheme.Accent,
             BackColor = Color.Transparent,
             Margin = new Padding(0, 0, 0, 3)
@@ -148,7 +149,7 @@ internal sealed class SettingsForm : Form
         {
             Text = "Settings",
             AutoSize = true,
-            Font = new Font("Segoe UI", 18F, FontStyle.Bold, GraphicsUnit.Point),
+            Font = new Font("Segoe UI Variable Display", 18F, FontStyle.Bold, GraphicsUnit.Point),
             ForeColor = DarkTheme.Text,
             BackColor = Color.Transparent,
             Margin = new Padding(0, 0, 0, 8)
@@ -328,7 +329,7 @@ internal sealed class SettingsForm : Form
         {
             Text = title,
             AutoSize = true,
-            Font = new Font("Segoe UI", 11F, FontStyle.Bold, GraphicsUnit.Point),
+            Font = new Font("Segoe UI Variable Display", 11F, FontStyle.Bold, GraphicsUnit.Point),
             ForeColor = DarkTheme.Text,
             BackColor = Color.Transparent,
             Margin = new Padding(0, 0, 0, 3)

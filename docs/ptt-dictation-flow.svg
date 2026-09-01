@@ -52,9 +52,9 @@
     <rect class="step" x="54" y="434" width="612" height="122" rx="16"/>
     <circle class="number" cx="100" cy="495" r="23"/>
     <text class="number-text" x="100" y="495">4</text>
-    <text class="title" x="140" y="480">Normalize and preview</text>
+    <text class="title" x="140" y="480">Normalize and paste</text>
     <text class="detail" x="140" y="511">Apply saved corrections</text>
-    <text class="detail" x="140" y="538">Click the preview to edit if needed</text>
+    <text class="detail" x="140" y="538">One card tracks recording through processing</text>
   </g>
 
   <g>

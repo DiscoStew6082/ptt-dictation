@@ -9,6 +9,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly SessionHistory _history = new();
     private readonly AppSettingsStore _settingsStore = new(AppPaths.SettingsPath);
     private readonly WasapiAudioRecorder _recorder;
+    private readonly LazyAssetTranscriber _transcriber;
     private readonly DictationController _dictationController;
     private readonly Icon _trayIcon;
     private readonly NotifyIcon _notifyIcon;
@@ -24,38 +25,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _exiting;
     private bool _acceptedRecordingStart;
     private bool _toggleRecordingActive;
-    private bool _settingsOpening;
     private bool _listeningPreviewActive;
-    private string? _lastTranscriptPreview;
 
-    public TrayApplicationContext(bool openSettingsOnStart = false)
+    public TrayApplicationContext()
     {
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         _recorder = new WasapiAudioRecorder(AppPaths.RootDirectory);
         _recorder.AudioLevelChanged += OnAudioLevelChanged;
-        var finalTranscriber = new LazyAssetTranscriber(
+        _transcriber = new LazyAssetTranscriber(
             AppPaths.RootDirectory,
             _settingsStore,
             () => _settings,
             settings => _settings = settings,
             ReportTranscriberStatus);
-        var previewTranscriber = new LazyAssetTranscriber(
-            AppPaths.RootDirectory,
-            _settingsStore,
-            () => _settings,
-            settings => _settings = settings,
-            _ => { },
-            TranscriptionMode.Batch);
         _dictationController = new DictationController(
-            new ChunkedTranscribingDictationSessionFactory(_recorder, previewTranscriber, finalTranscriber),
+            new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, _transcriber),
             new ClipboardPaster(),
             _history,
-            ShowTranscriptPreview,
-            ShowCleanupWarning,
-            OnTranscriptUpdate,
-            () => _settings.TranscriptCorrections,
-            cancellationToken => Task.Delay(650, cancellationToken),
-            ReviewTranscriptBeforePasteAsync);
+            finalTranscriptReady: _statusOverlay.ShowProcessingTranscript,
+            cleanupWarningReady: ShowCleanupWarning,
+            transcriptUpdateReady: OnTranscriptUpdate,
+            getTranscriptCorrections: () => _settings.TranscriptCorrections);
 
         _trayIcon = TrayIconFactory.Create();
         _notifyIcon = new NotifyIcon
@@ -78,13 +68,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _hotkeySource.Pressed += () => PostToUi(OnHotkeyPressedAsync);
         _hotkeySource.Released += () => PostToUi(OnHotkeyReleasedAsync);
         _hotkeySource.ToggleRequested += () => PostToUi(OnToggleRequestedAsync);
-        _statusOverlay.DictationCancelRequested += CancelCurrentDictation;
         _hotkeySource.Start();
-        _ = LoadSettingsAsync();
-        if (openSettingsOnStart)
-        {
-            _uiContext.Post(_ => ShowSettings(), null);
-        }
+        LoadSettingsAtStartup();
+    }
+
+    internal void OpenSettings()
+    {
+        ShowSettings();
     }
 
     private void PostToUi(Func<Task> action)
@@ -130,14 +120,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return menu;
     }
 
-    private async Task LoadSettingsAsync()
+    private void LoadSettingsAtStartup()
     {
         try
         {
-            ApplySettings(await _settingsStore.LoadAsync(_lifetime.Token));
-        }
-        catch (OperationCanceledException) when (_exiting)
-        {
+            ApplySettings(_settingsStore.Load());
         }
         catch (Exception ex)
         {
@@ -147,19 +134,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowSettings()
     {
-        if (_settingsOpening)
-        {
-            return;
-        }
-
         if (_settingsForm is { Visible: true })
         {
             _settingsForm.Activate();
+            _settingsForm.BringToFront();
             return;
         }
 
         _settingsForm ??= CreateSettingsForm();
-        _ = ShowSettingsAsync(_settingsForm);
+        PresentSettingsForm(_settingsForm, _settings);
     }
 
     private SettingsForm CreateSettingsForm()
@@ -174,35 +157,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return form;
     }
 
-    private async Task ShowSettingsAsync(SettingsForm form)
+    internal static void PresentSettingsForm(SettingsForm form, AppSettings settings)
     {
-        _settingsOpening = true;
-        try
-        {
-            await form.LoadSettingsAsync(_lifetime.Token);
-            if (!_exiting)
-            {
-                form.Show();
-                form.Activate();
-            }
-        }
-        catch (OperationCanceledException) when (_exiting)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (!_exiting)
-            {
-                ShowTrayNotification("Settings were not loaded", ex.Message, ToolTipIcon.Warning);
-                form.UseSettings(AppSettings.Default);
-                form.Show();
-                form.Activate();
-            }
-        }
-        finally
-        {
-            _settingsOpening = false;
-        }
+        form.UseSettings(settings);
+        form.Show();
+        form.Activate();
+        form.BringToFront();
     }
 
     private void ShowHistory()
@@ -296,9 +256,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _cancelDictationItem.Enabled = true;
         }
 
-        _lastTranscriptPreview = null;
+        _listeningPreviewActive = false;
+        _statusOverlay.ShowProcessing();
         PlayStatusSound(StatusSound.Transcribing);
-        ShowStatus(DictationStatusCatalog.Transcribing, ToolTipIcon.Info);
         try
         {
             var outcome = await _dictationController.HandleHotkeyUpAsync(operation.Token);
@@ -306,18 +266,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (outcome == DictationOutcome.Pasted)
             {
                 PlayStatusSound(StatusSound.Done);
-                var status = _lastTranscriptPreview is { Length: > 0 }
-                    ? DictationStatusCatalog.PastedTranscript(_lastTranscriptPreview)
-                    : DictationStatusCatalog.Pasted;
-                ShowStatus(status, ToolTipIcon.Info, notifyMessage: DictationStatusCatalog.Pasted.Message);
+                _statusOverlay.HideRecording();
             }
             else if (outcome == DictationOutcome.EmptyTranscript)
             {
                 ShowStatus(DictationStatusCatalog.EmptyTranscript, ToolTipIcon.Info);
-            }
-            else if (outcome == DictationOutcome.Cancelled)
-            {
-                ShowStatus(DictationStatusCatalog.PasteCancelled, ToolTipIcon.Info);
             }
         }
         catch (OperationCanceledException) when (_exiting)
@@ -368,7 +321,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
 
-            ShowStatus(DictationStatusCatalog.PreparingTranscription(message), ToolTipIcon.Info, notify: false);
+            _statusOverlay.ShowProcessingDetail(message);
         }, null);
     }
 
@@ -390,45 +343,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon.BalloonTipText = message;
         _notifyIcon.BalloonTipIcon = icon;
         _notifyIcon.ShowBalloonTip(2500);
-    }
-
-    private void ShowTranscriptPreview(string transcript)
-    {
-        _lastTranscriptPreview = transcript;
-        ShowStatus(DictationStatusCatalog.TranscriptPreview(transcript), ToolTipIcon.Info, notify: false);
-        _statusOverlay.Update();
-    }
-
-    private async Task<string?> ReviewTranscriptBeforePasteAsync(
-        string transcript,
-        CancellationToken cancellationToken)
-    {
-        var editRequested = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        void RequestEdit() => editRequested.TrySetResult();
-
-        _statusOverlay.TranscriptEditRequested += RequestEdit;
-        try
-        {
-            var automaticPasteDelay = Task.Delay(3000, cancellationToken);
-            var completed = await Task.WhenAny(automaticPasteDelay, editRequested.Task);
-            if (completed == automaticPasteDelay)
-            {
-                await automaticPasteDelay;
-                return transcript;
-            }
-
-            _statusOverlay.Hide();
-            using var review = new TranscriptReviewForm(transcript);
-            return review.ShowDialog() == DialogResult.OK
-                ? review.Transcript
-                : null;
-        }
-        finally
-        {
-            _statusOverlay.TranscriptEditRequested -= RequestEdit;
-        }
     }
 
     private void OnTranscriptUpdate(TranscriptUpdate update)
@@ -542,6 +456,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _statusOverlay.Dispose();
         _settingsForm?.Dispose();
         _historyForm?.Dispose();
+        _transcriber.Dispose();
         _ = Task.Run(_recorder.Dispose);
         _lifetime.Dispose();
         ExitThread();

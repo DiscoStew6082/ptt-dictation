@@ -9,7 +9,7 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 ## Overview
 
 - **Local by design:** Audio and transcripts stay on the machine during transcription. Network access is used only to download selected runtime and model assets.
-- **Native Windows workflow:** Global push-to-talk capture, local inference, transcript review, and paste work from the system tray without requiring a browser tab.
+- **Native Windows workflow:** Global push-to-talk capture, local inference, live transcript display, and automatic paste work from the system tray without requiring a browser tab.
 - **Replaceable AI boundary:** Dictation orchestration depends on `ITranscriber`; the current adapter provisions `parakeet.cpp` and Parakeet GGUF models.
 - **Defensive asset handling:** Built-in downloads use pinned SHA-256 hashes, runtime archives are checked before extraction, and temporary recordings are deleted after use.
 - **Reproducible delivery:** Windows CI uses locked NuGet restore, dependency auditing, release packaging, checksums, a CycloneDX SBOM, and build provenance attestations.
@@ -18,7 +18,7 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 ## Features
 
 - Independently configurable hold-to-talk and toggle-to-talk keys.
-- Live recording text plus a final corrected preview; click the final preview to edit before paste.
+- Complete live recording text on one continuous overlay that tracks processing in place and disappears only after paste completes.
 - Visible first-use runtime/model download progress with cancellable finalization.
 - Local transcription with downloadable Parakeet runtime/model assets.
 - Session-only transcript history.
@@ -27,7 +27,7 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 
 ## How it works
 
-![PTT Dictation workflow: hold the selected key and speak, capture audio locally, transcribe on your PC, normalize and preview, paste into the original app, then restore the clipboard and delete temporary audio.](docs/ptt-dictation-flow.svg)
+![PTT Dictation workflow: hold the selected key and speak, capture audio locally, transcribe on your PC, apply saved corrections, paste into the original app, then restore the clipboard and delete temporary audio.](docs/ptt-dictation-flow.svg)
 
 Implementation highlights:
 
@@ -40,7 +40,7 @@ Implementation highlights:
 
 ## Transcription engines
 
-The current app downloads and runs `parakeet.cpp` with a supported Parakeet GGUF model. That is an implementation choice, not the product identity. Core recording and dictation flows depend on the `ITranscriber` contract, so another local engine can be added behind the same session, preview, correction, history, and paste workflow.
+The current app downloads and runs `parakeet.cpp` with a supported Parakeet GGUF model. That is an implementation choice, not the product identity. Core recording and dictation flows depend on the `ITranscriber` contract, so another local engine can be added behind the same session, live transcript, correction, history, and paste workflow.
 
 ## Start with the interesting code
 
@@ -54,8 +54,8 @@ PTT Dictation is designed for local dictation. Temporary recordings are made on 
 
 Trust-boundary notes:
 
-- Paste is implemented through the Windows clipboard. The app remembers the foreground window where recording began, restores that target before paste, temporarily places the reviewed transcript on the clipboard, and attempts to restore the previous clipboard contents afterward. Other local apps with clipboard access may observe clipboard contents while paste is in progress.
-- Transcript correction rules are stored locally with settings and are applied before preview, history, and paste.
+- Paste is implemented through the Windows clipboard. The app remembers the foreground window where recording began, restores that target before paste, temporarily places the corrected transcript on the clipboard, and attempts to restore the previous clipboard contents afterward. Other local apps with clipboard access may observe clipboard contents while paste is in progress.
+- Transcript correction rules are stored locally with settings and are applied before history and paste.
 - The configurable hold and toggle keys use a low-level Windows keyboard hook. The hook consumes only the selected keys and is used for hotkey state, not transcript collection.
 - Runtime/model downloads leave the local machine to fetch third-party artifacts; transcription itself runs locally.
 
@@ -90,12 +90,12 @@ Expect first-run downloads to be hundreds of MB for the default model and runtim
 
 Open the tray menu for settings, model downloads, transcript correction preview, and session-only transcript history.
 
-To try native streaming, open settings and select one of the experimental realtime models:
+To try the low-latency realtime display, open settings and select one of the experimental realtime models:
 
 - `Parakeet Realtime EOU 120M Q8_0`
 - `Parakeet Realtime EOU 120M F16`
 
-Leave transcription mode on `Auto` to use native `parakeet-cli --stream` for streaming-capable models and the existing batch/chunked path for batch models. Choose `Batch` or `Streaming` to force a mode while testing.
+Leave transcription mode on `Auto`. The app warms one persistent local `parakeet-server` process when recording begins, reuses the loaded model for overlapping live updates, and sends the complete recording through that same loaded model after release. Realtime EOU models are continued after every pause marker until the entire recording has been consumed. This avoids both first-pause truncation and launching a separate CLI process for every update. If a downloaded runtime does not include the local server, the app falls back to the selected batch or `parakeet-cli --stream` mode.
 
 ## Downloaded Assets
 

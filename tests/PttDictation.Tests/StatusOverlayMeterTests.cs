@@ -32,22 +32,6 @@ public sealed class StatusOverlayMeterTests
         });
     }
 
-    [TestMethod]
-    public void TranscribingOverlayClickRequestsCancellation()
-    {
-        RunOnStaThread(() =>
-        {
-            using var overlay = new StatusOverlayForm();
-            var requestCount = 0;
-            overlay.DictationCancelRequested += () => requestCount++;
-            overlay.ApplyStatusForTest(DictationStatusCatalog.Transcribing);
-
-            overlay.RequestDictationCancelForTest();
-
-            Assert.AreEqual(1, requestCount);
-        });
-    }
-
     private static void RunOnStaThread(Action action)
     {
         Exception? exception = null;

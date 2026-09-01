@@ -42,60 +42,71 @@ internal sealed class SessionHistoryForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 3,
-            Padding = new Padding(18),
+            Padding = new Padding(22, 20, 22, 18),
             BackColor = DarkTheme.Background
         };
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
 
         var title = new Label
         {
             Text = "Session History",
             AutoSize = true,
-            Font = DarkTheme.HeaderFont,
+            Font = new Font("Segoe UI Variable Display", 15F, FontStyle.Bold, GraphicsUnit.Point),
             ForeColor = DarkTheme.Text,
             BackColor = Color.Transparent,
-            Margin = new Padding(0, 0, 0, 12)
+            Margin = new Padding(0, 0, 0, 16)
         };
 
         _items.Dock = DockStyle.Fill;
         _items.BorderStyle = BorderStyle.FixedSingle;
         _items.Multiline = true;
         _items.ReadOnly = true;
+        _items.TabStop = false;
         _items.WordWrap = true;
         _items.ScrollBars = ScrollBars.Vertical;
         _items.BackColor = DarkTheme.SurfaceRaised;
         _items.ForeColor = DarkTheme.Text;
+        _items.Font = new Font("Segoe UI Variable Text", 10F, FontStyle.Regular, GraphicsUnit.Point);
+        _items.Margin = Padding.Empty;
+        DarkTheme.ApplyNativeDarkTheme(_items);
 
         var closeButton = DarkTheme.Button("Close");
-        closeButton.Width = 96;
-        closeButton.Anchor = AnchorStyles.Right;
+        closeButton.Size = new Size(104, 36);
+        closeButton.BackColor = DarkTheme.Accent;
+        closeButton.FlatAppearance.BorderColor = DarkTheme.Accent;
+        closeButton.Font = new Font("Segoe UI Variable Text", 9.5F, FontStyle.Regular, GraphicsUnit.Point);
+        closeButton.Margin = Padding.Empty;
         closeButton.Click += (_, _) => Hide();
 
         var quitButton = DarkTheme.Button("Quit App");
-        quitButton.Width = 96;
-        quitButton.BackColor = DarkTheme.Danger;
-        quitButton.Anchor = AnchorStyles.Right;
+        quitButton.Size = new Size(104, 36);
+        quitButton.BackColor = DarkTheme.SurfaceRaised;
+        quitButton.ForeColor = DarkTheme.Danger;
+        quitButton.FlatAppearance.BorderColor = DarkTheme.Danger;
+        quitButton.Font = new Font("Segoe UI Variable Text", 9.5F, FontStyle.Regular, GraphicsUnit.Point);
+        quitButton.Margin = new Padding(0, 0, 10, 0);
         quitButton.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
 
         var buttons = new FlowLayoutPanel
         {
-            Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
             WrapContents = false,
-            BackColor = DarkTheme.Background
+            BackColor = DarkTheme.Background,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 16, 0, 0)
         };
-        buttons.Controls.Add(quitButton);
         buttons.Controls.Add(closeButton);
+        buttons.Controls.Add(quitButton);
 
         layout.Controls.Add(title, 0, 0);
         layout.Controls.Add(_items, 0, 1);
         layout.Controls.Add(buttons, 0, 2);
 
         Controls.Add(layout);
+        CancelButton = closeButton;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

@@ -7,6 +7,62 @@ namespace PttDictation.Tests;
 public sealed class AppBehaviorTests
 {
     [TestMethod]
+    public void PersistentServerResponsePreservesWordsAndRemovesEndOfUtteranceToken()
+    {
+        const string json = """
+            {
+              "text": "count one two three<EOU>",
+              "words": [
+                { "word": "count", "start": 0.16, "end": 0.40, "conf": 0.98 },
+                { "word": "three<EOU>", "start": 0.80, "end": 1.20, "conf": 0.91 }
+              ]
+            }
+            """;
+
+        var result = PersistentParakeetServerTranscriber.ParseResponse(json, TimeSpan.FromMilliseconds(140));
+
+        Assert.AreEqual("count one two three", result.Text);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(140), result.InferenceTime);
+        Assert.AreEqual(2, result.Words.Count);
+        Assert.AreEqual("three", result.Words[1].Text);
+        Assert.AreEqual(TimeSpan.FromSeconds(0.80), result.Words[1].Start);
+        Assert.AreEqual(0.91, result.Words[1].Confidence);
+    }
+
+    [TestMethod]
+    public async Task PersistentServerContinuesAfterEveryEndOfUtterance()
+    {
+        var responses = new Queue<PersistentParakeetServerTranscriber.ServerTranscriptSegment>(
+        [
+            Segment("one", TimeSpan.FromSeconds(2)),
+            Segment("two", TimeSpan.FromSeconds(2)),
+            Segment("three", null)
+        ]);
+        var submittedLengths = new List<int>();
+
+        var result = await PersistentParakeetServerTranscriber.TranscribeAllUtterancesAsync(
+            CreatePcmWave(TimeSpan.FromSeconds(6)),
+            (wav, _) =>
+            {
+                submittedLengths.Add(wav.Length);
+                return Task.FromResult(responses.Dequeue());
+            },
+            CancellationToken.None);
+
+        Assert.AreEqual("one two three", result.Text);
+        CollectionAssert.AreEqual(
+            new[] { "one", "two", "three" },
+            result.Words.Select(word => word.Text).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { 0.1, 2.1, 4.1 },
+            result.Words.Select(word => word.Start.TotalSeconds).ToArray());
+        Assert.AreEqual(3, submittedLengths.Count);
+        Assert.IsTrue(submittedLengths[0] > submittedLengths[1]);
+        Assert.IsTrue(submittedLengths[1] > submittedLengths[2]);
+        Assert.AreEqual(0, responses.Count);
+    }
+
+    [TestMethod]
     public void StatusOverlayUsesNonActivatingTopmostWindow()
     {
         RunOnStaThread(() =>
@@ -74,6 +130,29 @@ public sealed class AppBehaviorTests
 
             Assert.AreEqual(ModelRegistry.DefaultModelId, settings.SelectedModelId);
             Assert.AreEqual(TranscriptionMode.Auto, settings.TranscriptionMode);
+        });
+    }
+
+    [TestMethod]
+    public void TrayPresentsSettingsImmediatelyFromCurrentSettings()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+            var settings = AppSettings.Default with
+            {
+                SelectedModelId = "realtime-eou-120m-v1-f16",
+                HoldHotkey = DictationHotkey.RightControl,
+                ToggleHotkey = DictationHotkey.RightShift
+            };
+
+            TrayApplicationContext.PresentSettingsForm(form, settings);
+
+            Assert.IsTrue(form.Visible);
+            Assert.AreEqual("realtime-eou-120m-v1-f16", form.SelectedModelIdForTest);
+            Assert.AreEqual(DictationHotkey.RightControl, form.SelectedHoldHotkeyForTest);
+            Assert.AreEqual(DictationHotkey.RightShift, form.SelectedToggleHotkeyForTest);
         });
     }
 
@@ -395,16 +474,16 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
-    public void StatusOverlayAutoHidesCompletionStatesWithoutShowingWindow()
+    public void StatusOverlayAutoHidesExceptionalCompletionStatesWithoutShowingWindow()
     {
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
 
-            overlay.ApplyStatusForTest(DictationStatusCatalog.Pasted);
+            overlay.ApplyStatusForTest(DictationStatusCatalog.EmptyTranscript);
 
-            Assert.AreEqual("Pasted", overlay.TitleTextForTest);
-            Assert.AreEqual("Transcript pasted into the active app.", overlay.MessageTextForTest);
+            Assert.AreEqual("No speech detected", overlay.TitleTextForTest);
+            Assert.AreEqual("Nothing was pasted.", overlay.MessageTextForTest);
             Assert.IsTrue(overlay.AutoHideTimerEnabledForTest);
             Assert.IsFalse(overlay.Visible);
             Assert.AreEqual(StatusOverlayForm.DefaultSizeForTest, overlay.Size);
@@ -429,7 +508,7 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
-    public void StatusOverlayReservesListeningTextAboveLargeActivityMeter()
+    public void StatusOverlayReservesRoomForCompleteTranscriptAboveActivityMeter()
     {
         RunOnStaThread(() =>
         {
@@ -439,23 +518,27 @@ public sealed class AppBehaviorTests
 
             Assert.AreEqual(560, StatusOverlayForm.ListeningSizeForTest.Width);
             Assert.AreEqual(StatusOverlayForm.ListeningSizeForTest, overlay.Size);
-            Assert.AreEqual(194, overlay.ActivityMeterHeightForTest);
+            Assert.AreEqual(134, overlay.ActivityMeterHeightForTest);
             Assert.IsTrue(overlay.TextPanelHeightForTest >= overlay.TitlePreferredHeightForTest + overlay.MessagePreferredHeightForTest + 20);
             Assert.IsTrue(overlay.ActivityMeterTopForTest >= overlay.TextPanelBottomForTest);
         });
     }
 
     [TestMethod]
-    public void StatusOverlayReturnsToCompactSizeAfterListening()
+    public void StatusOverlayCanHideAfterPasteCompletes()
     {
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
+            overlay.Show();
+            Assert.IsTrue(overlay.Visible);
 
-            overlay.ApplyStatusForTest(DictationStatusCatalog.Transcribing);
+            overlay.HideRecording();
 
-            Assert.AreEqual(StatusOverlayForm.DefaultSizeForTest, overlay.Size);
+            Assert.IsFalse(overlay.Visible);
+            Assert.IsFalse(overlay.LiveActivityTimerEnabledForTest);
+            Assert.IsFalse(overlay.ActivityMeterVisibleForTest);
         });
     }
 
@@ -541,20 +624,7 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
-    public void LiveTranscriptPreviewKeepsNewestWordsVisible()
-    {
-        const string transcript = "The beginning is no longer useful but these newest words must stay visible";
-
-        var preview = LiveTranscriptPreviewFormatter.LatestWords(transcript, maximumCharacters: 38);
-
-        StringAssert.StartsWith(preview, "…");
-        StringAssert.EndsWith(preview, "newest words must stay visible");
-        Assert.IsFalse(preview.Contains("beginning", StringComparison.Ordinal));
-        Assert.IsTrue(preview.Length <= 38);
-    }
-
-    [TestMethod]
-    public void StatusOverlayShowsNewestPartialWordsWithoutStoppingRecording()
+    public void StatusOverlayShowsTheCompletePartialTranscriptWithoutStoppingRecording()
     {
         RunOnStaThread(() =>
         {
@@ -562,70 +632,68 @@ public sealed class AppBehaviorTests
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening, ListeningTriggerMode.Toggle);
 
             overlay.ApplyListeningTranscriptForTest(
-                "The beginning is old and should disappear while the final spoken words remain visible",
+                "The beginning and every word in the middle should remain visible while the final spoken words are still arriving on screen",
                 ListeningTriggerMode.Toggle);
 
-            StringAssert.Contains(overlay.MessageTextForTest, "final spoken words remain visible");
-            Assert.IsFalse(overlay.MessageTextForTest.Contains("The beginning", StringComparison.Ordinal));
-            Assert.IsTrue(overlay.LiveActivityTimerEnabledForTest);
-        });
-    }
-
-    [TestMethod]
-    public void FinalTranscriptPreviewShowsTheCompleteCorrectedText()
-    {
-        RunOnStaThread(() =>
-        {
-            using var overlay = new StatusOverlayForm();
-            var transcript = string.Join(' ', Enumerable.Repeat(
-                "The complete corrected transcript stays visible before paste.",
-                8));
-
-            overlay.ApplyStatusForTest(DictationStatusCatalog.TranscriptPreview(transcript));
-
-            Assert.AreEqual(
-                "Corrected transcript — click to edit · pasting in 3 seconds",
-                overlay.TitleTextForTest);
-            Assert.AreEqual(transcript, overlay.MessageTextForTest);
-            Assert.AreEqual(StatusOverlayForm.FinalPreviewSizeForTest, overlay.Size);
+            StringAssert.Contains(overlay.MessageTextForTest, "The beginning");
+            StringAssert.Contains(overlay.MessageTextForTest, "every word in the middle");
+            StringAssert.Contains(overlay.MessageTextForTest, "final spoken words are still arriving on screen");
             Assert.IsFalse(overlay.MessageAutoEllipsisForTest);
             Assert.IsTrue(overlay.MessageHeightForTest >= overlay.MessagePreferredHeightForTest);
+            Assert.IsTrue(overlay.LiveActivityTimerEnabledForTest);
+
+            SaveOverlayPreviewIfRequested(overlay, "PTT_RECORDING_PREVIEW_PATH");
         });
     }
 
     [TestMethod]
-    public void FinalTranscriptPreviewCanRequestEditing()
+    public void StatusOverlayTracksProcessingInPlaceUntilPasteCompletes()
     {
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
-            var requestCount = 0;
-            overlay.TranscriptEditRequested += () => requestCount++;
-            overlay.ApplyStatusForTest(DictationStatusCatalog.TranscriptPreview("Fix contacts to context."));
+            overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
+            overlay.ApplyListeningTranscriptForTest(
+                "The full accumulated transcript remains visible while final transcription finishes.",
+                ListeningTriggerMode.PushToTalk);
+            overlay.Show();
+            var recordingSize = overlay.Size;
 
-            overlay.RequestTranscriptEditForTest();
+            overlay.ShowProcessing();
 
-            Assert.AreEqual(1, requestCount);
+            Assert.IsTrue(overlay.Visible);
+            Assert.AreEqual(recordingSize, overlay.Size);
+            Assert.AreEqual("Processing", overlay.TitleTextForTest);
+            StringAssert.Contains(overlay.MessageTextForTest, "Transcribing and preparing to paste");
+            StringAssert.Contains(overlay.MessageTextForTest, "full accumulated transcript remains visible");
+            Assert.IsFalse(overlay.LiveActivityTimerEnabledForTest);
+
+            overlay.ShowProcessingDetail("Loading the selected model locally.");
+
+            StringAssert.Contains(overlay.MessageTextForTest, "Loading the selected model locally.");
+            StringAssert.Contains(overlay.MessageTextForTest, "full accumulated transcript remains visible");
+
+            SaveOverlayPreviewIfRequested(overlay, "PTT_PROCESSING_PREVIEW_PATH");
         });
     }
 
     [TestMethod]
-    public void TranscriptReviewFormShowsTheCompleteEditableTranscript()
+    public void BackgroundModelWarmUpDoesNotReplaceTheRecordingTranscript()
     {
         RunOnStaThread(() =>
         {
-            var transcript = string.Join(' ', Enumerable.Repeat(
-                "Context and contacts remain editable.",
-                20));
-            using var review = new TranscriptReviewForm(transcript);
+            using var overlay = new StatusOverlayForm();
+            overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
+            overlay.ApplyListeningTranscriptForTest(
+                "The recording transcript must stay visible during model warmup.",
+                ListeningTriggerMode.PushToTalk);
+            var recordingMessage = overlay.MessageTextForTest;
+            overlay.Show();
 
-            Assert.AreEqual(transcript, review.Transcript);
-            Assert.IsTrue(review.EditorForTest.Multiline);
-            Assert.IsTrue(review.EditorForTest.WordWrap);
-            Assert.AreEqual(ScrollBars.Vertical, review.EditorForTest.ScrollBars);
-            Assert.AreEqual("Paste corrected text", review.PasteButtonForTest.Text);
-            Assert.AreEqual(DialogResult.OK, review.PasteButtonForTest.DialogResult);
-            Assert.AreEqual(DialogResult.Cancel, review.CancelButtonForTest.DialogResult);
+            overlay.ShowProcessingDetail("Loading the selected model locally.");
+
+            Assert.AreEqual("Recording 00:00", overlay.TitleTextForTest);
+            Assert.AreEqual(recordingMessage, overlay.MessageTextForTest);
         });
     }
 
@@ -766,7 +834,7 @@ public sealed class AppBehaviorTests
             Assert.IsTrue(overlay.ActivityMeterVisibleForTest);
             StringAssert.Contains(overlay.MessageTextForTest, "Recording 00:00");
 
-            overlay.ApplyStatusForTest(DictationStatusCatalog.Transcribing);
+            overlay.HideRecording();
 
             Assert.IsFalse(overlay.LiveActivityTimerEnabledForTest);
             Assert.IsFalse(overlay.ActivityMeterVisibleForTest);
@@ -831,7 +899,7 @@ public sealed class AppBehaviorTests
         {
             using var overlay = new StatusOverlayForm();
 
-            overlay.ApplyStatusForTest(DictationStatusCatalog.Transcribing);
+            overlay.HideRecording();
             overlay.UpdateActivityLevelForTest(0.75);
 
             Assert.AreEqual(0, overlay.LatestActivityLevelForTest);
@@ -847,7 +915,7 @@ public sealed class AppBehaviorTests
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
             overlay.UpdateActivityLevelForTest(0.75);
 
-            overlay.ApplyStatusForTest(DictationStatusCatalog.Transcribing);
+            overlay.HideRecording();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
 
             Assert.AreEqual(0, overlay.LatestActivityLevelForTest);
@@ -908,9 +976,32 @@ public sealed class AppBehaviorTests
 
             Assert.IsTrue(historyText.WordWrap);
             Assert.AreEqual(ScrollBars.Vertical, historyText.ScrollBars);
+            Assert.IsFalse(historyText.TabStop);
+            Assert.AreEqual(DarkTheme.SurfaceRaised, historyText.BackColor);
             StringAssert.Contains(historyText.Text, "Why did it take longer on Kuda than CBU and CUDA?");
+            Assert.AreEqual(closeButton.Size, quitButton.Size);
+            Assert.AreEqual(ContentAlignment.MiddleCenter, closeButton.TextAlign);
+            Assert.AreEqual(ContentAlignment.MiddleCenter, quitButton.TextAlign);
+            Assert.IsInstanceOfType<DarkButton>(closeButton);
+            Assert.IsInstanceOfType<DarkButton>(quitButton);
+            Assert.AreEqual(Padding.Empty, closeButton.Padding);
+            Assert.AreEqual(Padding.Empty, quitButton.Padding);
+            Assert.AreEqual(DarkTheme.Accent, closeButton.BackColor);
+            Assert.AreEqual(DarkTheme.Danger, quitButton.ForeColor);
+            Assert.AreEqual(DarkTheme.Danger, quitButton.FlatAppearance.BorderColor);
             AssertControlInsideClient(form, closeButton);
             AssertControlInsideClient(form, quitButton);
+
+            var previewPath = Environment.GetEnvironmentVariable("PARAKEET_HISTORY_PREVIEW_PATH");
+            if (!string.IsNullOrWhiteSpace(previewPath))
+            {
+                form.Show();
+                Application.DoEvents();
+                using var preview = new Bitmap(form.Width, form.Height);
+                form.DrawToBitmap(preview, new Rectangle(Point.Empty, form.Size));
+                preview.Save(previewPath);
+                form.Hide();
+            }
         });
     }
 
@@ -944,6 +1035,67 @@ public sealed class AppBehaviorTests
         var bytes = BitConverter.GetBytes(sample);
         buffer[offset] = bytes[0];
         buffer[offset + 1] = bytes[1];
+    }
+
+    private static PersistentParakeetServerTranscriber.ServerTranscriptSegment Segment(
+        string text,
+        TimeSpan? endOfUtterance)
+    {
+        return new PersistentParakeetServerTranscriber.ServerTranscriptSegment(
+            new TranscriptResult(
+                text,
+                null,
+                null,
+                [new TranscriptWord(text, TimeSpan.FromSeconds(0.1), TimeSpan.FromSeconds(0.3), 0.9)]),
+            endOfUtterance);
+    }
+
+    private static byte[] CreatePcmWave(TimeSpan duration)
+    {
+        var pcm = new byte[checked((int)(duration.TotalSeconds * 32000))];
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        writer.Write("RIFF"u8);
+        writer.Write(36 + pcm.Length);
+        writer.Write("WAVE"u8);
+        writer.Write("fmt "u8);
+        writer.Write(16);
+        writer.Write((short)1);
+        writer.Write((short)1);
+        writer.Write(16000);
+        writer.Write(32000);
+        writer.Write((short)2);
+        writer.Write((short)16);
+        writer.Write("data"u8);
+        writer.Write(pcm.Length);
+        writer.Write(pcm);
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    private static void SaveOverlayPreviewIfRequested(StatusOverlayForm overlay, string environmentVariable)
+    {
+        var previewPath = Environment.GetEnvironmentVariable(environmentVariable);
+        if (string.IsNullOrWhiteSpace(previewPath))
+        {
+            return;
+        }
+
+        var wasVisible = overlay.Visible;
+        if (!wasVisible)
+        {
+            overlay.Show();
+            Application.DoEvents();
+        }
+
+        using var preview = new Bitmap(overlay.Width, overlay.Height);
+        overlay.DrawToBitmap(preview, new Rectangle(Point.Empty, overlay.Size));
+        preview.Save(previewPath);
+
+        if (!wasVisible)
+        {
+            overlay.Hide();
+        }
     }
 
     private static T FindControl<T>(Control root, Predicate<T> match)

@@ -10,11 +10,13 @@ internal sealed class StatusOverlayForm : Form
     private const int WsExToolWindow = 0x00000080;
     private static readonly Size CompactOverlaySize = new(560, 160);
     private static readonly Size ListeningOverlaySize = new(560, 326);
-    private static readonly Size FinalPreviewOverlaySize = new(900, 520);
     private const int StandardTitleHeight = 36;
     private const int StandardTextPanelHeight = 104;
-    private const int FinalPreviewTitleHeight = 48;
-    private const int FinalPreviewTextPanelHeight = 492;
+    private const int ListeningTextPanelHeight = 164;
+    private const int ListeningActivityMeterHeight = 134;
+    private const int ProcessingTextPanelHeight = 298;
+    private const string DefaultProcessingDetail = "Transcribing and preparing to paste…";
+    private static readonly Color ProcessingAccent = Color.FromArgb(245, 171, 64);
 
     private readonly Panel _accent = new();
     private readonly Panel _textPanel = new();
@@ -27,11 +29,8 @@ internal sealed class StatusOverlayForm : Form
     private ListeningTriggerMode _listeningTriggerMode = ListeningTriggerMode.PushToTalk;
     private string? _listeningHotkeyName;
     private string? _liveTranscriptText;
+    private string _processingDetail = DefaultProcessingDetail;
     private bool _activityMeterRequestedVisible;
-    private DictationStatusKind _statusKind;
-
-    public event Action? TranscriptEditRequested;
-    public event Action? DictationCancelRequested;
 
     public StatusOverlayForm()
     {
@@ -54,7 +53,7 @@ internal sealed class StatusOverlayForm : Form
         _title.AutoSize = false;
         _title.Dock = DockStyle.Top;
         _title.Height = StandardTitleHeight;
-        _title.Font = new Font("Segoe UI", 10.5F, FontStyle.Bold, GraphicsUnit.Point);
+        _title.Font = new Font("Segoe UI Variable Display", 10.5F, FontStyle.Bold, GraphicsUnit.Point);
         _title.ForeColor = DarkTheme.Text;
         _title.BackColor = Color.Transparent;
         _title.TextAlign = ContentAlignment.MiddleLeft;
@@ -72,9 +71,6 @@ internal sealed class StatusOverlayForm : Form
         _textPanel.BackColor = Color.Transparent;
         _textPanel.Controls.Add(_message);
         _textPanel.Controls.Add(_title);
-        _title.Click += OnStatusPanelClicked;
-        _message.Click += OnStatusPanelClicked;
-        _textPanel.Click += OnStatusPanelClicked;
 
         _activityMeter.Dock = DockStyle.Bottom;
         _activityMeter.Height = 194;
@@ -109,8 +105,6 @@ internal sealed class StatusOverlayForm : Form
     internal static Size DefaultSizeForTest => CompactOverlaySize;
 
     internal static Size ListeningSizeForTest => ListeningOverlaySize;
-
-    internal static Size FinalPreviewSizeForTest => FinalPreviewOverlaySize;
 
     internal bool ShowWithoutActivationForTest => ShowWithoutActivation;
 
@@ -154,10 +148,6 @@ internal sealed class StatusOverlayForm : Form
 
     internal bool MessageAutoEllipsisForTest => _message.AutoEllipsis;
 
-    internal void RequestTranscriptEditForTest() => OnStatusPanelClicked(this, EventArgs.Empty);
-
-    internal void RequestDictationCancelForTest() => OnStatusPanelClicked(this, EventArgs.Empty);
-
     protected override CreateParams CreateParams
     {
         get
@@ -185,6 +175,63 @@ internal sealed class StatusOverlayForm : Form
         }
 
         StartAutoHideIfNeeded(status);
+    }
+
+    public void HideRecording()
+    {
+        _hideTimer.Stop();
+        Hide();
+        StopLiveActivity();
+    }
+
+    public void ShowProcessing()
+    {
+        _hideTimer.Stop();
+        _liveActivityTimer.Stop();
+        _activityMeterRequestedVisible = false;
+        _activityMeter.Visible = false;
+        _processingDetail = DefaultProcessingDetail;
+        UseOverlaySize(ListeningOverlaySize);
+        _accent.BackColor = ProcessingAccent;
+        _textPanel.Height = ProcessingTextPanelHeight;
+        _title.Height = StandardTitleHeight;
+        _title.Text = "Processing";
+        _message.AutoEllipsis = false;
+        _message.TextAlign = ContentAlignment.TopLeft;
+        RefreshProcessingMessage();
+        PositionBottomCenter();
+        if (!Visible)
+        {
+            Show();
+        }
+
+        Update();
+    }
+
+    public void ShowProcessingDetail(string detail)
+    {
+        if (!Visible
+            || !string.Equals(_title.Text, "Processing", StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(detail))
+        {
+            return;
+        }
+
+        _processingDetail = detail.Trim();
+        RefreshProcessingMessage();
+        Update();
+    }
+
+    public void ShowProcessingTranscript(string transcript)
+    {
+        if (!Visible || string.IsNullOrWhiteSpace(transcript))
+        {
+            return;
+        }
+
+        _liveTranscriptText = transcript.Trim();
+        RefreshProcessingMessage();
+        Update();
     }
 
     internal void ApplyStatusForTest(DictationStatus status)
@@ -286,9 +333,6 @@ internal sealed class StatusOverlayForm : Form
         return kind switch
         {
             DictationStatusKind.Listening => DarkTheme.Accent,
-            DictationStatusKind.Transcribing => Color.FromArgb(245, 171, 64),
-            DictationStatusKind.TranscriptPreview => Color.FromArgb(88, 180, 120),
-            DictationStatusKind.Pasted => Color.FromArgb(88, 180, 120),
             DictationStatusKind.Cancelled => DarkTheme.MutedText,
             DictationStatusKind.EmptyTranscript => DarkTheme.MutedText,
             DictationStatusKind.Error => DarkTheme.Danger,
@@ -298,7 +342,6 @@ internal sealed class StatusOverlayForm : Form
 
     private void ApplyStatus(DictationStatus status, ListeningTriggerMode mode, string? hotkeyName)
     {
-        _statusKind = status.Kind;
         if (status.Kind == DictationStatusKind.Listening)
         {
             StartLiveActivity(status, mode, hotkeyName);
@@ -307,12 +350,6 @@ internal sealed class StatusOverlayForm : Form
 
         StopLiveActivity();
         _accent.BackColor = AccentFor(status.Kind);
-        if (status.Kind == DictationStatusKind.TranscriptPreview)
-        {
-            ConfigureFinalTranscriptPreview(status.Message);
-            return;
-        }
-
         ConfigureStandardTextPanel();
         _title.Text = status.Title;
         _message.Text = status.Message;
@@ -333,12 +370,15 @@ internal sealed class StatusOverlayForm : Form
     {
         ConfigureStandardTextPanel();
         UseOverlaySize(ListeningOverlaySize);
+        _textPanel.Height = ListeningTextPanelHeight;
+        _activityMeter.Height = ListeningActivityMeterHeight;
         _accent.BackColor = AccentFor(status.Kind);
         _title.Text = status.Title;
         _listeningStartedAt = DateTimeOffset.UtcNow;
         _listeningTriggerMode = mode;
         _listeningHotkeyName = hotkeyName;
         _liveTranscriptText = null;
+        _processingDetail = DefaultProcessingDetail;
         _activityMeterRequestedVisible = true;
         _activityMeter.Visible = true;
         _activityMeter.Reset();
@@ -355,47 +395,16 @@ internal sealed class StatusOverlayForm : Form
         UseOverlaySize(CompactOverlaySize);
     }
 
-    private void ConfigureFinalTranscriptPreview(string transcript)
-    {
-        UseOverlaySize(FinalPreviewOverlaySize);
-        _textPanel.Height = FinalPreviewTextPanelHeight;
-        _title.Height = FinalPreviewTitleHeight;
-        _title.Text = "Corrected transcript — click to edit · pasting in 3 seconds";
-        _title.Cursor = Cursors.Hand;
-        _message.Cursor = Cursors.Hand;
-        _textPanel.Cursor = Cursors.Hand;
-        _message.AutoEllipsis = false;
-        _message.TextAlign = ContentAlignment.TopLeft;
-        _message.Text = transcript;
-    }
-
     private void ConfigureStandardTextPanel()
     {
         _textPanel.Height = StandardTextPanelHeight;
+        _activityMeter.Height = 194;
         _title.Height = StandardTitleHeight;
         _title.Cursor = Cursors.Default;
         _message.Cursor = Cursors.Default;
         _textPanel.Cursor = Cursors.Default;
         _message.AutoEllipsis = true;
         _message.TextAlign = ContentAlignment.MiddleLeft;
-        if (_statusKind == DictationStatusKind.Transcribing)
-        {
-            _title.Cursor = Cursors.Hand;
-            _message.Cursor = Cursors.Hand;
-            _textPanel.Cursor = Cursors.Hand;
-        }
-    }
-
-    private void OnStatusPanelClicked(object? sender, EventArgs e)
-    {
-        if (_statusKind == DictationStatusKind.TranscriptPreview)
-        {
-            TranscriptEditRequested?.Invoke();
-        }
-        else if (_statusKind == DictationStatusKind.Transcribing)
-        {
-            DictationCancelRequested?.Invoke();
-        }
     }
 
     private void UpdateLiveActivity()
@@ -403,16 +412,26 @@ internal sealed class StatusOverlayForm : Form
         var elapsed = DateTimeOffset.UtcNow - _listeningStartedAt;
         if (string.IsNullOrWhiteSpace(_liveTranscriptText))
         {
+            _message.AutoEllipsis = true;
+            _message.TextAlign = ContentAlignment.MiddleLeft;
             _message.Text = ListeningStatusFormatter.Format(elapsed, _listeningTriggerMode, _listeningHotkeyName);
         }
         else
         {
             _title.Text = ListeningStatusFormatter.FormatElapsed(elapsed);
-            var latestWords = LiveTranscriptPreviewFormatter.LatestWords(_liveTranscriptText);
-            _message.Text = $"{ListeningStatusFormatter.FormatHint(_listeningTriggerMode, _listeningHotkeyName)}{Environment.NewLine}{latestWords}";
+            _message.AutoEllipsis = false;
+            _message.TextAlign = ContentAlignment.TopLeft;
+            _message.Text = $"{ListeningStatusFormatter.FormatHint(_listeningTriggerMode, _listeningHotkeyName)}{Environment.NewLine}{_liveTranscriptText}";
         }
 
         _activityMeter.Decay();
+    }
+
+    private void RefreshProcessingMessage()
+    {
+        _message.Text = string.IsNullOrWhiteSpace(_liveTranscriptText)
+            ? _processingDetail
+            : $"{_processingDetail}{Environment.NewLine}{Environment.NewLine}{_liveTranscriptText}";
     }
 
     private void PositionBottomCenter()

@@ -65,6 +65,7 @@ public sealed class ChunkedTranscribingDictationSession(
         try
         {
             await recorder.StartAsync(cancellationToken);
+            BeginPreviewWarmUp();
         }
         catch
         {
@@ -78,6 +79,25 @@ public sealed class ChunkedTranscribingDictationSession(
             }
 
             throw;
+        }
+    }
+
+    private void BeginPreviewWarmUp()
+    {
+        if (previewTranscriber is IWarmableTranscriber warmable)
+        {
+            _ = WarmUpWithoutBlockingRecordingAsync(warmable);
+        }
+    }
+
+    private static async Task WarmUpWithoutBlockingRecordingAsync(IWarmableTranscriber warmable)
+    {
+        try
+        {
+            await warmable.WarmUpAsync(CancellationToken.None);
+        }
+        catch (Exception)
+        {
         }
     }
 

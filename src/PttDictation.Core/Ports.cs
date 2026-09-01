@@ -16,6 +16,11 @@ public interface ITranscriber
     Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken);
 }
 
+public interface IWarmableTranscriber
+{
+    Task WarmUpAsync(CancellationToken cancellationToken);
+}
+
 public interface IDictationSessionFactory
 {
     IDictationSession CreateSession();

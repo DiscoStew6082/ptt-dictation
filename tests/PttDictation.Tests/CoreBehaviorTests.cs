@@ -22,6 +22,40 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
+    public async Task SettingsStoreLoadsSavedValuesSynchronouslyAndAsynchronously()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-{Guid.NewGuid():N}.json");
+        var store = new AppSettingsStore(path);
+        var expected = AppSettings.Default with
+        {
+            HoldHotkey = DictationHotkey.F8,
+            ToggleHotkey = DictationHotkey.F9,
+            SelectedModelId = "realtime-eou-120m-v1-f16",
+            DevicePreference = DevicePreference.Cpu
+        };
+
+        try
+        {
+            await store.SaveAsync(expected, CancellationToken.None);
+
+            var synchronous = store.Load();
+            var asynchronous = await store.LoadAsync(CancellationToken.None);
+            Assert.AreEqual(expected.HoldHotkey, synchronous.HoldHotkey);
+            Assert.AreEqual(expected.ToggleHotkey, synchronous.ToggleHotkey);
+            Assert.AreEqual(expected.SelectedModelId, synchronous.SelectedModelId);
+            Assert.AreEqual(expected.DevicePreference, synchronous.DevicePreference);
+            Assert.AreEqual(synchronous.HoldHotkey, asynchronous.HoldHotkey);
+            Assert.AreEqual(synchronous.ToggleHotkey, asynchronous.ToggleHotkey);
+            Assert.AreEqual(synchronous.SelectedModelId, asynchronous.SelectedModelId);
+            Assert.AreEqual(synchronous.DevicePreference, asynchronous.DevicePreference);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public async Task ReleaseTranscribesAndPastesCleanedText()
     {
         var recorder = new FakeAudioRecorder("utterance.wav");
@@ -188,7 +222,7 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
-    public async Task FinalPreviewWaitsForRenderingBeforePaste()
+    public async Task FinalTranscriptIsPublishedAndPastedWithoutAReviewStep()
     {
         var events = new List<string>();
         var paster = new FakeClipboardPaster(() => events.Add("paste"));
@@ -197,18 +231,13 @@ public sealed class CoreBehaviorTests
             new FakeTranscriber("corrected final text"),
             paster,
             new SessionHistory(),
-            transcriptPreviewReady: _ => events.Add("preview"),
-            waitForTranscriptPreviewAsync: _ =>
-            {
-                events.Add("preview-rendered");
-                return Task.CompletedTask;
-            });
+            finalTranscriptReady: _ => events.Add("transcript-ready"));
 
         await controller.HandleHotkeyDownAsync(CancellationToken.None);
         await controller.HandleHotkeyUpAsync(CancellationToken.None);
 
         CollectionAssert.AreEqual(
-            new[] { "preview", "preview-rendered", "paste" },
+            new[] { "transcript-ready", "paste" },
             events.ToArray());
     }
 
@@ -226,59 +255,6 @@ public sealed class CoreBehaviorTests
 
         Assert.AreEqual(1, paster.CaptureTargetCount);
         Assert.IsNull(paster.PastedText);
-    }
-
-    [TestMethod]
-    public async Task ReviewCanReplaceFinalTextBeforeHistoryAndPaste()
-    {
-        var previews = new List<string>();
-        var history = new SessionHistory();
-        var paster = new FakeClipboardPaster();
-        var reviewCount = 0;
-        var controller = new DictationController(
-            new FakeAudioRecorder("utterance.wav"),
-            new FakeTranscriber("use contacts and get"),
-            paster,
-            history,
-            transcriptPreviewReady: previews.Add,
-            reviewTranscriptAsync: (text, _) =>
-            {
-                reviewCount++;
-                return Task.FromResult<string?>(reviewCount == 1
-                    ? "Use context and give."
-                    : text);
-            });
-
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
-
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
-        Assert.AreEqual(2, reviewCount);
-        CollectionAssert.AreEqual(
-            new[] { "Use contacts and get.", "Use context and give." },
-            previews.ToArray());
-        Assert.AreEqual("Use context and give.", paster.PastedText);
-        CollectionAssert.AreEqual(new[] { "Use context and give." }, history.Items.ToArray());
-    }
-
-    [TestMethod]
-    public async Task CancellingReviewDoesNotPasteOrAddHistory()
-    {
-        var history = new SessionHistory();
-        var paster = new FakeClipboardPaster();
-        var controller = new DictationController(
-            new FakeAudioRecorder("utterance.wav"),
-            new FakeTranscriber("do not paste this"),
-            paster,
-            history,
-            reviewTranscriptAsync: (_, _) => Task.FromResult<string?>(null));
-
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
-
-        Assert.AreEqual(DictationOutcome.Cancelled, outcome);
-        Assert.IsNull(paster.PastedText);
-        Assert.AreEqual(0, history.Items.Count);
     }
 
     [TestMethod]
@@ -315,6 +291,23 @@ public sealed class CoreBehaviorTests
         Assert.IsFalse(File.Exists(chunkTwo));
         Assert.IsTrue(File.Exists(finalAudio));
         File.Delete(finalAudio);
+    }
+
+    [TestMethod]
+    public async Task ChunkedSessionWarmsPreviewTranscriberWithoutDelayingRecordingStart()
+    {
+        var recorder = new FakeChunkedAudioRecorder("final.wav");
+        var previewTranscriber = new FakeWarmableTranscriber();
+        var session = new ChunkedTranscribingDictationSession(
+            recorder,
+            previewTranscriber,
+            new FakeTranscriber("final text"));
+
+        await session.StartAsync(CancellationToken.None);
+
+        Assert.AreEqual(1, recorder.StartCount);
+        await WaitUntilAsync(() => previewTranscriber.WarmUpCount == 1);
+        await session.StopAsync(CancellationToken.None);
     }
 
     [TestMethod]
@@ -726,6 +719,37 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
+    public async Task ParakeetStreamingCliTranscriberAddsAndRemovesEndOfUtteranceTail()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"parakeet-stream-tail-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var wavPath = Path.Combine(root, "speech.wav");
+        WritePcmWave(wavPath, new byte[3200]);
+        var runner = new FakeProcessRunner("[stream:final] final words");
+        var transcriber = new ParakeetStreamingCliTranscriber(
+            new CliTranscriberOptions("C:\\tools\\parakeet-cli.exe", "C:\\models\\realtime.gguf"),
+            runner);
+
+        try
+        {
+            var result = await transcriber.TranscribeAsync(wavPath, CancellationToken.None);
+
+            Assert.AreEqual("final words", result.Text);
+            Assert.IsNotNull(runner.LastInputPath);
+            Assert.AreNotEqual(wavPath, runner.LastInputPath);
+            Assert.IsNotNull(runner.LastInputBytes);
+            Assert.AreEqual(44 + 3200 + 32000, runner.LastInputBytes.Length);
+            Assert.AreEqual(3200 + 32000, BitConverter.ToInt32(runner.LastInputBytes, 40));
+            Assert.IsFalse(File.Exists(runner.LastInputPath));
+            Assert.IsTrue(File.Exists(wavPath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public void ParakeetStreamingCliParserRejectsOutputWithoutFinalLine()
     {
         Assert.ThrowsExactly<InvalidOperationException>(
@@ -890,30 +914,6 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
-    public void DictationStatusCatalogProvidesVisibleTranscribingState()
-    {
-        var status = DictationStatusCatalog.Transcribing;
-
-        Assert.AreEqual(DictationStatusKind.Transcribing, status.Kind);
-        Assert.AreEqual("Finalizing transcript", status.Title);
-        Assert.AreEqual("Processing the complete recording before paste. Click this panel to cancel.", status.Message);
-        Assert.IsFalse(status.AutoHide);
-    }
-
-    [TestMethod]
-    public void DictationStatusCatalogShowsEnginePreparationDetails()
-    {
-        var status = DictationStatusCatalog.PreparingTranscription(
-            "Downloading model.gguf: 42% (112 of 267 MB).");
-
-        Assert.AreEqual(DictationStatusKind.Transcribing, status.Kind);
-        Assert.AreEqual("Preparing transcription engine", status.Title);
-        StringAssert.Contains(status.Message, "42%");
-        StringAssert.Contains(status.Message, "Click this panel to cancel.");
-        Assert.IsFalse(status.AutoHide);
-    }
-
-    [TestMethod]
     public void FileDownloadProgressCalculatesBoundedPercentage()
     {
         var source = new Uri("https://example.invalid/model.gguf");
@@ -921,17 +921,6 @@ public sealed class CoreBehaviorTests
         Assert.AreEqual(42, new FileDownloadProgress(source, 42, 100).Percent);
         Assert.AreEqual(100, new FileDownloadProgress(source, 120, 100).Percent);
         Assert.IsNull(new FileDownloadProgress(source, 42, null).Percent);
-    }
-
-    [TestMethod]
-    public void DictationStatusCatalogProvidesTranscriptPreviewText()
-    {
-        var status = DictationStatusCatalog.TranscriptPreview("Preview this.");
-
-        Assert.AreEqual(DictationStatusKind.TranscriptPreview, status.Kind);
-        Assert.AreEqual("Transcript", status.Title);
-        Assert.AreEqual("Preview this.", status.Message);
-        Assert.IsFalse(status.AutoHide);
     }
 
     [TestMethod]
@@ -1019,6 +1008,26 @@ public sealed class CoreBehaviorTests
         using var stream = entry.Open();
         using var writer = new StreamWriter(stream);
         writer.Write("fake exe");
+    }
+
+    private static void WritePcmWave(string path, byte[] pcm)
+    {
+        using var stream = File.Create(path);
+        using var writer = new BinaryWriter(stream);
+        writer.Write("RIFF"u8);
+        writer.Write(36 + pcm.Length);
+        writer.Write("WAVE"u8);
+        writer.Write("fmt "u8);
+        writer.Write(16);
+        writer.Write((short)1);
+        writer.Write((short)1);
+        writer.Write(16000);
+        writer.Write(32000);
+        writer.Write((short)2);
+        writer.Write((short)16);
+        writer.Write("data"u8);
+        writer.Write(pcm.Length);
+        writer.Write(pcm);
     }
 }
 
@@ -1273,10 +1282,40 @@ internal sealed class FakeProcessRunner(string standardOutput) : IProcessRunner
 {
     public ProcessRequest? LastRequest { get; private set; }
 
+    public string? LastInputPath { get; private set; }
+
+    public byte[]? LastInputBytes { get; private set; }
+
     public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
     {
         LastRequest = request;
+        var inputIndex = request.Arguments.ToList().IndexOf("--input");
+        if (inputIndex >= 0 && inputIndex + 1 < request.Arguments.Count)
+        {
+            LastInputPath = request.Arguments[inputIndex + 1];
+            if (File.Exists(LastInputPath))
+            {
+                LastInputBytes = File.ReadAllBytes(LastInputPath);
+            }
+        }
+
         return Task.FromResult(new ProcessResult(0, standardOutput, string.Empty, TimeSpan.FromMilliseconds(10)));
+    }
+}
+
+internal sealed class FakeWarmableTranscriber : ITranscriber, IWarmableTranscriber
+{
+    public int WarmUpCount { get; private set; }
+
+    public Task WarmUpAsync(CancellationToken cancellationToken)
+    {
+        WarmUpCount++;
+        return Task.CompletedTask;
+    }
+
+    public Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
+    {
+        return Task.FromResult(new TranscriptResult("preview", TimeSpan.Zero, null));
     }
 }
 

@@ -19,6 +19,13 @@ public sealed class WasapiAudioRecorderTests
     }
 
     [TestMethod]
+    public void LivePreviewPublishesShortLowOverlapChunks()
+    {
+        Assert.AreEqual(TimeSpan.FromSeconds(2), WasapiAudioRecorder.ChunkDurationForTest);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(1200), WasapiAudioRecorder.ChunkOverlapForTest);
+    }
+
+    [TestMethod]
     public void CaptureFailureNamesTheAttemptedEndpoint()
     {
         var message = WasapiAudioRecorder.DescribeCaptureFailure("Microphone (Galaxy S25 Hands-Free HF Audio)");

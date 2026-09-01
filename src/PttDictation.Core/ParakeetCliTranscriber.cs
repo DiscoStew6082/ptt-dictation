@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -115,23 +116,36 @@ public sealed class ParakeetCliTranscriber(CliTranscriberOptions options, IProce
 
 public sealed partial class ParakeetStreamingCliTranscriber(CliTranscriberOptions options, IProcessRunner processRunner) : ITranscriber
 {
+    private static readonly TimeSpan EndOfUtteranceTail = TimeSpan.FromSeconds(1);
+
     public async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
     {
-        var cliDirectory = Path.GetDirectoryName(options.CliPath);
-        var request = new ProcessRequest(
-            options.CliPath,
-            ["transcribe", "--model", options.ModelPath, "--input", wavPath, "--stream", "--timestamps"],
-            options.Timeout ?? TimeSpan.FromMinutes(2),
-            cliDirectory,
-            RuntimePathBuilder.GetRuntimeSearchPaths(options.CliPath));
-
-        var result = await processRunner.RunAsync(request, cancellationToken);
-        if (result.ExitCode != 0)
+        var preparedInput = await StreamingWaveTailPadder.PrepareAsync(
+            wavPath,
+            EndOfUtteranceTail,
+            cancellationToken);
+        try
         {
-            throw new InvalidOperationException($"parakeet-cli streaming failed with exit code {result.ExitCode}: {result.StandardError}");
-        }
+            var cliDirectory = Path.GetDirectoryName(options.CliPath);
+            var request = new ProcessRequest(
+                options.CliPath,
+                ["transcribe", "--model", options.ModelPath, "--input", preparedInput.Path, "--stream", "--timestamps"],
+                options.Timeout ?? TimeSpan.FromMinutes(2),
+                cliDirectory,
+                RuntimePathBuilder.GetRuntimeSearchPaths(options.CliPath));
 
-        return Parse(result.StandardOutput, result.Elapsed);
+            var result = await processRunner.RunAsync(request, cancellationToken);
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"parakeet-cli streaming failed with exit code {result.ExitCode}: {result.StandardError}");
+            }
+
+            return Parse(result.StandardOutput, result.Elapsed);
+        }
+        finally
+        {
+            preparedInput.Dispose();
+        }
     }
 
     public static TranscriptResult Parse(string output, TimeSpan elapsed)
@@ -205,6 +219,145 @@ public sealed partial class ParakeetStreamingCliTranscriber(CliTranscriberOption
 
     [GeneratedRegex(@"^\s*(?<start>\d+(?:\.\d+)?)\-(?<end>\d+(?:\.\d+)?)\s+(?<word>.+?)\s+\((?<confidence>\d+(?:\.\d+)?)\)\s*$")]
     private static partial Regex TimestampLineRegex();
+}
+
+internal sealed class StreamingWaveTailPadder : IDisposable
+{
+    private StreamingWaveTailPadder(string path, bool deleteAfterUse)
+    {
+        Path = path;
+        _deleteAfterUse = deleteAfterUse;
+    }
+
+    private readonly bool _deleteAfterUse;
+
+    public string Path { get; }
+
+    public static async Task<StreamingWaveTailPadder> PrepareAsync(
+        string wavPath,
+        TimeSpan tailDuration,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(wavPath) || tailDuration <= TimeSpan.Zero)
+        {
+            return new StreamingWaveTailPadder(wavPath, deleteAfterUse: false);
+        }
+
+        var source = await File.ReadAllBytesAsync(wavPath, cancellationToken);
+        if (!TryDescribePcmWave(source, out var dataSizeOffset, out var dataOffset, out var dataSize, out var bytesPerSecond, out var blockAlign))
+        {
+            return new StreamingWaveTailPadder(wavPath, deleteAfterUse: false);
+        }
+
+        var unalignedTailBytes = checked((int)Math.Ceiling(bytesPerSecond * tailDuration.TotalSeconds));
+        var tailBytes = checked((unalignedTailBytes + blockAlign - 1) / blockAlign * blockAlign);
+        var dataEnd = checked(dataOffset + dataSize);
+        var padded = new byte[checked(source.Length + tailBytes)];
+        Buffer.BlockCopy(source, 0, padded, 0, dataEnd);
+        Buffer.BlockCopy(source, dataEnd, padded, dataEnd + tailBytes, source.Length - dataEnd);
+        BinaryPrimitives.WriteUInt32LittleEndian(padded.AsSpan(dataSizeOffset, sizeof(uint)), checked((uint)(dataSize + tailBytes)));
+        BinaryPrimitives.WriteUInt32LittleEndian(padded.AsSpan(4, sizeof(uint)), checked((uint)(padded.Length - 8)));
+
+        var directory = System.IO.Path.GetDirectoryName(wavPath) ?? System.IO.Path.GetTempPath();
+        var preparedPath = System.IO.Path.Combine(
+            directory,
+            $"{System.IO.Path.GetFileNameWithoutExtension(wavPath)}-stream-tail-{Guid.NewGuid():N}.wav");
+        try
+        {
+            await File.WriteAllBytesAsync(preparedPath, padded, cancellationToken);
+            return new StreamingWaveTailPadder(preparedPath, deleteAfterUse: true);
+        }
+        catch
+        {
+            TryDelete(preparedPath);
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_deleteAfterUse)
+        {
+            TryDelete(Path);
+        }
+    }
+
+    private static bool TryDescribePcmWave(
+        byte[] source,
+        out int dataSizeOffset,
+        out int dataOffset,
+        out int dataSize,
+        out int bytesPerSecond,
+        out int blockAlign)
+    {
+        dataSizeOffset = 0;
+        dataOffset = 0;
+        dataSize = 0;
+        bytesPerSecond = 0;
+        blockAlign = 0;
+        if (source.Length < 44
+            || !source.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+            || !source.AsSpan(8, 4).SequenceEqual("WAVE"u8))
+        {
+            return false;
+        }
+
+        var offset = 12;
+        while (offset <= source.Length - 8)
+        {
+            var chunkSize = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(source.AsSpan(offset + 4, sizeof(uint))));
+            var chunkDataOffset = offset + 8;
+            if (chunkSize < 0 || chunkDataOffset > source.Length - chunkSize)
+            {
+                return false;
+            }
+
+            var chunkId = source.AsSpan(offset, 4);
+            if (chunkId.SequenceEqual("fmt "u8) && chunkSize >= 16)
+            {
+                var format = BinaryPrimitives.ReadUInt16LittleEndian(source.AsSpan(chunkDataOffset, sizeof(ushort)));
+                if (format != 1)
+                {
+                    return false;
+                }
+
+                bytesPerSecond = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(source.AsSpan(chunkDataOffset + 8, sizeof(uint))));
+                blockAlign = BinaryPrimitives.ReadUInt16LittleEndian(source.AsSpan(chunkDataOffset + 12, sizeof(ushort)));
+            }
+            else if (chunkId.SequenceEqual("data"u8))
+            {
+                dataSizeOffset = offset + 4;
+                dataOffset = chunkDataOffset;
+                dataSize = chunkSize;
+            }
+
+            if (bytesPerSecond > 0 && blockAlign > 0 && dataOffset > 0)
+            {
+                return true;
+            }
+
+            offset = checked(chunkDataOffset + chunkSize + (chunkSize & 1));
+        }
+
+        return false;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
 }
 
 public interface IProcessRunner

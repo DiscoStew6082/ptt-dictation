@@ -5,12 +5,10 @@ public sealed class DictationController
     private readonly IDictationSessionFactory _sessionFactory;
     private readonly IClipboardPaster _clipboardPaster;
     private readonly SessionHistory _history;
-    private readonly Action<string>? _transcriptPreviewReady;
+    private readonly Action<string>? _finalTranscriptReady;
     private readonly Action<string>? _cleanupWarningReady;
     private readonly Action<TranscriptUpdate>? _transcriptUpdateReady;
     private readonly Func<IReadOnlyList<TranscriptCorrection>> _getTranscriptCorrections;
-    private readonly Func<CancellationToken, Task> _waitForTranscriptPreviewAsync;
-    private readonly Func<string, CancellationToken, Task<string?>> _reviewTranscriptAsync;
     private IDictationSession? _session;
     private bool _isRecording;
     private bool _isProcessing;
@@ -20,20 +18,16 @@ public sealed class DictationController
         ITranscriber transcriber,
         IClipboardPaster clipboardPaster,
         SessionHistory history,
-        Action<string>? transcriptPreviewReady = null,
+        Action<string>? finalTranscriptReady = null,
         Action<string>? cleanupWarningReady = null,
-        Func<IReadOnlyList<TranscriptCorrection>>? getTranscriptCorrections = null,
-        Func<CancellationToken, Task>? waitForTranscriptPreviewAsync = null,
-        Func<string, CancellationToken, Task<string?>>? reviewTranscriptAsync = null)
+        Func<IReadOnlyList<TranscriptCorrection>>? getTranscriptCorrections = null)
         : this(
             new BatchDictationSessionFactory(recorder, transcriber),
             clipboardPaster,
             history,
-            transcriptPreviewReady,
+            finalTranscriptReady,
             cleanupWarningReady,
-            getTranscriptCorrections: getTranscriptCorrections,
-            waitForTranscriptPreviewAsync: waitForTranscriptPreviewAsync,
-            reviewTranscriptAsync: reviewTranscriptAsync)
+            getTranscriptCorrections: getTranscriptCorrections)
     {
     }
 
@@ -41,22 +35,18 @@ public sealed class DictationController
         IDictationSessionFactory sessionFactory,
         IClipboardPaster clipboardPaster,
         SessionHistory history,
-        Action<string>? transcriptPreviewReady = null,
+        Action<string>? finalTranscriptReady = null,
         Action<string>? cleanupWarningReady = null,
         Action<TranscriptUpdate>? transcriptUpdateReady = null,
-        Func<IReadOnlyList<TranscriptCorrection>>? getTranscriptCorrections = null,
-        Func<CancellationToken, Task>? waitForTranscriptPreviewAsync = null,
-        Func<string, CancellationToken, Task<string?>>? reviewTranscriptAsync = null)
+        Func<IReadOnlyList<TranscriptCorrection>>? getTranscriptCorrections = null)
     {
         _sessionFactory = sessionFactory;
         _clipboardPaster = clipboardPaster;
         _history = history;
-        _transcriptPreviewReady = transcriptPreviewReady;
+        _finalTranscriptReady = finalTranscriptReady;
         _cleanupWarningReady = cleanupWarningReady;
         _transcriptUpdateReady = transcriptUpdateReady;
         _getTranscriptCorrections = getTranscriptCorrections ?? (() => []);
-        _waitForTranscriptPreviewAsync = waitForTranscriptPreviewAsync ?? (_ => Task.CompletedTask);
-        _reviewTranscriptAsync = reviewTranscriptAsync ?? ReviewAfterPreviewDelayAsync;
     }
 
     public async Task<bool> HandleHotkeyDownAsync(CancellationToken cancellationToken)
@@ -113,35 +103,11 @@ public sealed class DictationController
                 return DictationOutcome.EmptyTranscript;
             }
 
-            TryPublishTranscriptPreview(cleaned);
+            TryPublishFinalTranscript(cleaned);
             TryPublishTranscriptUpdate(new TranscriptUpdate(TranscriptUpdateKind.Final, cleaned));
-            var textToPaste = cleaned;
-            while (true)
-            {
-                var reviewed = await _reviewTranscriptAsync(textToPaste, cancellationToken);
-                if (reviewed is null)
-                {
-                    return DictationOutcome.Cancelled;
-                }
 
-                var reviewedText = TranscriptNormalizer.Normalize(reviewed);
-                if (reviewedText.Length == 0)
-                {
-                    return DictationOutcome.Cancelled;
-                }
-
-                if (string.Equals(reviewedText, textToPaste, StringComparison.Ordinal))
-                {
-                    break;
-                }
-
-                textToPaste = reviewedText;
-                TryPublishTranscriptPreview(textToPaste);
-                TryPublishTranscriptUpdate(new TranscriptUpdate(TranscriptUpdateKind.Final, textToPaste));
-            }
-
-            _history.Add(textToPaste);
-            await _clipboardPaster.PasteAsync(textToPaste, cancellationToken);
+            _history.Add(cleaned);
+            await _clipboardPaster.PasteAsync(cleaned, cancellationToken);
             return DictationOutcome.Pasted;
         }
         finally
@@ -190,11 +156,11 @@ public sealed class DictationController
         }
     }
 
-    private void TryPublishTranscriptPreview(string text)
+    private void TryPublishFinalTranscript(string text)
     {
         try
         {
-            _transcriptPreviewReady?.Invoke(text);
+            _finalTranscriptReady?.Invoke(text);
         }
         catch (Exception)
         {
@@ -204,12 +170,6 @@ public sealed class DictationController
     private void OnTranscriptUpdated(TranscriptUpdate update)
     {
         TryPublishTranscriptUpdate(ApplyTranscriptCorrections(update));
-    }
-
-    private async Task<string?> ReviewAfterPreviewDelayAsync(string text, CancellationToken cancellationToken)
-    {
-        await _waitForTranscriptPreviewAsync(cancellationToken);
-        return text;
     }
 
     private TranscriptUpdate ApplyTranscriptCorrections(TranscriptUpdate update)
@@ -263,7 +223,6 @@ public enum DictationOutcome
 {
     NotRecording,
     EmptyTranscript,
-    Cancelled,
     Pasted
 }
 

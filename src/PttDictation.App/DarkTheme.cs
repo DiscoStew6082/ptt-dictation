@@ -13,7 +13,7 @@ internal static class DarkTheme
     public static readonly Color Danger = Color.FromArgb(221, 86, 86);
     public static readonly Color Border = Color.FromArgb(62, 67, 77);
 
-    public static Font HeaderFont => new("Segoe UI", 14F, FontStyle.Bold, GraphicsUnit.Point);
+    public static Font HeaderFont => new("Segoe UI Variable Display", 14F, FontStyle.Bold, GraphicsUnit.Point);
     public static Font BodyFont => new("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
     public static void Apply(Form form)
@@ -55,7 +55,7 @@ internal static class DarkTheme
 
     public static Button Button(string text)
     {
-        var button = new Button
+        var button = new DarkButton
         {
             Text = text,
             AutoSize = false,
@@ -63,6 +63,8 @@ internal static class DarkTheme
             FlatStyle = FlatStyle.Flat,
             BackColor = SurfaceRaised,
             ForeColor = Text,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Padding = Padding.Empty,
             UseVisualStyleBackColor = false
         };
         button.FlatAppearance.BorderColor = Border;
@@ -112,6 +114,87 @@ internal static class DarkTheme
         }
 
         form.HandleCreated += (_, _) => DarkWindowChrome.Apply(form.Handle);
+    }
+}
+
+internal sealed class DarkButton : Button
+{
+    private bool _hovered;
+    private bool _pressed;
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var background = Enabled ? BackColor : DarkTheme.Surface;
+        if (Enabled && _pressed)
+        {
+            background = FlatAppearance.MouseDownBackColor;
+        }
+        else if (Enabled && _hovered)
+        {
+            background = FlatAppearance.MouseOverBackColor;
+        }
+
+        using var backgroundBrush = new SolidBrush(background);
+        e.Graphics.FillRectangle(backgroundBrush, ClientRectangle);
+        ControlPaint.DrawBorder(
+            e.Graphics,
+            ClientRectangle,
+            FlatAppearance.BorderColor,
+            ButtonBorderStyle.Solid);
+
+        var textColor = Enabled ? ForeColor : DarkTheme.MutedText;
+        TextRenderer.DrawText(
+            e.Graphics,
+            Text,
+            Font,
+            ClientRectangle,
+            textColor,
+            TextFormatFlags.HorizontalCenter
+                | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.SingleLine
+                | TextFormatFlags.EndEllipsis
+                | TextFormatFlags.NoPadding);
+
+        if (Focused && ShowFocusCues)
+        {
+            var focusBounds = Rectangle.Inflate(ClientRectangle, -4, -4);
+            ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, textColor, background);
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hovered = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hovered = false;
+        _pressed = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        _pressed = true;
+        Invalidate();
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        _pressed = false;
+        Invalidate();
+        base.OnMouseUp(e);
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        Invalidate();
+        base.OnEnabledChanged(e);
     }
 }
 

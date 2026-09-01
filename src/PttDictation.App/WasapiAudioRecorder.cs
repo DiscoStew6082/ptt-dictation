@@ -7,8 +7,8 @@ namespace PttDictation.App;
 internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 {
     private const int BytesPerSecond = 32000;
-    private const int ChunkDurationMilliseconds = 4000;
-    private const int ChunkOverlapMilliseconds = 800;
+    private const int ChunkDurationMilliseconds = 2000;
+    private const int ChunkOverlapMilliseconds = 1200;
     private const int ChunkBytes = BytesPerSecond * ChunkDurationMilliseconds / 1000;
     private const int ChunkOverlapBytes = BytesPerSecond * ChunkOverlapMilliseconds / 1000;
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
@@ -27,6 +27,10 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
     public event Action<double>? AudioLevelChanged;
 
     public event Action<RecordedAudio>? AudioChunkReady;
+
+    internal static TimeSpan ChunkDurationForTest => TimeSpan.FromMilliseconds(ChunkDurationMilliseconds);
+
+    internal static TimeSpan ChunkOverlapForTest => TimeSpan.FromMilliseconds(ChunkOverlapMilliseconds);
 
     public WasapiAudioRecorder()
         : this(Path.GetTempPath())

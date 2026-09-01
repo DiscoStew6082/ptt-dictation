@@ -6,6 +6,25 @@ namespace PttDictation.Tests;
 public sealed class SingleInstanceGuardTests
 {
     [TestMethod]
+    public void ActivationSignalNotifiesTheRunningInstance()
+    {
+        var eventName = "Local\\PttDictation.Tests.Activation." + Guid.NewGuid();
+        using var listener = SingleInstanceActivation.Listen(eventName);
+
+        Assert.IsTrue(SingleInstanceActivation.TryNotify(eventName));
+        Assert.IsTrue(listener.ConsumePending());
+        Assert.IsFalse(listener.ConsumePending());
+    }
+
+    [TestMethod]
+    public void ActivationSignalReturnsFalseWithoutARunningInstance()
+    {
+        var eventName = "Local\\PttDictation.Tests.Activation." + Guid.NewGuid();
+
+        Assert.IsFalse(SingleInstanceActivation.TryNotify(eventName));
+    }
+
+    [TestMethod]
     public void NamedGuardAllowsOnlyOneOwnerUntilDisposed()
     {
         var guardName = "Local\\PttDictation.Tests.SingleInstanceGuard." + Guid.NewGuid();
