@@ -911,6 +911,7 @@ public sealed class CoreBehaviorTests
         StringAssert.EndsWith(registry.Cuda.AdditionalArchives[0].DownloadUrl.ToString(), "cudart-parakeet-bin-win-cuda-x64.zip");
         Assert.AreEqual("cc2b5fb99951720130e4a701e0978419d0a878e25c88bebc1416152616bd1d94", registry.Cuda.AdditionalArchives[0].Sha256);
         StringAssert.EndsWith(registry.Cpu.DownloadUrl.ToString(), "parakeet-v0.4.0-bin-win-cpu-x64.zip");
+        Assert.AreEqual(0, registry.Cpu.AdditionalArchives.Count);
     }
 
     [TestMethod]
@@ -998,6 +999,33 @@ public sealed class CoreBehaviorTests
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => manager.EnsureRuntimeAsync(runtime, CancellationToken.None));
         Assert.IsFalse(File.Exists(Path.Combine(root, "evil.txt")));
+        Directory.Delete(root, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task AssetManagerRejectsOversizedModelDownload()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"parakeet-assets-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var manager = new AssetManager(root, new FakeDownloader(new byte[5]));
+        var model = new ModelInfo(
+            "test-model",
+            "Test model",
+            "Test",
+            "tdt",
+            "F16",
+            new Uri("https://example.invalid/test.gguf"),
+            Sha256: null,
+            MinimumBytes: 1)
+        {
+            MaximumBytes = 4
+        };
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => manager.EnsureModelAsync(model, CancellationToken.None));
+
+        Assert.IsFalse(File.Exists(Path.Combine(root, "models", "test.gguf")));
+        Assert.IsFalse(File.Exists(Path.Combine(root, "models", "test.gguf.download")));
         Directory.Delete(root, recursive: true);
     }
 
@@ -1321,7 +1349,11 @@ internal sealed class FakeWarmableTranscriber : ITranscriber, IWarmableTranscrib
 
 internal sealed class FakeDownloader(byte[] bytes) : IFileDownloader
 {
-    public Task DownloadAsync(Uri source, string destinationPath, CancellationToken cancellationToken)
+    public Task DownloadAsync(
+        Uri source,
+        string destinationPath,
+        long maximumBytes,
+        CancellationToken cancellationToken)
     {
         File.WriteAllBytes(destinationPath, bytes);
         return Task.CompletedTask;

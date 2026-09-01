@@ -10,7 +10,10 @@ public sealed record ModelInfo(
     string? Sha256,
     long MinimumBytes,
     bool SupportsBatch = true,
-    bool SupportsStreaming = false);
+    bool SupportsStreaming = false)
+{
+    public long MaximumBytes { get; init; } = checked(MinimumBytes + 1024 * 1024);
+}
 
 public sealed class ModelRegistry(IReadOnlyList<ModelInfo> models, string defaultModelId)
 {

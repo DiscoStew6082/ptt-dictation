@@ -2,7 +2,10 @@ using System.IO.Compression;
 
 namespace PttDictation.Core;
 
-public sealed record RuntimeArchiveInfo(Uri DownloadUrl, string Sha256, string FileName);
+public sealed record RuntimeArchiveInfo(Uri DownloadUrl, string Sha256, string FileName)
+{
+    public long MaximumBytes { get; init; } = long.MaxValue;
+}
 
 public sealed record RuntimeAssetInfo(
     string Id,
@@ -11,6 +14,7 @@ public sealed record RuntimeAssetInfo(
     string FileName,
     DevicePreference DevicePreference)
 {
+    public long MaximumBytes { get; init; } = long.MaxValue;
     public IReadOnlyList<RuntimeArchiveInfo> AdditionalArchives { get; init; } = [];
 }
 
@@ -36,12 +40,16 @@ public sealed class RuntimeAssetRegistry(RuntimeAssetInfo cuda, RuntimeAssetInfo
                 "parakeet-v0.4.0-bin-win-cuda-x64.zip",
                 DevicePreference.Cuda)
             {
+                MaximumBytes = 312_884_841,
                 AdditionalArchives =
                 [
                     new RuntimeArchiveInfo(
                         new Uri("https://github.com/mudler/parakeet.cpp/releases/download/v0.4.0/cudart-parakeet-bin-win-cuda-x64.zip"),
                         "cc2b5fb99951720130e4a701e0978419d0a878e25c88bebc1416152616bd1d94",
                         "cudart-parakeet-bin-win-cuda-x64.zip")
+                    {
+                        MaximumBytes = 580_185_113
+                    }
                 ]
             },
             new RuntimeAssetInfo(
@@ -49,14 +57,17 @@ public sealed class RuntimeAssetRegistry(RuntimeAssetInfo cuda, RuntimeAssetInfo
                 new Uri("https://github.com/mudler/parakeet.cpp/releases/download/v0.4.0/parakeet-v0.4.0-bin-win-cpu-x64.zip"),
                 "2880150a1bad2944baed46f2e6bb9f1bc55263a9f2bb85573785a7ec4fa35f27",
                 "parakeet-v0.4.0-bin-win-cpu-x64.zip",
-                DevicePreference.Cpu),
+                DevicePreference.Cpu)
+            {
+                MaximumBytes = 1_396_698
+            },
             releaseTag);
     }
 }
 
 public interface IFileDownloader
 {
-    Task DownloadAsync(Uri source, string destinationPath, CancellationToken cancellationToken);
+    Task DownloadAsync(Uri source, string destinationPath, long maximumBytes, CancellationToken cancellationToken);
 }
 
 public sealed record FileDownloadProgress(Uri Source, long BytesReceived, long? TotalBytes)
@@ -70,7 +81,11 @@ public sealed class HttpFileDownloader(Action<FileDownloadProgress>? progressRea
 {
     private readonly HttpClient _httpClient = new();
 
-    public async Task DownloadAsync(Uri source, string destinationPath, CancellationToken cancellationToken)
+    public async Task DownloadAsync(
+        Uri source,
+        string destinationPath,
+        long maximumBytes,
+        CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, source);
         using var response = await _httpClient.SendAsync(
@@ -80,6 +95,11 @@ public sealed class HttpFileDownloader(Action<FileDownloadProgress>? progressRea
         response.EnsureSuccessStatusCode();
 
         var totalBytes = response.Content.Headers.ContentLength;
+        if (totalBytes > maximumBytes)
+        {
+            throw new InvalidOperationException($"Download exceeds the allowed size: {source}");
+        }
+
         await using var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var output = new FileStream(
             destinationPath,
@@ -105,6 +125,10 @@ public sealed class HttpFileDownloader(Action<FileDownloadProgress>? progressRea
 
             await output.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
             bytesReceived += bytesRead;
+            if (bytesReceived > maximumBytes)
+            {
+                throw new InvalidOperationException($"Download exceeds the allowed size: {source}");
+            }
 
             var progress = new FileDownloadProgress(source, bytesReceived, totalBytes);
             var shouldReport = progress.Percent is { } percent
@@ -144,7 +168,10 @@ public sealed class AssetManager(string rootDirectory, IFileDownloader downloade
         Directory.CreateDirectory(runtimeDirectory);
 
         await DownloadVerifyExtractAsync(
-            new RuntimeArchiveInfo(asset.DownloadUrl, asset.Sha256, asset.FileName),
+            new RuntimeArchiveInfo(asset.DownloadUrl, asset.Sha256, asset.FileName)
+            {
+                MaximumBytes = asset.MaximumBytes
+            },
             runtimeDirectory,
             cancellationToken);
 
@@ -168,7 +195,7 @@ public sealed class AssetManager(string rootDirectory, IFileDownloader downloade
             return path;
         }
 
-        await DownloadAtomicallyAsync(model.DownloadUrl, path, cancellationToken);
+        await DownloadAtomicallyAsync(model.DownloadUrl, path, model.MaximumBytes, cancellationToken);
         if (new FileInfo(path).Length < model.MinimumBytes)
         {
             File.Delete(path);
@@ -212,9 +239,11 @@ public sealed class AssetManager(string rootDirectory, IFileDownloader downloade
         Directory.CreateDirectory(downloadsDirectory);
         var zipPath = Path.Combine(downloadsDirectory, archive.FileName);
 
-        if (!File.Exists(zipPath) || !await ChecksumVerifier.VerifySha256Async(zipPath, archive.Sha256, cancellationToken))
+        if (!File.Exists(zipPath)
+            || new FileInfo(zipPath).Length > archive.MaximumBytes
+            || !await ChecksumVerifier.VerifySha256Async(zipPath, archive.Sha256, cancellationToken))
         {
-            await DownloadAtomicallyAsync(archive.DownloadUrl, zipPath, cancellationToken);
+            await DownloadAtomicallyAsync(archive.DownloadUrl, zipPath, archive.MaximumBytes, cancellationToken);
         }
 
         if (!await ChecksumVerifier.VerifySha256Async(zipPath, archive.Sha256, cancellationToken))
@@ -228,7 +257,11 @@ public sealed class AssetManager(string rootDirectory, IFileDownloader downloade
         await WriteManifestAsync(zipPath, manifestPath, runtimeDirectory, cancellationToken);
     }
 
-    private async Task DownloadAtomicallyAsync(Uri source, string destinationPath, CancellationToken cancellationToken)
+    private async Task DownloadAtomicallyAsync(
+        Uri source,
+        string destinationPath,
+        long maximumBytes,
+        CancellationToken cancellationToken)
     {
         var tempPath = destinationPath + ".download";
         if (File.Exists(tempPath))
@@ -238,7 +271,11 @@ public sealed class AssetManager(string rootDirectory, IFileDownloader downloade
 
         try
         {
-            await downloader.DownloadAsync(source, tempPath, cancellationToken);
+            await downloader.DownloadAsync(source, tempPath, maximumBytes, cancellationToken);
+            if (new FileInfo(tempPath).Length > maximumBytes)
+            {
+                throw new InvalidOperationException($"Download exceeds the allowed size: {source}");
+            }
             if (File.Exists(destinationPath))
             {
                 File.Delete(destinationPath);
@@ -272,7 +309,9 @@ public sealed class AssetManager(string rootDirectory, IFileDownloader downloade
 
     private static async Task<bool> IsUsableModelAsync(string path, ModelInfo model, CancellationToken cancellationToken)
     {
-        if (!File.Exists(path) || new FileInfo(path).Length < model.MinimumBytes)
+        if (!File.Exists(path)
+            || new FileInfo(path).Length < model.MinimumBytes
+            || new FileInfo(path).Length > model.MaximumBytes)
         {
             return false;
         }
@@ -328,10 +367,24 @@ public sealed class AssetManager(string rootDirectory, IFileDownloader downloade
 
     private static void ValidateArchiveEntries(string zipPath, string runtimeDirectory)
     {
+        const int maximumEntries = 4096;
+        const long maximumExpandedBytes = 2L * 1024 * 1024 * 1024;
         using var zip = ZipFile.OpenRead(zipPath);
-        foreach (var entry in zip.Entries.Where(entry => !IsDirectoryEntry(entry)))
+        var entries = zip.Entries.Where(entry => !IsDirectoryEntry(entry)).ToArray();
+        if (entries.Length > maximumEntries)
+        {
+            throw new InvalidOperationException("Runtime archive contains too many files.");
+        }
+
+        long expandedBytes = 0;
+        foreach (var entry in entries)
         {
             GetSafeTargetPath(runtimeDirectory, entry.FullName);
+            expandedBytes = checked(expandedBytes + entry.Length);
+            if (expandedBytes > maximumExpandedBytes)
+            {
+                throw new InvalidOperationException("Runtime archive expands beyond the allowed size.");
+            }
         }
     }
 

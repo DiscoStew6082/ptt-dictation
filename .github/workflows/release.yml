@@ -20,10 +20,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 10.0.x
 
@@ -39,14 +41,13 @@ jobs:
       - name: Publish
         run: dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o publish\ptt-dictation-win-x64
 
-      - name: Install SBOM tool
-        run: dotnet tool install --global CycloneDX --version 6.2.0
+      - name: Restore locked SBOM tool
+        run: dotnet tool restore
 
       - name: Generate SBOM
         shell: pwsh
         run: |
-          $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
-          dotnet-CycloneDX PttDictation.sln -o publish -fn PttDictation.cdx.json -F Json -t --set-name PttDictation --set-version $env:GITHUB_REF_NAME
+          dotnet tool run dotnet-CycloneDX PttDictation.sln -o publish -fn PttDictation.cdx.json -F Json -t --set-name PttDictation --set-version $env:GITHUB_REF_NAME
 
       - name: Package
         shell: pwsh
@@ -56,7 +57,7 @@ jobs:
           "$hash  PttDictation-win-x64.zip" | Set-Content -NoNewline -Encoding ascii publish\PttDictation-win-x64.zip.sha256
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PttDictation-win-x64
           path: |
@@ -66,7 +67,7 @@ jobs:
 
       - name: Attest release artifact
         if: ${{ github.event.repository.private == false }}
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: publish/PttDictation-win-x64.zip
 
@@ -80,7 +81,7 @@ jobs:
 
     steps:
       - name: Download release artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: PttDictation-win-x64
           path: publish
