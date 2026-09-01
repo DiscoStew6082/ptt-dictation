@@ -32,6 +32,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext()
     {
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        var staleAudioCleanupFailures = AudioResidueCleaner.DeleteStaleFiles(AppPaths.RootDirectory);
         _recorder = new WasapiAudioRecorder(AppPaths.RootDirectory);
         _recorder.AudioLevelChanged += OnAudioLevelChanged;
         _transcriber = new LazyAssetTranscriber(
@@ -72,6 +73,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _hotkeySource.ToggleRequested += () => PostToUi(OnToggleRequestedAsync);
         _hotkeySource.Start();
         LoadSettingsAtStartup();
+        if (staleAudioCleanupFailures.Count > 0)
+        {
+            ShowCleanupWarning(staleAudioCleanupFailures[0]);
+        }
     }
 
     internal void OpenSettings()

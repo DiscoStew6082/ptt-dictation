@@ -17,7 +17,9 @@ public sealed class AppBehaviorTests
             restoreStarted,
             allowRestoreToFinish,
             restoreFinished);
-        var paster = new ClipboardPaster(clipboard, restoreQueue);
+        var foregroundWindow = new FakeForegroundWindowBackend();
+        var paster = new ClipboardPaster(clipboard, restoreQueue, foregroundWindow);
+        paster.CaptureTarget();
 
         try
         {
@@ -44,7 +46,9 @@ public sealed class AppBehaviorTests
         using var allowPasteToFinish = new ManualResetEventSlim();
         using var restoreQueue = new ClipboardRestoreQueue(TimeSpan.Zero);
         var clipboard = new BlockingPasteClipboardBackend(pasteStarted, allowPasteToFinish);
-        var paster = new ClipboardPaster(clipboard, restoreQueue);
+        var foregroundWindow = new FakeForegroundWindowBackend();
+        var paster = new ClipboardPaster(clipboard, restoreQueue, foregroundWindow);
+        paster.CaptureTarget();
 
         var pasteTask = Task.Run(() => paster.PasteAsync("still pasting", CancellationToken.None));
         try
@@ -58,6 +62,194 @@ public sealed class AppBehaviorTests
         }
 
         await pasteTask.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [TestMethod]
+    public async Task ClipboardPasterDoesNotPasteWhenOriginalWindowCannotRegainFocus()
+    {
+        using var restoreQueue = new ClipboardRestoreQueue(TimeSpan.Zero);
+        var clipboard = new RecordingClipboardBackend();
+        var foregroundWindow = new FakeForegroundWindowBackend();
+        var paster = new ClipboardPaster(clipboard, restoreQueue, foregroundWindow);
+        paster.CaptureTarget();
+        foregroundWindow.CurrentWindow = (IntPtr)43;
+        foregroundWindow.SetForegroundWindowResult = false;
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => paster.PasteAsync("private dictated text", CancellationToken.None));
+
+        Assert.AreEqual(0, clipboard.SetTextCount);
+        Assert.AreEqual(0, clipboard.SendPasteCount);
+    }
+
+    [TestMethod]
+    public async Task ClipboardPasterDoesNotPasteWhenFocusChangesAfterClipboardUpdate()
+    {
+        var restoreQueue = new RecordingRestoreQueue();
+        var foregroundWindow = new FakeForegroundWindowBackend();
+        var clipboard = new RecordingClipboardBackend(
+            () => foregroundWindow.CurrentWindow = (IntPtr)43);
+        var paster = new ClipboardPaster(clipboard, restoreQueue, foregroundWindow);
+        paster.CaptureTarget();
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => paster.PasteAsync("private dictated text", CancellationToken.None));
+
+        Assert.AreEqual(1, clipboard.SetTextCount);
+        Assert.AreEqual(0, clipboard.SendPasteCount);
+        Assert.AreEqual(1, restoreQueue.ImmediateEnqueueCount);
+        Assert.AreEqual(1, clipboard.RestoreCount);
+    }
+
+    [TestMethod]
+    public void WindowsClipboardBackendClearsTranscriptWhenPriorClipboardWasEmpty()
+    {
+        var clipboard = new FakeWindowsClipboardApi
+        {
+            SequenceNumber = 7,
+            Text = "private dictated text"
+        };
+        var backend = new WindowsClipboardPasteBackend(clipboard);
+
+        backend.RestoreIfCurrent(7, previous: null);
+
+        Assert.AreEqual(1, clipboard.ClearCount);
+        Assert.AreEqual(0, clipboard.SetDataObjectCount);
+    }
+
+    [TestMethod]
+    public void WindowsClipboardBackendPreservesNewerIdenticalClipboardContent()
+    {
+        var clipboard = new FakeWindowsClipboardApi
+        {
+            SequenceNumber = 8,
+            Text = "private dictated text"
+        };
+        var backend = new WindowsClipboardPasteBackend(clipboard);
+
+        backend.RestoreIfCurrent(7, new DataObject("previous clipboard contents"));
+
+        Assert.AreEqual(0, clipboard.ClearCount);
+        Assert.AreEqual(0, clipboard.SetDataObjectCount);
+    }
+
+    [TestMethod]
+    public async Task ClipboardPasterRapidPastesRestoreOriginalClipboardSnapshot()
+    {
+        using var restored = new ManualResetEventSlim();
+        using var restoreQueue = new ClipboardRestoreQueue(TimeSpan.FromMilliseconds(100));
+        var clipboard = new StatefulClipboardBackend(restored);
+        var foregroundWindow = new FakeForegroundWindowBackend();
+        var paster = new ClipboardPaster(clipboard, restoreQueue, foregroundWindow);
+        paster.CaptureTarget();
+
+        await paster.PasteAsync("first transcript", CancellationToken.None);
+        await paster.PasteAsync("second transcript", CancellationToken.None);
+
+        Assert.IsTrue(restored.Wait(TimeSpan.FromSeconds(2)));
+        Assert.AreSame(clipboard.OriginalData, clipboard.CurrentData);
+    }
+
+    [TestMethod]
+    public void AudioResidueCleanerDeletesOnlyAppOwnedWavFiles()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"ptt-residue-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var utterance = Path.Combine(directory, "utterance-20260901-120000-000.wav");
+        var chunk = Path.Combine(directory, "chunk-20260901-120000-000-000.wav");
+        var unrelatedWav = Path.Combine(directory, "meeting.wav");
+        var unrelatedFile = Path.Combine(directory, "settings.json");
+
+        try
+        {
+            File.WriteAllText(utterance, "private audio");
+            File.WriteAllText(chunk, "private audio");
+            File.WriteAllText(unrelatedWav, "keep");
+            File.WriteAllText(unrelatedFile, "keep");
+
+            AudioResidueCleaner.DeleteStaleFiles(directory);
+
+            Assert.IsFalse(File.Exists(utterance));
+            Assert.IsFalse(File.Exists(chunk));
+            Assert.IsTrue(File.Exists(unrelatedWav));
+            Assert.IsTrue(File.Exists(unrelatedFile));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void AudioResidueCleanerReportsLockedPrivateAudio()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"ptt-residue-locked-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var lockedPath = Path.Combine(directory, "utterance-20260901-120000-000.wav");
+
+        try
+        {
+            File.WriteAllText(lockedPath, "private audio");
+            using (new FileStream(lockedPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var failures = AudioResidueCleaner.DeleteStaleFiles(directory);
+
+                CollectionAssert.Contains(failures.ToArray(), lockedPath);
+                Assert.IsTrue(File.Exists(lockedPath));
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void ClipboardRestoreQueueKeepsOnlyLatestSnapshotWhenRestoreStalls()
+    {
+        using var firstRestoreStarted = new ManualResetEventSlim();
+        using var allowFirstRestoreToFinish = new ManualResetEventSlim();
+        using var secondRestoreRan = new ManualResetEventSlim();
+        using var thirdRestoreRan = new ManualResetEventSlim();
+        using var restoreQueue = new ClipboardRestoreQueue(TimeSpan.Zero);
+
+        try
+        {
+            restoreQueue.Enqueue(() =>
+            {
+                firstRestoreStarted.Set();
+                allowFirstRestoreToFinish.Wait();
+            });
+            Assert.IsTrue(firstRestoreStarted.Wait(TimeSpan.FromSeconds(2)));
+
+            restoreQueue.Enqueue(secondRestoreRan.Set);
+            restoreQueue.Enqueue(thirdRestoreRan.Set);
+
+            allowFirstRestoreToFinish.Set();
+            Assert.IsTrue(thirdRestoreRan.Wait(TimeSpan.FromSeconds(2)));
+            Assert.IsFalse(secondRestoreRan.IsSet, "Only the latest pending clipboard snapshot should be retained.");
+        }
+        finally
+        {
+            allowFirstRestoreToFinish.Set();
+        }
+    }
+
+    [TestMethod]
+    public void ClipboardRestoreQueueImmediateWorkInterruptsPendingDelay()
+    {
+        using var delayedRestoreRan = new ManualResetEventSlim();
+        using var immediateRestoreRan = new ManualResetEventSlim();
+        using var restoreQueue = new ClipboardRestoreQueue(TimeSpan.FromSeconds(5));
+
+        restoreQueue.Enqueue(delayedRestoreRan.Set);
+        Thread.Sleep(100);
+        restoreQueue.EnqueueImmediate(immediateRestoreRan.Set);
+
+        Assert.IsTrue(
+            immediateRestoreRan.Wait(TimeSpan.FromMilliseconds(500)),
+            "Failed-paste cleanup should interrupt the normal restore delay.");
+        Assert.IsFalse(delayedRestoreRan.IsSet, "Immediate cleanup should replace obsolete pending work.");
     }
 
     [TestMethod]
@@ -1239,16 +1431,21 @@ public sealed class AppBehaviorTests
 
         public IDataObject? GetDataObject() => _previous;
 
-        public void SetText(string text)
+        public uint SetText(string text)
         {
             PastedText = text;
+            return 1;
         }
+
+        public bool IsCurrent(uint expectedSequence, string pastedText) => true;
+
+        public bool IsSequenceCurrent(uint expectedSequence) => true;
 
         public void SendPaste()
         {
         }
 
-        public void RestoreIfUnchanged(string pastedText, IDataObject? previous)
+        public void RestoreIfCurrent(uint expectedSequence, IDataObject? previous)
         {
             RestoreApartmentState = Thread.CurrentThread.GetApartmentState();
             restoreStarted.Set();
@@ -1263,9 +1460,14 @@ public sealed class AppBehaviorTests
     {
         public IDataObject? GetDataObject() => null;
 
-        public void SetText(string text)
+        public uint SetText(string text)
         {
+            return 1;
         }
+
+        public bool IsCurrent(uint expectedSequence, string pastedText) => true;
+
+        public bool IsSequenceCurrent(uint expectedSequence) => true;
 
         public void SendPaste()
         {
@@ -1273,8 +1475,166 @@ public sealed class AppBehaviorTests
             allowPasteToFinish.Wait();
         }
 
-        public void RestoreIfUnchanged(string pastedText, IDataObject? previous)
+        public void RestoreIfCurrent(uint expectedSequence, IDataObject? previous)
         {
+        }
+    }
+
+    private sealed class RecordingClipboardBackend(Action? textSet = null) : IClipboardPasteBackend
+    {
+        public int SetTextCount { get; private set; }
+
+        public int SendPasteCount { get; private set; }
+
+        public int RestoreCount { get; private set; }
+
+        public IDataObject? GetDataObject() => null;
+
+        public uint SetText(string text)
+        {
+            SetTextCount++;
+            textSet?.Invoke();
+            return 1;
+        }
+
+        public bool IsCurrent(uint expectedSequence, string pastedText) => true;
+
+        public bool IsSequenceCurrent(uint expectedSequence) => true;
+
+        public void SendPaste() => SendPasteCount++;
+
+        public void RestoreIfCurrent(uint expectedSequence, IDataObject? previous)
+        {
+            RestoreCount++;
+        }
+    }
+
+    private sealed class RecordingRestoreQueue : IClipboardRestoreQueue
+    {
+        public int ImmediateEnqueueCount { get; private set; }
+
+        public void Enqueue(Action restore)
+        {
+            restore();
+        }
+
+        public void EnqueueImmediate(Action restore)
+        {
+            ImmediateEnqueueCount++;
+            restore();
+        }
+    }
+
+    private sealed class StatefulClipboardBackend(ManualResetEventSlim restored) : IClipboardPasteBackend
+    {
+        private readonly object _sync = new();
+        private uint _sequence = 1;
+
+        public IDataObject OriginalData { get; } = new DataObject("original clipboard contents");
+
+        public IDataObject? CurrentData { get; private set; }
+
+        public IDataObject? GetDataObject()
+        {
+            lock (_sync)
+            {
+                CurrentData ??= OriginalData;
+                return CurrentData;
+            }
+        }
+
+        public uint SetText(string text)
+        {
+            lock (_sync)
+            {
+                CurrentData = new DataObject(text);
+                return ++_sequence;
+            }
+        }
+
+        public bool IsSequenceCurrent(uint expectedSequence)
+        {
+            lock (_sync)
+            {
+                return _sequence == expectedSequence;
+            }
+        }
+
+        public bool IsCurrent(uint expectedSequence, string pastedText)
+        {
+            return IsSequenceCurrent(expectedSequence);
+        }
+
+        public void SendPaste()
+        {
+        }
+
+        public void RestoreIfCurrent(uint expectedSequence, IDataObject? previous)
+        {
+            lock (_sync)
+            {
+                if (_sequence != expectedSequence)
+                {
+                    return;
+                }
+
+                CurrentData = previous;
+                _sequence++;
+            }
+
+            restored.Set();
+        }
+    }
+
+    private sealed class FakeWindowsClipboardApi : IWindowsClipboardApi
+    {
+        public uint SequenceNumber { get; set; }
+
+        public string Text { get; set; } = string.Empty;
+
+        public int ClearCount { get; private set; }
+
+        public int SetDataObjectCount { get; private set; }
+
+        public IDataObject? GetDataObject() => null;
+
+        public void SetText(string text)
+        {
+            Text = text;
+            SequenceNumber++;
+        }
+
+        public bool ContainsText() => true;
+
+        public string GetText() => Text;
+
+        public void SetDataObject(IDataObject data) => SetDataObjectCount++;
+
+        public void Clear() => ClearCount++;
+
+        public uint GetSequenceNumber() => SequenceNumber;
+    }
+
+    private sealed class FakeForegroundWindowBackend : IForegroundWindowBackend
+    {
+        private static readonly IntPtr OriginalWindow = (IntPtr)42;
+
+        public IntPtr CurrentWindow { get; set; } = OriginalWindow;
+
+        public bool SetForegroundWindowResult { get; set; } = true;
+
+        public IntPtr GetForegroundWindow() => CurrentWindow;
+
+        public bool IsWindow(IntPtr window) => window == OriginalWindow;
+
+        public bool SetForegroundWindow(IntPtr window)
+        {
+            if (SetForegroundWindowResult)
+            {
+                CurrentWindow = window;
+            }
+
+            return SetForegroundWindowResult;
         }
     }
 }

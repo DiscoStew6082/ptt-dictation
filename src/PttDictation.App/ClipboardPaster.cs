@@ -1,5 +1,4 @@
 using PttDictation.Core;
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 
 namespace PttDictation.App;
@@ -11,106 +10,275 @@ internal sealed class ClipboardPaster : IClipboardPaster
 
     private readonly IClipboardPasteBackend _clipboard;
     private readonly IClipboardRestoreQueue _restoreQueue;
+    private readonly IForegroundWindowBackend _foregroundWindow;
+    private readonly object _clipboardOwnershipSync = new();
+    private IDataObject? _originalClipboard;
+    private uint? _ownedClipboardSequence;
     private IntPtr _capturedTarget;
 
     public ClipboardPaster()
-        : this(new WindowsClipboardPasteBackend(), SharedRestoreQueue)
+        : this(new WindowsClipboardPasteBackend(), SharedRestoreQueue, new WindowsForegroundWindowBackend())
     {
     }
 
     internal ClipboardPaster(
         IClipboardPasteBackend clipboard,
-        IClipboardRestoreQueue restoreQueue)
+        IClipboardRestoreQueue restoreQueue,
+        IForegroundWindowBackend foregroundWindow)
     {
         _clipboard = clipboard;
         _restoreQueue = restoreQueue;
+        _foregroundWindow = foregroundWindow;
     }
 
     public void CaptureTarget()
     {
-        _capturedTarget = GetForegroundWindow();
+        _capturedTarget = _foregroundWindow.GetForegroundWindow();
     }
 
     public async Task PasteAsync(string text, CancellationToken cancellationToken)
     {
-        var previous = _clipboard.GetDataObject();
-        var clipboardChanged = false;
-        try
+        if (_capturedTarget == IntPtr.Zero || !_foregroundWindow.IsWindow(_capturedTarget))
         {
-            _clipboard.SetText(text);
-            clipboardChanged = true;
-            if (_capturedTarget != IntPtr.Zero && IsWindow(_capturedTarget))
+            throw new InvalidOperationException("The original window is no longer available. Nothing was pasted.");
+        }
+
+        if (_foregroundWindow.GetForegroundWindow() != _capturedTarget)
+        {
+            if (!_foregroundWindow.SetForegroundWindow(_capturedTarget))
             {
-                SetForegroundWindow(_capturedTarget);
-                await Task.Delay(75, cancellationToken);
+                throw new InvalidOperationException("Windows could not return focus to the original window. Nothing was pasted.");
             }
 
-            _clipboard.SendPaste();
+            await Task.Delay(75, cancellationToken);
+        }
+
+        IDataObject? previous = null;
+        var clipboardChanged = false;
+        uint clipboardSequence = 0;
+        try
+        {
+            lock (_clipboardOwnershipSync)
+            {
+                previous = GetOriginalClipboardSnapshot();
+                clipboardSequence = _clipboard.SetText(text);
+                clipboardChanged = true;
+                TrackClipboardOwnership(clipboardSequence, previous);
+                if (_foregroundWindow.GetForegroundWindow() != _capturedTarget
+                    || !_clipboard.IsCurrent(clipboardSequence, text))
+                {
+                    throw new InvalidOperationException("The paste target or clipboard changed. Nothing was pasted.");
+                }
+
+                _clipboard.SendPaste();
+            }
+
+            _restoreQueue.Enqueue(() => RestoreOwnedClipboard(clipboardSequence, previous));
+            clipboardChanged = false;
         }
         finally
         {
             if (clipboardChanged)
             {
-                _restoreQueue.Enqueue(() => _clipboard.RestoreIfUnchanged(text, previous));
+                _restoreQueue.EnqueueImmediate(() => RestoreOwnedClipboard(clipboardSequence, previous));
             }
         }
     }
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
+    private IDataObject? GetOriginalClipboardSnapshot()
+    {
+        lock (_clipboardOwnershipSync)
+        {
+            if (_ownedClipboardSequence is { } sequence && _clipboard.IsSequenceCurrent(sequence))
+            {
+                return _originalClipboard;
+            }
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindow(IntPtr hWnd);
+            _ownedClipboardSequence = null;
+            _originalClipboard = null;
+        }
 
-    [DllImport("user32.dll")]
+        return _clipboard.GetDataObject();
+    }
+
+    private void TrackClipboardOwnership(uint sequence, IDataObject? originalClipboard)
+    {
+        lock (_clipboardOwnershipSync)
+        {
+            _ownedClipboardSequence = sequence;
+            _originalClipboard = originalClipboard;
+        }
+    }
+
+    private void RestoreOwnedClipboard(uint sequence, IDataObject? originalClipboard)
+    {
+        lock (_clipboardOwnershipSync)
+        {
+            try
+            {
+                _clipboard.RestoreIfCurrent(sequence, originalClipboard);
+            }
+            finally
+            {
+                if (_ownedClipboardSequence == sequence)
+                {
+                    _ownedClipboardSequence = null;
+                    _originalClipboard = null;
+                }
+            }
+        }
+    }
+}
+
+internal interface IForegroundWindowBackend
+{
+    IntPtr GetForegroundWindow();
+
+    bool IsWindow(IntPtr window);
+
+    bool SetForegroundWindow(IntPtr window);
+}
+
+internal sealed class WindowsForegroundWindowBackend : IForegroundWindowBackend
+{
+    public IntPtr GetForegroundWindow() => NativeGetForegroundWindow();
+
+    public bool IsWindow(IntPtr window) => NativeIsWindow(window);
+
+    public bool SetForegroundWindow(IntPtr window) => NativeSetForegroundWindow(window);
+
+    [DllImport("user32.dll", EntryPoint = "GetForegroundWindow")]
+    private static extern IntPtr NativeGetForegroundWindow();
+
+    [DllImport("user32.dll", EntryPoint = "IsWindow")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    private static extern bool NativeIsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "SetForegroundWindow")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool NativeSetForegroundWindow(IntPtr hWnd);
 }
 
 internal interface IClipboardPasteBackend
 {
     IDataObject? GetDataObject();
 
-    void SetText(string text);
+    uint SetText(string text);
+
+    bool IsSequenceCurrent(uint expectedSequence);
+
+    bool IsCurrent(uint expectedSequence, string pastedText);
 
     void SendPaste();
 
-    void RestoreIfUnchanged(string pastedText, IDataObject? previous);
+    void RestoreIfCurrent(uint expectedSequence, IDataObject? previous);
 }
 
 internal sealed class WindowsClipboardPasteBackend : IClipboardPasteBackend
+{
+    private readonly IWindowsClipboardApi _clipboard;
+
+    public WindowsClipboardPasteBackend()
+        : this(new WindowsClipboardApi())
+    {
+    }
+
+    internal WindowsClipboardPasteBackend(IWindowsClipboardApi clipboard)
+    {
+        _clipboard = clipboard;
+    }
+
+    public IDataObject? GetDataObject() => _clipboard.GetDataObject();
+
+    public uint SetText(string text)
+    {
+        _clipboard.SetText(text);
+        return _clipboard.GetSequenceNumber();
+    }
+
+    public bool IsCurrent(uint expectedSequence, string pastedText)
+    {
+        return _clipboard.GetSequenceNumber() == expectedSequence
+            && _clipboard.ContainsText()
+            && _clipboard.GetText() == pastedText;
+    }
+
+    public bool IsSequenceCurrent(uint expectedSequence)
+    {
+        return _clipboard.GetSequenceNumber() == expectedSequence;
+    }
+
+    public void SendPaste() => SendKeys.SendWait("^v");
+
+    public void RestoreIfCurrent(uint expectedSequence, IDataObject? previous)
+    {
+        if (_clipboard.GetSequenceNumber() != expectedSequence)
+        {
+            return;
+        }
+
+        if (previous is null)
+        {
+            _clipboard.Clear();
+        }
+        else
+        {
+            _clipboard.SetDataObject(previous);
+        }
+    }
+}
+
+internal interface IWindowsClipboardApi
+{
+    IDataObject? GetDataObject();
+
+    void SetText(string text);
+
+    bool ContainsText();
+
+    string GetText();
+
+    void SetDataObject(IDataObject data);
+
+    void Clear();
+
+    uint GetSequenceNumber();
+}
+
+internal sealed class WindowsClipboardApi : IWindowsClipboardApi
 {
     public IDataObject? GetDataObject() => Clipboard.GetDataObject();
 
     public void SetText(string text) => Clipboard.SetText(text);
 
-    public void SendPaste() => SendKeys.SendWait("^v");
+    public bool ContainsText() => Clipboard.ContainsText();
 
-    public void RestoreIfUnchanged(string pastedText, IDataObject? previous)
-    {
-        if (previous is null)
-        {
-            return;
-        }
+    public string GetText() => Clipboard.GetText();
 
-        if (Clipboard.ContainsText() && Clipboard.GetText() == pastedText)
-        {
-            Clipboard.SetDataObject(previous, copy: true);
-        }
-    }
+    public void SetDataObject(IDataObject data) => Clipboard.SetDataObject(data, copy: true);
+
+    public void Clear() => Clipboard.Clear();
+
+    public uint GetSequenceNumber() => NativeGetClipboardSequenceNumber();
+
+    [DllImport("user32.dll", EntryPoint = "GetClipboardSequenceNumber")]
+    private static extern uint NativeGetClipboardSequenceNumber();
 }
 
 internal interface IClipboardRestoreQueue
 {
     void Enqueue(Action restore);
+
+    void EnqueueImmediate(Action restore);
 }
 
 internal sealed class ClipboardRestoreQueue : IClipboardRestoreQueue, IDisposable
 {
-    private readonly BlockingCollection<Action> _work = [];
+    private readonly AutoResetEvent _workAvailable = new(initialState: false);
+    private readonly object _sync = new();
     private readonly TimeSpan _delay;
     private readonly Thread _thread;
+    private (Action Restore, DateTimeOffset DueAt)? _pendingRestore;
     private bool _disposed;
 
     public ClipboardRestoreQueue(TimeSpan delay)
@@ -127,43 +295,93 @@ internal sealed class ClipboardRestoreQueue : IClipboardRestoreQueue, IDisposabl
 
     public void Enqueue(Action restore)
     {
+        Enqueue(restore, applyDelay: true);
+    }
+
+    public void EnqueueImmediate(Action restore)
+    {
+        Enqueue(restore, applyDelay: false);
+    }
+
+    private void Enqueue(Action restore, bool applyDelay)
+    {
         ArgumentNullException.ThrowIfNull(restore);
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        _work.Add(restore);
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            // Coalesce pending work so a stalled clipboard call retains only the latest snapshot.
+            var dueAt = applyDelay ? DateTimeOffset.UtcNow + _delay : DateTimeOffset.UtcNow;
+            _pendingRestore = (restore, dueAt);
+            _workAvailable.Set();
+        }
     }
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_sync)
         {
-            return;
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            if (_pendingRestore is { } pending)
+            {
+                _pendingRestore = (pending.Restore, DateTimeOffset.UtcNow);
+            }
+
+            _workAvailable.Set();
         }
 
-        _disposed = true;
-        _work.CompleteAdding();
         if (Thread.CurrentThread != _thread && _thread.Join(TimeSpan.FromSeconds(2)))
         {
-            _work.Dispose();
+            _workAvailable.Dispose();
         }
     }
 
     private void Run()
     {
-        foreach (var restore in _work.GetConsumingEnumerable())
+        while (true)
         {
-            try
+            (Action Restore, DateTimeOffset DueAt)? work = null;
+            TimeSpan? waitDuration = null;
+            lock (_sync)
             {
-                if (_delay > TimeSpan.Zero)
+                if (_pendingRestore is { } pending)
                 {
-                    Thread.Sleep(_delay);
+                    var remaining = pending.DueAt - DateTimeOffset.UtcNow;
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        work = pending;
+                        _pendingRestore = null;
+                    }
+                    else
+                    {
+                        waitDuration = remaining;
+                    }
+                }
+                else if (_disposed)
+                {
+                    return;
+                }
+            }
+
+            if (work is { } ready)
+            {
+                try
+                {
+                    ready.Restore();
+                }
+                catch (Exception)
+                {
+                    // Clipboard restoration is best effort and must never interfere with later dictation.
                 }
 
-                restore();
+                continue;
             }
-            catch (Exception)
-            {
-                // Clipboard restoration is best effort and must never block later dictation.
-            }
+
+            _workAvailable.WaitOne(waitDuration ?? Timeout.InfiniteTimeSpan);
         }
     }
 }
