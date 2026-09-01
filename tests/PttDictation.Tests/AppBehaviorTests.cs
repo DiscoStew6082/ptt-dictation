@@ -7,6 +7,60 @@ namespace PttDictation.Tests;
 public sealed class AppBehaviorTests
 {
     [TestMethod]
+    public async Task ClipboardPasterCompletesAfterPasteWithoutWaitingForClipboardRestore()
+    {
+        using var restoreStarted = new ManualResetEventSlim();
+        using var allowRestoreToFinish = new ManualResetEventSlim();
+        using var restoreFinished = new ManualResetEventSlim();
+        using var restoreQueue = new ClipboardRestoreQueue(TimeSpan.Zero);
+        var clipboard = new BlockingRestoreClipboardBackend(
+            restoreStarted,
+            allowRestoreToFinish,
+            restoreFinished);
+        var paster = new ClipboardPaster(clipboard, restoreQueue);
+
+        try
+        {
+            await paster.PasteAsync("finished paste", CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.AreEqual("finished paste", clipboard.PastedText);
+            Assert.IsTrue(restoreStarted.Wait(TimeSpan.FromSeconds(2)));
+            Assert.IsFalse(restoreFinished.IsSet, "Clipboard restoration should still be blocked.");
+        }
+        finally
+        {
+            allowRestoreToFinish.Set();
+        }
+
+        Assert.IsTrue(restoreFinished.Wait(TimeSpan.FromSeconds(2)));
+        Assert.AreEqual(ApartmentState.STA, clipboard.RestoreApartmentState);
+    }
+
+    [TestMethod]
+    public async Task ClipboardPasterDoesNotCompleteBeforePasteFinishes()
+    {
+        using var pasteStarted = new ManualResetEventSlim();
+        using var allowPasteToFinish = new ManualResetEventSlim();
+        using var restoreQueue = new ClipboardRestoreQueue(TimeSpan.Zero);
+        var clipboard = new BlockingPasteClipboardBackend(pasteStarted, allowPasteToFinish);
+        var paster = new ClipboardPaster(clipboard, restoreQueue);
+
+        var pasteTask = Task.Run(() => paster.PasteAsync("still pasting", CancellationToken.None));
+        try
+        {
+            Assert.IsTrue(pasteStarted.Wait(TimeSpan.FromSeconds(2)));
+            Assert.IsFalse(pasteTask.IsCompleted, "Processing must remain visible while paste is blocked.");
+        }
+        finally
+        {
+            allowPasteToFinish.Set();
+        }
+
+        await pasteTask.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [TestMethod]
     public void PersistentServerResponsePreservesWordsAndRemovesEndOfUtteranceToken()
     {
         const string json = """
@@ -540,6 +594,14 @@ public sealed class AppBehaviorTests
             Assert.IsFalse(overlay.LiveActivityTimerEnabledForTest);
             Assert.IsFalse(overlay.ActivityMeterVisibleForTest);
         });
+    }
+
+    [TestMethod]
+    public void CompletedPasteRemainsVisibleForAnotherQuarterSecond()
+    {
+        Assert.AreEqual(
+            TimeSpan.FromMilliseconds(250),
+            TrayApplicationContext.PostPasteVisibilityDurationForTest);
     }
 
     [TestMethod]
@@ -1162,5 +1224,57 @@ public sealed class AppBehaviorTests
         Assert.IsTrue(
             button.ClientSize.Width >= requiredWidth,
             $"{button.Text} requires {requiredWidth}px but has {button.ClientSize.Width}px.");
+    }
+
+    private sealed class BlockingRestoreClipboardBackend(
+        ManualResetEventSlim restoreStarted,
+        ManualResetEventSlim allowRestoreToFinish,
+        ManualResetEventSlim restoreFinished) : IClipboardPasteBackend
+    {
+        private readonly IDataObject _previous = new DataObject("previous clipboard contents");
+
+        public string? PastedText { get; private set; }
+
+        public ApartmentState RestoreApartmentState { get; private set; } = ApartmentState.Unknown;
+
+        public IDataObject? GetDataObject() => _previous;
+
+        public void SetText(string text)
+        {
+            PastedText = text;
+        }
+
+        public void SendPaste()
+        {
+        }
+
+        public void RestoreIfUnchanged(string pastedText, IDataObject? previous)
+        {
+            RestoreApartmentState = Thread.CurrentThread.GetApartmentState();
+            restoreStarted.Set();
+            allowRestoreToFinish.Wait();
+            restoreFinished.Set();
+        }
+    }
+
+    private sealed class BlockingPasteClipboardBackend(
+        ManualResetEventSlim pasteStarted,
+        ManualResetEventSlim allowPasteToFinish) : IClipboardPasteBackend
+    {
+        public IDataObject? GetDataObject() => null;
+
+        public void SetText(string text)
+        {
+        }
+
+        public void SendPaste()
+        {
+            pasteStarted.Set();
+            allowPasteToFinish.Wait();
+        }
+
+        public void RestoreIfUnchanged(string pastedText, IDataObject? previous)
+        {
+        }
     }
 }

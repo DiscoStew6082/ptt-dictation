@@ -5,6 +5,8 @@ namespace PttDictation.App;
 
 internal sealed class TrayApplicationContext : ApplicationContext
 {
+    internal static TimeSpan PostPasteVisibilityDurationForTest => TimeSpan.FromMilliseconds(250);
+
     private readonly ModelRegistry _modelRegistry = ModelRegistry.CreateDefault();
     private readonly SessionHistory _history = new();
     private readonly AppSettingsStore _settingsStore = new(AppPaths.SettingsPath);
@@ -266,6 +268,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (outcome == DictationOutcome.Pasted)
             {
                 PlayStatusSound(StatusSound.Done);
+                await Task.Delay(PostPasteVisibilityDurationForTest);
                 _statusOverlay.HideRecording();
             }
             else if (outcome == DictationOutcome.EmptyTranscript)
