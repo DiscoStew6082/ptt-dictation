@@ -33,6 +33,8 @@ public interface IDictationSession
     Task StartAsync(CancellationToken cancellationToken);
 
     Task<DictationSessionResult> StopAsync(CancellationToken cancellationToken);
+
+    Task CancelAsync(CancellationToken cancellationToken);
 }
 
 public interface IClipboardPaster

@@ -22,10 +22,10 @@ public static class DictationStatusCatalog
         "Release the hold-to-talk key to transcribe.",
         AutoHide: false);
 
-    public static DictationStatus PasteCancelled { get; } = new(
+    public static DictationStatus DictationCancelled { get; } = new(
         DictationStatusKind.Cancelled,
-        "Paste cancelled",
-        "The transcript was not pasted.",
+        "Dictation cancelled",
+        "Recording and transcription were discarded. Nothing was pasted.",
         AutoHide: true);
 
     public static DictationStatus EmptyTranscript { get; } = new(

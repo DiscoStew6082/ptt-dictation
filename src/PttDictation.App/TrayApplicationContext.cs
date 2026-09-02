@@ -12,22 +12,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AppSettingsStore _settingsStore = new(AppPaths.SettingsPath);
     private readonly WasapiAudioRecorder _recorder;
     private readonly LazyAssetTranscriber _transcriber;
-    private readonly DictationController _dictationController;
+    private readonly DictationWorkflow _dictationWorkflow;
     private readonly Icon _trayIcon;
     private readonly NotifyIcon _notifyIcon;
     private readonly GlobalHotkeySource _hotkeySource;
     private readonly StatusOverlayForm _statusOverlay = new();
     private readonly SynchronizationContext _uiContext;
     private readonly CancellationTokenSource _lifetime = new();
-    private CancellationTokenSource? _dictationOperation;
     private ToolStripMenuItem? _cancelDictationItem;
     private SettingsForm? _settingsForm;
     private SessionHistoryForm? _historyForm;
     private AppSettings _settings = AppSettings.Default;
     private bool _exiting;
-    private bool _acceptedRecordingStart;
-    private bool _toggleRecordingActive;
-    private bool _listeningPreviewActive;
+    private DictationWorkflowPhase _lastWorkflowPhase = DictationWorkflowPhase.Idle;
 
     public TrayApplicationContext()
     {
@@ -35,20 +32,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var staleAudioCleanupFailures = AudioResidueCleaner.DeleteStaleFiles(AppPaths.RootDirectory);
         _recorder = new WasapiAudioRecorder(AppPaths.RootDirectory);
         _recorder.AudioLevelChanged += OnAudioLevelChanged;
+        DictationWorkflow? workflow = null;
         _transcriber = new LazyAssetTranscriber(
             AppPaths.RootDirectory,
             _settingsStore,
             () => _settings,
             settings => _settings = settings,
-            ReportTranscriberStatus);
-        _dictationController = new DictationController(
+            message => workflow?.ReportProcessingDetail(message));
+        workflow = new DictationWorkflow(
             new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, _transcriber),
             new ClipboardPaster(),
             _history,
-            finalTranscriptReady: _statusOverlay.ShowProcessingTranscript,
-            cleanupWarningReady: ShowCleanupWarning,
-            transcriptUpdateReady: OnTranscriptUpdate,
             getTranscriptCorrections: () => _settings.TranscriptCorrections);
+        _dictationWorkflow = workflow;
+        _dictationWorkflow.StateChanged += OnDictationStateChanged;
 
         _trayIcon = TrayIconFactory.Create();
         _notifyIcon = new NotifyIcon
@@ -116,7 +113,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem("Open Settings", null, (_, _) => ShowSettings()));
         menu.Items.Add(new ToolStripMenuItem("Session History", null, (_, _) => ShowHistory()));
         menu.Items.Add(new ToolStripMenuItem("Play Test Sound", null, (_, _) => PlayStatusSound(StatusSound.Listening)));
-        _cancelDictationItem = new ToolStripMenuItem("Cancel Current Dictation", null, (_, _) => CancelCurrentDictation())
+        _cancelDictationItem = new ToolStripMenuItem(
+            "Cancel Current Dictation",
+            null,
+            (_, _) => PostToUi(() => _dictationWorkflow.HandleAsync(DictationIntent.Cancel, _lifetime.Token)))
         {
             Enabled = false
         };
@@ -194,19 +194,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        if (await _dictationController.HandleHotkeyDownAsync(_lifetime.Token))
-        {
-            _acceptedRecordingStart = true;
-            _listeningPreviewActive = true;
-            PlayStatusSound(StatusSound.Listening);
-            var hotkeyName = DictationHotkeyCatalog.DisplayName(_settings.HoldHotkey);
-            ShowStatus(
-                DictationStatusCatalog.Listening,
-                ToolTipIcon.Info,
-                notifyMessage: ListeningStatusFormatter.FormatHint(ListeningTriggerMode.PushToTalk, hotkeyName),
-                mode: ListeningTriggerMode.PushToTalk,
-                listeningHotkeyName: hotkeyName);
-        }
+        await _dictationWorkflow.HandleAsync(DictationIntent.BeginHold, _lifetime.Token);
     }
 
     private async Task OnHotkeyReleasedAsync()
@@ -216,13 +204,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        if (!_acceptedRecordingStart)
-        {
-            return;
-        }
-
-        _acceptedRecordingStart = false;
-        await StopRecordingAndTranscribeAsync();
+        await _dictationWorkflow.HandleAsync(DictationIntent.EndHold, _lifetime.Token);
     }
 
     private async Task OnToggleRequestedAsync()
@@ -232,105 +214,118 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        if (_toggleRecordingActive)
+        await _dictationWorkflow.HandleAsync(DictationIntent.Toggle, _lifetime.Token);
+    }
+
+    private void OnDictationStateChanged(DictationWorkflowState state)
+    {
+        PostToUi(() => ApplyDictationStateAsync(state));
+    }
+
+    private async Task ApplyDictationStateAsync(DictationWorkflowState state)
+    {
+        if (_exiting || _statusOverlay.IsDisposed)
         {
-            _toggleRecordingActive = false;
-            await StopRecordingAndTranscribeAsync();
             return;
         }
 
-        if (await _dictationController.HandleHotkeyDownAsync(_lifetime.Token))
-        {
-            _toggleRecordingActive = true;
-            _listeningPreviewActive = true;
-            PlayStatusSound(StatusSound.Listening);
-            var hotkeyName = DictationHotkeyCatalog.DisplayName(_settings.ToggleHotkey);
-            ShowStatus(
-                DictationStatusCatalog.Listening,
-                ToolTipIcon.Info,
-                notifyMessage: ListeningStatusFormatter.FormatHint(ListeningTriggerMode.Toggle, hotkeyName),
-                mode: ListeningTriggerMode.Toggle,
-                listeningHotkeyName: hotkeyName);
-        }
-    }
-
-    private async Task StopRecordingAndTranscribeAsync()
-    {
-        using var operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        _dictationOperation = operation;
         if (_cancelDictationItem is not null)
         {
-            _cancelDictationItem.Enabled = true;
+            _cancelDictationItem.Enabled = state.CanCancel;
         }
 
-        _listeningPreviewActive = false;
-        _statusOverlay.ShowProcessing();
-        PlayStatusSound(StatusSound.Transcribing);
-        try
+        if (!string.IsNullOrWhiteSpace(state.CleanupWarningPath))
         {
-            var outcome = await _dictationController.HandleHotkeyUpAsync(operation.Token);
-            _historyForm?.RefreshItems();
-            if (outcome == DictationOutcome.Pasted)
-            {
-                PlayStatusSound(StatusSound.Done);
-                await Task.Delay(PostPasteVisibilityDurationForTest);
-                _statusOverlay.HideRecording();
-            }
-            else if (outcome == DictationOutcome.EmptyTranscript)
-            {
-                ShowStatus(DictationStatusCatalog.EmptyTranscript, ToolTipIcon.Info);
-            }
+            ShowCleanupWarning(state.CleanupWarningPath);
         }
-        catch (OperationCanceledException) when (_exiting)
-        {
-        }
-        catch (OperationCanceledException) when (operation.IsCancellationRequested)
-        {
-            ShowStatus(DictationStatusCatalog.PasteCancelled, ToolTipIcon.Info);
-        }
-        catch (Exception ex)
-        {
-            PlayStatusSound(StatusSound.Error);
-            ShowStatus(DictationStatusCatalog.Error(ex.Message), ToolTipIcon.Error);
-        }
-        finally
-        {
-            _listeningPreviewActive = false;
-            if (ReferenceEquals(_dictationOperation, operation))
-            {
-                _dictationOperation = null;
-            }
 
-            if (_cancelDictationItem is not null)
-            {
-                _cancelDictationItem.Enabled = false;
-            }
-        }
-    }
-
-    private void CancelCurrentDictation()
-    {
-        if (_dictationOperation is { IsCancellationRequested: false } operation)
+        var phaseChanged = state.Phase != _lastWorkflowPhase;
+        _lastWorkflowPhase = state.Phase;
+        switch (state.Phase)
         {
-            operation.Cancel();
-            if (_cancelDictationItem is not null)
-            {
-                _cancelDictationItem.Enabled = false;
-            }
+            case DictationWorkflowPhase.Recording:
+                var mode = state.TriggerMode == DictationTriggerMode.Toggle
+                    ? ListeningTriggerMode.Toggle
+                    : ListeningTriggerMode.PushToTalk;
+                var hotkey = state.TriggerMode == DictationTriggerMode.Toggle
+                    ? _settings.ToggleHotkey
+                    : _settings.HoldHotkey;
+                var hotkeyName = DictationHotkeyCatalog.DisplayName(hotkey);
+                if (phaseChanged)
+                {
+                    PlayStatusSound(StatusSound.Listening);
+                    ShowStatus(
+                        DictationStatusCatalog.Listening,
+                        ToolTipIcon.Info,
+                        notifyMessage: ListeningStatusFormatter.FormatHint(mode, hotkeyName),
+                        mode: mode,
+                        listeningHotkeyName: hotkeyName);
+                }
+
+                if (!string.IsNullOrWhiteSpace(state.Transcript))
+                {
+                    _statusOverlay.ShowListeningTranscript(state.Transcript, mode);
+                }
+
+                break;
+            case DictationWorkflowPhase.Processing:
+                if (phaseChanged)
+                {
+                    _statusOverlay.ShowProcessing();
+                    PlayStatusSound(StatusSound.Transcribing);
+                }
+
+                if (!string.IsNullOrWhiteSpace(state.Transcript))
+                {
+                    _statusOverlay.ShowProcessingTranscript(state.Transcript);
+                }
+
+                if (!string.IsNullOrWhiteSpace(state.ProcessingDetail))
+                {
+                    _statusOverlay.ShowProcessingDetail(state.ProcessingDetail);
+                }
+
+                break;
+            case DictationWorkflowPhase.Pasted:
+                _historyForm?.RefreshItems();
+                if (phaseChanged)
+                {
+                    PlayStatusSound(StatusSound.Done);
+                    await Task.Delay(PostPasteVisibilityDurationForTest);
+                    if (_dictationWorkflow.CurrentState.Phase == DictationWorkflowPhase.Pasted)
+                    {
+                        _statusOverlay.HideRecording();
+                    }
+                }
+
+                break;
+            case DictationWorkflowPhase.Empty:
+                if (phaseChanged)
+                {
+                    ShowStatus(DictationStatusCatalog.EmptyTranscript, ToolTipIcon.Info);
+                }
+
+                break;
+            case DictationWorkflowPhase.Cancelled:
+                if (phaseChanged)
+                {
+                    ShowStatus(DictationStatusCatalog.DictationCancelled, ToolTipIcon.Info);
+                }
+
+                break;
+            case DictationWorkflowPhase.Failed:
+                if (phaseChanged)
+                {
+                    PlayStatusSound(StatusSound.Error);
+                    ShowStatus(
+                        DictationStatusCatalog.Error(state.ErrorMessage ?? "Unknown error."),
+                        ToolTipIcon.Error);
+                }
+
+                break;
+            case DictationWorkflowPhase.Idle:
+                break;
         }
-    }
-
-    private void ReportTranscriberStatus(string message)
-    {
-        _uiContext.Post(_ =>
-        {
-            if (_exiting || _dictationOperation?.IsCancellationRequested == true)
-            {
-                return;
-            }
-
-            _statusOverlay.ShowProcessingDetail(message);
-        }, null);
     }
 
     private void UpdateTrayText()
@@ -351,33 +346,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon.BalloonTipText = message;
         _notifyIcon.BalloonTipIcon = icon;
         _notifyIcon.ShowBalloonTip(2500);
-    }
-
-    private void OnTranscriptUpdate(TranscriptUpdate update)
-    {
-        if (update.Kind != TranscriptUpdateKind.Partial)
-        {
-            return;
-        }
-
-        _uiContext.Post(_ =>
-        {
-            if (_exiting || _statusOverlay.IsDisposed || !_listeningPreviewActive)
-            {
-                return;
-            }
-
-            var text = string.IsNullOrWhiteSpace(update.UnstableText)
-                ? update.StableText
-                : $"{update.StableText} {update.UnstableText}".Trim();
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                var mode = _toggleRecordingActive
-                    ? ListeningTriggerMode.Toggle
-                    : ListeningTriggerMode.PushToTalk;
-                _statusOverlay.ShowListeningTranscript(text, mode);
-            }
-        }, null);
     }
 
     private void ShowCleanupWarning(string path)
@@ -456,6 +424,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _exiting = true;
         _lifetime.Cancel();
+        _dictationWorkflow.StateChanged -= OnDictationStateChanged;
         _recorder.AudioLevelChanged -= OnAudioLevelChanged;
         _hotkeySource.Dispose();
         _notifyIcon.Visible = false;

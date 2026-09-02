@@ -142,6 +142,43 @@ public sealed class ChunkedTranscribingDictationSession(
         }
     }
 
+    public async Task CancelAsync(CancellationToken cancellationToken)
+    {
+        RecordedAudio? finalAudio = null;
+        try
+        {
+            lock (_gate)
+            {
+                if (!_started)
+                {
+                    return;
+                }
+
+                _stopping = true;
+            }
+
+            finalAudio = await recorder.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            recorder.AudioChunkReady -= OnAudioChunkReady;
+            CancelChunkProcessing();
+            await WaitForChunkProcessingToSettleAsync();
+            if (finalAudio is { DeleteAfterUse: true })
+            {
+                TryDelete(finalAudio.Path);
+            }
+
+            lock (_gate)
+            {
+                _started = false;
+                _stopping = false;
+                _chunkCancellation?.Dispose();
+                _chunkCancellation = null;
+            }
+        }
+    }
+
     private void CancelChunkProcessing()
     {
         try

@@ -134,6 +134,21 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    public void WindowsClipboardBackendDetachesTextSnapshotBeforeReplacingClipboard()
+    {
+        var clipboard = new MutableTextWindowsClipboardApi("previous clipboard contents");
+        var backend = new WindowsClipboardPasteBackend(clipboard);
+
+        var snapshot = backend.GetDataObject();
+        backend.SetText("private dictated text");
+
+        Assert.IsNotNull(snapshot);
+        Assert.AreEqual(
+            "previous clipboard contents",
+            snapshot.GetData(DataFormats.UnicodeText, autoConvert: false));
+    }
+
+    [TestMethod]
     public async Task ClipboardPasterRapidPastesRestoreOriginalClipboardSnapshot()
     {
         using var restored = new ManualResetEventSlim();
@@ -785,6 +800,23 @@ public sealed class AppBehaviorTests
             Assert.IsFalse(overlay.Visible);
             Assert.IsFalse(overlay.LiveActivityTimerEnabledForTest);
             Assert.IsFalse(overlay.ActivityMeterVisibleForTest);
+        });
+    }
+
+    [TestMethod]
+    public void StatusOverlayExplainsThatCancelledRecordingWasDiscarded()
+    {
+        RunOnStaThread(() =>
+        {
+            using var overlay = new StatusOverlayForm();
+
+            overlay.ApplyStatusForTest(DictationStatusCatalog.DictationCancelled);
+
+            Assert.AreEqual("Dictation cancelled", overlay.TitleTextForTest);
+            StringAssert.Contains(overlay.MessageTextForTest, "discarded");
+            StringAssert.Contains(overlay.MessageTextForTest, "Nothing was pasted");
+            Assert.IsTrue(overlay.AutoHideTimerEnabledForTest);
+            SaveOverlayPreviewIfRequested(overlay, "PTT_CANCELLED_PREVIEW_PATH");
         });
     }
 
@@ -1613,6 +1645,40 @@ public sealed class AppBehaviorTests
         public void Clear() => ClearCount++;
 
         public uint GetSequenceNumber() => SequenceNumber;
+    }
+
+    private sealed class MutableTextWindowsClipboardApi : IWindowsClipboardApi
+    {
+        private readonly DataObject _liveClipboard = new();
+        private uint _sequence = 1;
+
+        public MutableTextWindowsClipboardApi(string text)
+        {
+            _liveClipboard.SetData(DataFormats.UnicodeText, autoConvert: false, text);
+        }
+
+        public IDataObject? GetDataObject() => _liveClipboard;
+
+        public void SetText(string text)
+        {
+            _liveClipboard.SetData(DataFormats.UnicodeText, autoConvert: false, text);
+            _sequence++;
+        }
+
+        public bool ContainsText() => true;
+
+        public string GetText() =>
+            (string)((IDataObject)_liveClipboard).GetData(DataFormats.UnicodeText, autoConvert: false)!;
+
+        public void SetDataObject(IDataObject data)
+        {
+        }
+
+        public void Clear()
+        {
+        }
+
+        public uint GetSequenceNumber() => _sequence;
     }
 
     private sealed class FakeForegroundWindowBackend : IForegroundWindowBackend

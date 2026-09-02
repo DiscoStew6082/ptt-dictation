@@ -188,7 +188,47 @@ internal sealed class WindowsClipboardPasteBackend : IClipboardPasteBackend
         _clipboard = clipboard;
     }
 
-    public IDataObject? GetDataObject() => _clipboard.GetDataObject();
+    public IDataObject? GetDataObject()
+    {
+        var source = _clipboard.GetDataObject();
+        if (source is null)
+        {
+            return null;
+        }
+
+        var formats = source.GetFormats(autoConvert: false);
+        if (formats.Length == 0)
+        {
+            return null;
+        }
+
+        var snapshot = new DataObject();
+        var copiedFormats = 0;
+        foreach (var format in formats)
+        {
+            try
+            {
+                var value = source.GetData(format, autoConvert: false);
+                if (value is null)
+                {
+                    continue;
+                }
+
+                snapshot.SetData(format, autoConvert: false, DetachClipboardValue(value));
+                copiedFormats++;
+            }
+            catch (ExternalException)
+            {
+            }
+        }
+
+        if (copiedFormats == 0)
+        {
+            throw new ExternalException("Windows could not snapshot the current clipboard. Nothing was pasted.");
+        }
+
+        return snapshot;
+    }
 
     public uint SetText(string text)
     {
@@ -225,6 +265,32 @@ internal sealed class WindowsClipboardPasteBackend : IClipboardPasteBackend
         {
             _clipboard.SetDataObject(previous);
         }
+    }
+
+    private static object DetachClipboardValue(object value)
+    {
+        return value switch
+        {
+            byte[] bytes => bytes.ToArray(),
+            MemoryStream stream => new MemoryStream(stream.ToArray(), writable: false),
+            Stream stream => CopyStream(stream),
+            ICloneable cloneable => cloneable.Clone() ?? value,
+            _ => value
+        };
+    }
+
+    private static MemoryStream CopyStream(Stream source)
+    {
+        var originalPosition = source.CanSeek ? source.Position : (long?)null;
+        var copy = new MemoryStream();
+        source.CopyTo(copy);
+        copy.Position = 0;
+        if (originalPosition is { } position)
+        {
+            source.Position = position;
+        }
+
+        return copy;
     }
 }
 

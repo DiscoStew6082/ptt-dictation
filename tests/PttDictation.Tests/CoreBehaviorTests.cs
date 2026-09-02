@@ -61,7 +61,7 @@ public sealed class CoreBehaviorTests
         var recorder = new FakeAudioRecorder("utterance.wav");
         var transcriber = new FakeTranscriber("  hello parakeet  \n\n");
         var paster = new FakeClipboardPaster();
-        var controller = new DictationController(recorder, transcriber, paster, new SessionHistory());
+        var controller = new LegacyDictationControllerHarness(recorder, transcriber, paster, new SessionHistory());
 
         var started = await controller.HandleHotkeyDownAsync(CancellationToken.None);
         var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
@@ -80,7 +80,7 @@ public sealed class CoreBehaviorTests
         string? preview = null;
         string? previewAtPaste = null;
         var paster = new FakeClipboardPaster(() => previewAtPaste = preview);
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("  preview this  "),
             paster,
@@ -103,7 +103,7 @@ public sealed class CoreBehaviorTests
             10));
         string? preview = null;
         var paster = new FakeClipboardPaster();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber(finalText),
             paster,
@@ -124,7 +124,7 @@ public sealed class CoreBehaviorTests
         string? preview = null;
         var history = new SessionHistory();
         var paster = new FakeClipboardPaster();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("  kuda likes c sharp  "),
             paster,
@@ -152,7 +152,7 @@ public sealed class CoreBehaviorTests
         var updates = new List<TranscriptUpdate>();
         var history = new SessionHistory();
         var paster = new FakeClipboardPaster();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeDictationSessionFactory(session),
             paster,
             history,
@@ -182,7 +182,7 @@ public sealed class CoreBehaviorTests
     {
         var session = new FakeDictationSession("final text");
         var updates = new List<TranscriptUpdate>();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeDictationSessionFactory(session),
             new FakeClipboardPaster(),
             new SessionHistory(),
@@ -206,7 +206,7 @@ public sealed class CoreBehaviorTests
     {
         var session = new FakeDictationSession("final text");
         var updates = new List<TranscriptUpdate>();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeDictationSessionFactory(session),
             new FakeClipboardPaster(),
             new SessionHistory(),
@@ -226,7 +226,7 @@ public sealed class CoreBehaviorTests
     {
         var events = new List<string>();
         var paster = new FakeClipboardPaster(() => events.Add("paste"));
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("corrected final text"),
             paster,
@@ -245,7 +245,7 @@ public sealed class CoreBehaviorTests
     public async Task RecordingCapturesTheOriginalPasteTarget()
     {
         var paster = new FakeClipboardPaster();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("target test"),
             paster,
@@ -494,7 +494,7 @@ public sealed class CoreBehaviorTests
     public async Task PreviewFailureDoesNotBlockPaste()
     {
         var paster = new FakeClipboardPaster();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("still paste this"),
             paster,
@@ -512,7 +512,7 @@ public sealed class CoreBehaviorTests
     public async Task DuplicateKeydownDoesNotStartSecondRecording()
     {
         var recorder = new FakeAudioRecorder("utterance.wav");
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             recorder,
             new FakeTranscriber("hello"),
             new FakeClipboardPaster(),
@@ -534,7 +534,7 @@ public sealed class CoreBehaviorTests
     {
         var failingSession = new FailingStartDictationSession();
         var succeedingSession = new FakeDictationSession("hello");
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new SequenceDictationSessionFactory(failingSession, succeedingSession),
             new FakeClipboardPaster(),
             new SessionHistory());
@@ -553,7 +553,7 @@ public sealed class CoreBehaviorTests
     {
         var history = new SessionHistory();
         var paster = new FakeClipboardPaster();
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("   "),
             paster,
@@ -572,7 +572,7 @@ public sealed class CoreBehaviorTests
     {
         var tempPath = Path.Combine(Path.GetTempPath(), $"parakeet-ptt-{Guid.NewGuid():N}.wav");
         await File.WriteAllTextAsync(tempPath, "fake wav");
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder(tempPath, deleteAfterUse: true),
             new FakeTranscriber("hello"),
             new FakeClipboardPaster(),
@@ -592,7 +592,7 @@ public sealed class CoreBehaviorTests
         await File.WriteAllTextAsync(tempPath, "fake wav");
         File.SetAttributes(tempPath, FileAttributes.ReadOnly);
         string? warningPath = null;
-        var controller = new DictationController(
+        var controller = new LegacyDictationControllerHarness(
             new FakeAudioRecorder(tempPath, deleteAfterUse: true),
             new FakeTranscriber("hello"),
             new FakeClipboardPaster(),
@@ -1174,6 +1174,8 @@ internal sealed class FakeDictationSession(string transcript) : IDictationSessio
 
     public int StopCount { get; private set; }
 
+    public int CancelCount { get; private set; }
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         StartCount++;
@@ -1184,6 +1186,12 @@ internal sealed class FakeDictationSession(string transcript) : IDictationSessio
     {
         StopCount++;
         return Task.FromResult(new DictationSessionResult(new TranscriptResult(transcript, null, null)));
+    }
+
+    public Task CancelAsync(CancellationToken cancellationToken)
+    {
+        CancelCount++;
+        return Task.CompletedTask;
     }
 
     public void PublishPartial(string text, string unstableText = "")
@@ -1221,6 +1229,11 @@ internal sealed class FailingStartDictationSession : IDictationSession
     public Task<DictationSessionResult> StopAsync(CancellationToken cancellationToken)
     {
         throw new NotSupportedException();
+    }
+
+    public Task CancelAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
     }
 }
 
