@@ -408,12 +408,43 @@ public sealed class AppBehaviorTests
                 ToggleHotkey = DictationHotkey.RightShift
             };
 
-            TrayApplicationContext.PresentSettingsForm(form, settings);
+            var presented = TrayApplicationContext.PresentSettingsForm(
+                form,
+                () => throw new InvalidOperationException("The existing form should be reused."),
+                settings);
 
+            Assert.AreSame(form, presented);
             Assert.IsTrue(form.Visible);
             Assert.AreEqual("realtime-eou-120m-v1-f16", form.SelectedModelIdForTest);
             Assert.AreEqual(DictationHotkey.RightControl, form.SelectedHoldHotkeyForTest);
             Assert.AreEqual(DictationHotkey.RightShift, form.SelectedToggleHotkeyForTest);
+        });
+    }
+
+    [TestMethod]
+    public void TrayRecreatesDisposedSettingsFormBeforePresenting()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            var disposedForm = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+            disposedForm.Dispose();
+            SettingsForm? replacement = null;
+            try
+            {
+                replacement = TrayApplicationContext.PresentSettingsForm(
+                    disposedForm,
+                    () => new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault()),
+                    AppSettings.Default);
+
+                Assert.IsNotNull(replacement);
+                Assert.AreNotSame(disposedForm, replacement);
+                Assert.IsTrue(replacement.Visible);
+            }
+            finally
+            {
+                replacement?.Dispose();
+            }
         });
     }
 

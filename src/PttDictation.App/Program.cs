@@ -3,7 +3,7 @@ namespace PttDictation.App;
 static class Program
 {
     [STAThread]
-    static void Main(string[] args)
+    static void Main()
     {
         using var singleInstanceGuard = SingleInstanceGuard.TryAcquire();
         if (singleInstanceGuard is null)
@@ -13,8 +13,6 @@ static class Program
         }
 
         ApplicationConfiguration.Initialize();
-        var openSettings = args.Any(argument =>
-            string.Equals(argument, "--settings", StringComparison.OrdinalIgnoreCase));
         var context = new TrayApplicationContext();
         using var activation = SingleInstanceActivation.Listen();
         using var activationTimer = new System.Windows.Forms.Timer
@@ -29,10 +27,6 @@ static class Program
             }
         };
         activationTimer.Start();
-        if (openSettings)
-        {
-            context.OpenSettings();
-        }
 
         Application.Run(context);
     }

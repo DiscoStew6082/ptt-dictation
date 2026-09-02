@@ -152,15 +152,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowSettings()
     {
-        if (_settingsForm is { Visible: true })
-        {
-            _settingsForm.Activate();
-            _settingsForm.BringToFront();
-            return;
-        }
-
-        _settingsForm ??= CreateSettingsForm();
-        PresentSettingsForm(_settingsForm, _settings);
+        _settingsForm = PresentSettingsForm(_settingsForm, CreateSettingsForm, _settings);
     }
 
     private SettingsForm CreateSettingsForm()
@@ -175,12 +167,28 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return form;
     }
 
-    internal static void PresentSettingsForm(SettingsForm form, AppSettings settings)
+    internal static SettingsForm PresentSettingsForm(
+        SettingsForm? form,
+        Func<SettingsForm> createForm,
+        AppSettings settings)
     {
+        if (form is { IsDisposed: false, Visible: true })
+        {
+            form.Activate();
+            form.BringToFront();
+            return form;
+        }
+
+        if (form is null || form.IsDisposed)
+        {
+            form = createForm();
+        }
+
         form.UseSettings(settings);
         form.Show();
         form.Activate();
         form.BringToFront();
+        return form;
     }
 
     private void ShowHistory()
