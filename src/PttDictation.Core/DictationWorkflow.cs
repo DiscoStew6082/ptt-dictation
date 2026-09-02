@@ -133,12 +133,17 @@ public sealed class DictationWorkflow
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
             await TryCancelSessionAsync(session);
-            Publish(new DictationWorkflowState(DictationWorkflowPhase.Cancelled));
+            Publish(new DictationWorkflowState(
+                DictationWorkflowPhase.Cancelled,
+                CleanupWarningPath: session.CleanupWarningPath));
             CompleteSession(session, operation);
         }
         catch (Exception ex)
         {
-            Publish(new DictationWorkflowState(DictationWorkflowPhase.Failed, ErrorMessage: ex.Message));
+            Publish(new DictationWorkflowState(
+                DictationWorkflowPhase.Failed,
+                ErrorMessage: ex.Message,
+                CleanupWarningPath: session.CleanupWarningPath));
             CompleteSession(session, operation);
         }
         finally
@@ -176,18 +181,22 @@ public sealed class DictationWorkflow
         }
 
         Publish(processing);
-        DictationSessionResult? sessionResult = null;
+        string? sessionResultCleanupWarningPath = null;
         try
         {
-            sessionResult = await session.StopAsync(operation.Token);
+            var sessionResult = await session.StopAsync(operation.Token);
+            sessionResultCleanupWarningPath = sessionResult.CleanupWarningPath;
             operation.Token.ThrowIfCancellationRequested();
+            var cleanupWarningPath = sessionResultCleanupWarningPath ?? session.CleanupWarningPath;
             var corrected = TranscriptCorrectionDictionary.Apply(
                 sessionResult.Transcript.Text,
                 _getTranscriptCorrections());
             var cleaned = TranscriptNormalizer.Normalize(corrected);
             if (cleaned.Length == 0)
             {
-                Publish(new DictationWorkflowState(DictationWorkflowPhase.Empty));
+                Publish(new DictationWorkflowState(
+                    DictationWorkflowPhase.Empty,
+                    CleanupWarningPath: cleanupWarningPath));
                 return;
             }
 
@@ -195,37 +204,34 @@ public sealed class DictationWorkflow
                 DictationWorkflowPhase.Processing,
                 mode,
                 cleaned,
-                CurrentState.ProcessingDetail));
+                CurrentState.ProcessingDetail,
+                CleanupWarningPath: cleanupWarningPath));
             await _clipboardPaster.PasteAsync(cleaned, operation.Token);
             operation.Token.ThrowIfCancellationRequested();
             _history.Add(cleaned);
-            Publish(new DictationWorkflowState(DictationWorkflowPhase.Pasted, Transcript: cleaned));
+            Publish(new DictationWorkflowState(
+                DictationWorkflowPhase.Pasted,
+                Transcript: cleaned,
+                CleanupWarningPath: cleanupWarningPath));
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
-            if (CurrentState.Phase != DictationWorkflowPhase.Cancelled)
-            {
-                Publish(new DictationWorkflowState(DictationWorkflowPhase.Cancelled));
-            }
+            PublishCancellationIfNeeded(session, sessionResultCleanupWarningPath);
         }
         catch (Exception) when (operation.IsCancellationRequested)
         {
-            if (CurrentState.Phase != DictationWorkflowPhase.Cancelled)
-            {
-                Publish(new DictationWorkflowState(DictationWorkflowPhase.Cancelled));
-            }
+            PublishCancellationIfNeeded(session, sessionResultCleanupWarningPath);
         }
         catch (Exception ex)
         {
-            Publish(new DictationWorkflowState(DictationWorkflowPhase.Failed, ErrorMessage: ex.Message));
+            Publish(new DictationWorkflowState(
+                DictationWorkflowPhase.Failed,
+                ErrorMessage: ex.Message,
+                CleanupWarningPath: sessionResultCleanupWarningPath ?? session.CleanupWarningPath));
         }
         finally
         {
             CompleteSession(session, operation);
-            if (sessionResult?.FinalAudio is { DeleteAfterUse: true } audio && !TryDelete(audio.Path))
-            {
-                Publish(CurrentState with { CleanupWarningPath = audio.Path });
-            }
         }
     }
 
@@ -247,22 +253,50 @@ public sealed class DictationWorkflow
         }
 
         operation?.Cancel();
-        Publish(new DictationWorkflowState(DictationWorkflowPhase.Cancelled));
+        Publish(new DictationWorkflowState(
+            DictationWorkflowPhase.Cancelled,
+            CleanupWarningPath: CurrentState.CleanupWarningPath));
 
         if (phase == DictationWorkflowPhase.Recording && session is not null && operation is not null)
         {
             try
             {
                 await session.CancelAsync(CancellationToken.None);
+                Publish(new DictationWorkflowState(
+                    DictationWorkflowPhase.Cancelled,
+                    CleanupWarningPath: session.CleanupWarningPath));
             }
             catch (Exception ex)
             {
-                Publish(new DictationWorkflowState(DictationWorkflowPhase.Failed, ErrorMessage: ex.Message));
+                Publish(new DictationWorkflowState(
+                    DictationWorkflowPhase.Failed,
+                    ErrorMessage: ex.Message,
+                    CleanupWarningPath: session.CleanupWarningPath));
             }
             finally
             {
                 CompleteSession(session, operation);
             }
+        }
+    }
+
+    private void PublishCancellationIfNeeded(
+        IDictationSession session,
+        string? resultCleanupWarningPath = null)
+    {
+        var current = CurrentState;
+        var cleanupWarningPath = resultCleanupWarningPath
+            ?? session.CleanupWarningPath
+            ?? current.CleanupWarningPath;
+        var cleanupWarningChanged = !string.Equals(
+            current.CleanupWarningPath,
+            cleanupWarningPath,
+            StringComparison.OrdinalIgnoreCase);
+        if (current.Phase != DictationWorkflowPhase.Cancelled || cleanupWarningChanged)
+        {
+            Publish(new DictationWorkflowState(
+                DictationWorkflowPhase.Cancelled,
+                CleanupWarningPath: cleanupWarningPath));
         }
     }
 
@@ -365,26 +399,6 @@ public sealed class DictationWorkflow
         }
     }
 
-    private static bool TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-
-            return true;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
 }
 
 public enum DictationIntent
@@ -435,6 +449,8 @@ internal sealed class BatchDictationSessionFactory(IAudioRecorder recorder, ITra
 
 internal sealed class BatchDictationSession(IAudioRecorder recorder, ITranscriber transcriber) : IDictationSession
 {
+    public string? CleanupWarningPath { get; private set; }
+
     public event Action<TranscriptUpdate>? TranscriptUpdated
     {
         add { }
@@ -453,14 +469,13 @@ internal sealed class BatchDictationSession(IAudioRecorder recorder, ITranscribe
         {
             audio = await recorder.StopAsync(cancellationToken);
             var result = await transcriber.TranscribeAsync(audio.Path, cancellationToken);
-            return new DictationSessionResult(result, audio);
+            Release(audio);
+            audio = null;
+            return new DictationSessionResult(result, CleanupWarningPath);
         }
         catch
         {
-            if (audio is { DeleteAfterUse: true })
-            {
-                TryDelete(audio.Path);
-            }
+            Release(audio);
 
             throw;
         }
@@ -469,26 +484,11 @@ internal sealed class BatchDictationSession(IAudioRecorder recorder, ITranscribe
     public async Task CancelAsync(CancellationToken cancellationToken)
     {
         var audio = await recorder.StopAsync(cancellationToken);
-        if (audio.DeleteAfterUse)
-        {
-            TryDelete(audio.Path);
-        }
+        Release(audio);
     }
 
-    private static void TryDelete(string path)
+    private void Release(RecordedAudio? audio)
     {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
+        CleanupWarningPath ??= DictationSessionAudioOwnership.Release(audio);
     }
 }

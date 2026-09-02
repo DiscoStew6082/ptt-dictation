@@ -16,6 +16,10 @@ _Avoid_: Hotkey type
 The user-observable stage of a dictation workflow, from idle through recording and processing to a terminal outcome. Transcript and processing detail belong to the current state rather than to separate notices.
 _Avoid_: UI status, controller state
 
+**Dictation presentation**:
+The sounds, visible status, controls, and history feedback through which the current dictation state is conveyed to the user.
+_Avoid_: UI state, workflow view
+
 **Dictation cancellation**:
 A user decision to abandon an active dictation workflow during recording or processing. Cancellation discards the workflow without pasting text or adding it to history.
 _Avoid_: Paste cancellation

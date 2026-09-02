@@ -1,18 +1,17 @@
 using PttDictation.Core;
-using System.Media;
 
 namespace PttDictation.App;
 
 internal sealed class TrayApplicationContext : ApplicationContext
 {
-    internal static TimeSpan PostPasteVisibilityDurationForTest => TimeSpan.FromMilliseconds(250);
-
     private readonly ModelRegistry _modelRegistry = ModelRegistry.CreateDefault();
     private readonly SessionHistory _history = new();
     private readonly AppSettingsStore _settingsStore = new(AppPaths.SettingsPath);
     private readonly WasapiAudioRecorder _recorder;
     private readonly LazyAssetTranscriber _transcriber;
     private readonly DictationWorkflow _dictationWorkflow;
+    private readonly DictationPresentation _dictationPresentation;
+    private readonly StatusSoundPlayer _statusSoundPlayer;
     private readonly Icon _trayIcon;
     private readonly NotifyIcon _notifyIcon;
     private readonly GlobalHotkeySource _hotkeySource;
@@ -24,7 +23,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private SessionHistoryForm? _historyForm;
     private AppSettings _settings = AppSettings.Default;
     private bool _exiting;
-    private DictationWorkflowPhase _lastWorkflowPhase = DictationWorkflowPhase.Idle;
 
     public TrayApplicationContext()
     {
@@ -45,7 +43,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _history,
             getTranscriptCorrections: () => _settings.TranscriptCorrections);
         _dictationWorkflow = workflow;
-        _dictationWorkflow.StateChanged += OnDictationStateChanged;
+        _statusSoundPlayer = new StatusSoundPlayer(() => _settings);
 
         _trayIcon = TrayIconFactory.Create();
         _notifyIcon = new NotifyIcon
@@ -55,6 +53,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = BuildMenu()
         };
+        _dictationPresentation = new DictationPresentation(
+            _statusOverlay,
+            _cancelDictationItem ?? throw new InvalidOperationException("The dictation cancellation menu item was not created."),
+            new DictationPresentationEnvironment(
+                GetSettings: () => _settings,
+                GetCurrentState: () => _dictationWorkflow.CurrentState,
+                IsUnavailable: () => _exiting,
+                RefreshHistory: () => _historyForm?.RefreshItems(),
+                ShowCleanupWarning,
+                ShowTrayNotification,
+                PlayStatusSound: _statusSoundPlayer.Play,
+                DelayAsync: Task.Delay));
+        _dictationWorkflow.StateChanged += OnDictationStateChanged;
 
         _notifyIcon.DoubleClick += (_, _) => ShowSettings();
         _notifyIcon.MouseClick += (_, e) =>
@@ -96,7 +107,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 var status = DictationStatusCatalog.Error(ex.Message);
                 ShowStatus(status, ToolTipIcon.Error);
-                PlayStatusSound(StatusSound.Error);
+                _statusSoundPlayer.Play(StatusSound.Error);
             }
         }, null);
     }
@@ -112,7 +123,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         menu.Items.Add(new ToolStripMenuItem("Open Settings", null, (_, _) => ShowSettings()));
         menu.Items.Add(new ToolStripMenuItem("Session History", null, (_, _) => ShowHistory()));
-        menu.Items.Add(new ToolStripMenuItem("Play Test Sound", null, (_, _) => PlayStatusSound(StatusSound.Listening)));
+        menu.Items.Add(new ToolStripMenuItem("Play Test Sound", null, (_, _) => _statusSoundPlayer.Play(StatusSound.Listening)));
         _cancelDictationItem = new ToolStripMenuItem(
             "Cancel Current Dictation",
             null,
@@ -219,113 +230,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnDictationStateChanged(DictationWorkflowState state)
     {
-        PostToUi(() => ApplyDictationStateAsync(state));
-    }
-
-    private async Task ApplyDictationStateAsync(DictationWorkflowState state)
-    {
-        if (_exiting || _statusOverlay.IsDisposed)
-        {
-            return;
-        }
-
-        if (_cancelDictationItem is not null)
-        {
-            _cancelDictationItem.Enabled = state.CanCancel;
-        }
-
-        if (!string.IsNullOrWhiteSpace(state.CleanupWarningPath))
-        {
-            ShowCleanupWarning(state.CleanupWarningPath);
-        }
-
-        var phaseChanged = state.Phase != _lastWorkflowPhase;
-        _lastWorkflowPhase = state.Phase;
-        switch (state.Phase)
-        {
-            case DictationWorkflowPhase.Recording:
-                var mode = state.TriggerMode == DictationTriggerMode.Toggle
-                    ? ListeningTriggerMode.Toggle
-                    : ListeningTriggerMode.PushToTalk;
-                var hotkey = state.TriggerMode == DictationTriggerMode.Toggle
-                    ? _settings.ToggleHotkey
-                    : _settings.HoldHotkey;
-                var hotkeyName = DictationHotkeyCatalog.DisplayName(hotkey);
-                if (phaseChanged)
-                {
-                    PlayStatusSound(StatusSound.Listening);
-                    ShowStatus(
-                        DictationStatusCatalog.Listening,
-                        ToolTipIcon.Info,
-                        notifyMessage: ListeningStatusFormatter.FormatHint(mode, hotkeyName),
-                        mode: mode,
-                        listeningHotkeyName: hotkeyName);
-                }
-
-                if (!string.IsNullOrWhiteSpace(state.Transcript))
-                {
-                    _statusOverlay.ShowListeningTranscript(state.Transcript, mode);
-                }
-
-                break;
-            case DictationWorkflowPhase.Processing:
-                if (phaseChanged)
-                {
-                    _statusOverlay.ShowProcessing();
-                    PlayStatusSound(StatusSound.Transcribing);
-                }
-
-                if (!string.IsNullOrWhiteSpace(state.Transcript))
-                {
-                    _statusOverlay.ShowProcessingTranscript(state.Transcript);
-                }
-
-                if (!string.IsNullOrWhiteSpace(state.ProcessingDetail))
-                {
-                    _statusOverlay.ShowProcessingDetail(state.ProcessingDetail);
-                }
-
-                break;
-            case DictationWorkflowPhase.Pasted:
-                _historyForm?.RefreshItems();
-                if (phaseChanged)
-                {
-                    PlayStatusSound(StatusSound.Done);
-                    await Task.Delay(PostPasteVisibilityDurationForTest);
-                    if (_dictationWorkflow.CurrentState.Phase == DictationWorkflowPhase.Pasted)
-                    {
-                        _statusOverlay.HideRecording();
-                    }
-                }
-
-                break;
-            case DictationWorkflowPhase.Empty:
-                if (phaseChanged)
-                {
-                    ShowStatus(DictationStatusCatalog.EmptyTranscript, ToolTipIcon.Info);
-                }
-
-                break;
-            case DictationWorkflowPhase.Cancelled:
-                if (phaseChanged)
-                {
-                    ShowStatus(DictationStatusCatalog.DictationCancelled, ToolTipIcon.Info);
-                }
-
-                break;
-            case DictationWorkflowPhase.Failed:
-                if (phaseChanged)
-                {
-                    PlayStatusSound(StatusSound.Error);
-                    ShowStatus(
-                        DictationStatusCatalog.Error(state.ErrorMessage ?? "Unknown error."),
-                        ToolTipIcon.Error);
-                }
-
-                break;
-            case DictationWorkflowPhase.Idle:
-                break;
-        }
+        PostToUi(() => _dictationPresentation.ApplyAsync(state));
     }
 
     private void UpdateTrayText()
@@ -391,30 +296,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }, null);
     }
 
-    private void PlayStatusSound(StatusSound sound)
-    {
-        if (!_settings.AudibleStatusEnabled)
-        {
-            return;
-        }
-
-        switch (sound)
-        {
-            case StatusSound.Listening:
-                SystemSounds.Asterisk.Play();
-                break;
-            case StatusSound.Transcribing:
-                SystemSounds.Question.Play();
-                break;
-            case StatusSound.Done:
-                SystemSounds.Exclamation.Play();
-                break;
-            case StatusSound.Error:
-                SystemSounds.Hand.Play();
-                break;
-        }
-    }
-
     private void ExitApplication()
     {
         if (_exiting)
@@ -438,14 +319,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _lifetime.Dispose();
         ExitThread();
     }
-}
-
-internal enum StatusSound
-{
-    Listening,
-    Transcribing,
-    Done,
-    Error
 }
 
 internal sealed class DarkMenuColorTable : ProfessionalColorTable

@@ -33,4 +33,30 @@ public sealed class WasapiAudioRecorderTests
         StringAssert.Contains(message, "Galaxy S25 Hands-Free HF Audio");
         StringAssert.Contains(message, "Settings > System > Sound > Input");
     }
+
+    [TestMethod]
+    public async Task ChunkPublicationQueueDrainsAcceptedPublisherBeforeClosing()
+    {
+        var queue = new AudioChunkPublicationQueue();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        queue.Open();
+
+        Assert.IsTrue(queue.TryQueue(() =>
+        {
+            started.SetResult();
+            release.Task.GetAwaiter().GetResult();
+        }));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        queue.StopAccepting();
+        var drain = Task.Run(queue.Drain);
+        await Task.Delay(100);
+
+        Assert.IsFalse(drain.IsCompleted);
+        Assert.IsFalse(queue.TryQueue(() => throw new InvalidOperationException("must not run")));
+
+        release.SetResult();
+        await drain.WaitAsync(TimeSpan.FromSeconds(2));
+    }
 }

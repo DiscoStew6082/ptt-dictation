@@ -30,6 +30,8 @@ public interface IDictationSession
 {
     event Action<TranscriptUpdate>? TranscriptUpdated;
 
+    string? CleanupWarningPath => null;
+
     Task StartAsync(CancellationToken cancellationToken);
 
     Task<DictationSessionResult> StopAsync(CancellationToken cancellationToken);
@@ -90,7 +92,7 @@ public sealed record TranscriptResult
     }
 }
 
-public sealed record DictationSessionResult(TranscriptResult Transcript, RecordedAudio? FinalAudio = null);
+public sealed record DictationSessionResult(TranscriptResult Transcript, string? CleanupWarningPath = null);
 
 public sealed record TranscriptUpdate(TranscriptUpdateKind Kind, string StableText, string UnstableText = "");
 

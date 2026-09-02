@@ -15,6 +15,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
     private readonly object _gate = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private readonly AudioChunkPublicationQueue _chunkPublications = new();
     private readonly string _appData;
     private WasapiRecorder? _recorder;
     private TaskCompletionSource<Exception?>? _recordingStopped;
@@ -91,6 +92,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
                 _startedAt = DateTimeOffset.UtcNow;
                 _chunkSequence = 0;
                 _recording = true;
+                _chunkPublications.Open();
             }
 
             recorder.StartRecording();
@@ -101,6 +103,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             lock (_gate)
             {
                 _recording = false;
+                _chunkPublications.StopAccepting();
                 _recorder = null;
                 _recordingStopped = null;
                 _pcm = null;
@@ -108,6 +111,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
             pcm?.Dispose();
             DetachAndDispose(recorder);
+            _chunkPublications.Drain();
             throw new InvalidOperationException(DescribeCaptureFailure(deviceName), ex);
         }
     }
@@ -142,6 +146,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             }
 
             _recording = false;
+            _chunkPublications.StopAccepting();
             recorder = _recorder;
             stopped = _recordingStopped;
             pcm = _pcm;
@@ -181,6 +186,8 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
             DetachAndDispose(recorder);
         }
+
+        _chunkPublications.Drain();
 
         if (stopError is not null)
         {
@@ -226,7 +233,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
         AudioLevelChanged?.Invoke(level.Value);
         if (pendingChunk is not null)
         {
-            _ = Task.Run(() => WriteChunkAndPublish(pendingChunk));
+            _chunkPublications.TryQueue(() => WriteChunkAndPublish(pendingChunk));
         }
     }
 
@@ -289,6 +296,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
             _disposed = true;
             _recording = false;
+            _chunkPublications.StopAccepting();
             recorder = _recorder;
             _recorder = null;
             _recordingStopped = null;
@@ -308,6 +316,8 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
             DetachAndDispose(recorder);
         }
+
+        _chunkPublications.Drain();
 
         pcm?.Dispose();
     }

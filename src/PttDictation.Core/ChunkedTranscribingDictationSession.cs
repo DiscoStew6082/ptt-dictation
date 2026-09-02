@@ -34,12 +34,25 @@ public sealed class ChunkedTranscribingDictationSession(
 {
     private readonly object _gate = new();
     private readonly IncrementalTranscriptAssembler _assembler = new();
+    private readonly Dictionary<string, RecordedAudio> _ownedChunks = new(StringComparer.OrdinalIgnoreCase);
     private Task _chunkProcessing = Task.CompletedTask;
     private CancellationTokenSource? _chunkCancellation;
+    private string? _cleanupWarningPath;
     private bool _started;
     private bool _stopping;
 
     public event Action<TranscriptUpdate>? TranscriptUpdated;
+
+    public string? CleanupWarningPath
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _cleanupWarningPath;
+            }
+        }
+    }
 
     public ChunkedTranscribingDictationSession(IChunkedAudioRecorder recorder, ITranscriber transcriber)
         : this(recorder, transcriber, transcriber)
@@ -59,6 +72,8 @@ public sealed class ChunkedTranscribingDictationSession(
             _stopping = false;
             _chunkProcessing = Task.CompletedTask;
             _chunkCancellation = new CancellationTokenSource();
+            _cleanupWarningPath = null;
+            _ownedChunks.Clear();
         }
 
         recorder.AudioChunkReady += OnAudioChunkReady;
@@ -115,15 +130,16 @@ public sealed class ChunkedTranscribingDictationSession(
             recorder.AudioChunkReady -= OnAudioChunkReady;
             CancelChunkProcessing();
             await WaitForChunkProcessingToSettleAsync();
+            ReleaseOutstandingChunks();
             var finalTranscript = await finalTranscriber.TranscribeAsync(finalAudio.Path, cancellationToken);
-            return new DictationSessionResult(finalTranscript, finalAudio);
+            Release(finalAudio);
+            finalAudio = null;
+            return new DictationSessionResult(finalTranscript, CleanupWarningPath);
         }
         catch
         {
-            if (finalAudio is { DeleteAfterUse: true })
-            {
-                TryDelete(finalAudio.Path);
-            }
+            Release(finalAudio);
+            ReleaseOutstandingChunks();
 
             throw;
         }
@@ -132,6 +148,7 @@ public sealed class ChunkedTranscribingDictationSession(
             recorder.AudioChunkReady -= OnAudioChunkReady;
             CancelChunkProcessing();
             await WaitForChunkProcessingToSettleAsync();
+            ReleaseOutstandingChunks();
             lock (_gate)
             {
                 _started = false;
@@ -164,10 +181,8 @@ public sealed class ChunkedTranscribingDictationSession(
             recorder.AudioChunkReady -= OnAudioChunkReady;
             CancelChunkProcessing();
             await WaitForChunkProcessingToSettleAsync();
-            if (finalAudio is { DeleteAfterUse: true })
-            {
-                TryDelete(finalAudio.Path);
-            }
+            ReleaseOutstandingChunks();
+            Release(finalAudio);
 
             lock (_gate)
             {
@@ -201,6 +216,7 @@ public sealed class ChunkedTranscribingDictationSession(
             }
 
             var cancellationToken = _chunkCancellation?.Token ?? CancellationToken.None;
+            _ownedChunks[chunk.Path] = chunk;
             _chunkProcessing = _chunkProcessing
                 .ContinueWith(
                     _ => ProcessChunkAsync(chunk, cancellationToken),
@@ -232,7 +248,7 @@ public sealed class ChunkedTranscribingDictationSession(
         }
         finally
         {
-            TryDeleteIfNeeded(chunk);
+            ReleaseOwnedChunk(chunk);
         }
     }
 
@@ -270,28 +286,50 @@ public sealed class ChunkedTranscribingDictationSession(
         }
     }
 
-    private static void TryDeleteIfNeeded(RecordedAudio audio)
+    private void TryDeleteIfNeeded(RecordedAudio audio)
     {
-        if (audio.DeleteAfterUse)
+        Release(audio);
+    }
+
+    private void ReleaseOwnedChunk(RecordedAudio chunk)
+    {
+        lock (_gate)
         {
-            TryDelete(audio.Path);
+            if (!_ownedChunks.Remove(chunk.Path))
+            {
+                return;
+            }
+
+            Release(chunk);
         }
     }
 
-    private static void TryDelete(string path)
+    private void ReleaseOutstandingChunks()
     {
-        try
+        RecordedAudio[] chunks;
+        lock (_gate)
         {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            chunks = [.. _ownedChunks.Values];
+            _ownedChunks.Clear();
         }
-        catch (IOException)
+
+        foreach (var chunk in chunks)
         {
+            Release(chunk);
         }
-        catch (UnauthorizedAccessException)
+    }
+
+    private void Release(RecordedAudio? audio)
+    {
+        var warningPath = DictationSessionAudioOwnership.Release(audio);
+        if (warningPath is null)
         {
+            return;
+        }
+
+        lock (_gate)
+        {
+            _cleanupWarningPath ??= warningPath;
         }
     }
 }

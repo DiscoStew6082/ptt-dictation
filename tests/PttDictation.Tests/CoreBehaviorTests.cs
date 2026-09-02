@@ -61,13 +61,15 @@ public sealed class CoreBehaviorTests
         var recorder = new FakeAudioRecorder("utterance.wav");
         var transcriber = new FakeTranscriber("  hello parakeet  \n\n");
         var paster = new FakeClipboardPaster();
-        var controller = new LegacyDictationControllerHarness(recorder, transcriber, paster, new SessionHistory());
+        var workflow = new DictationWorkflow(recorder, transcriber, paster, new SessionHistory());
 
-        var started = await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
 
-        Assert.IsTrue(started);
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
+
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
+
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
         Assert.AreEqual(1, recorder.StartCount);
         Assert.AreEqual(1, recorder.StopCount);
         Assert.AreEqual("utterance.wav", transcriber.LastAudioPath);
@@ -77,21 +79,21 @@ public sealed class CoreBehaviorTests
     [TestMethod]
     public async Task ReleasePublishesCleanedTranscriptPreviewBeforePaste()
     {
-        string? preview = null;
+        var states = new List<DictationWorkflowState>();
         string? previewAtPaste = null;
-        var paster = new FakeClipboardPaster(() => previewAtPaste = preview);
-        var controller = new LegacyDictationControllerHarness(
+        var paster = new FakeClipboardPaster(() => previewAtPaste = states[^1].Transcript);
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("  preview this  "),
             paster,
-            new SessionHistory(),
-            text => preview = text);
+            new SessionHistory());
+        workflow.StateChanged += states.Add;
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
-        Assert.AreEqual("Preview this.", preview);
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
+        Assert.AreEqual("Preview this.", states[^2].Transcript);
         Assert.AreEqual("Preview this.", previewAtPaste);
     }
 
@@ -101,18 +103,19 @@ public sealed class CoreBehaviorTests
         var finalText = string.Join(' ', Enumerable.Repeat(
             "purple blue orange red orange peels and orange juice",
             10));
-        string? preview = null;
+        var states = new List<DictationWorkflowState>();
         var paster = new FakeClipboardPaster();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber(finalText),
             paster,
-            new SessionHistory(),
-            text => preview = text);
+            new SessionHistory());
+        workflow.StateChanged += states.Add;
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
+        var preview = states[^2].Transcript;
         Assert.IsNotNull(preview);
         Assert.AreEqual(preview, paster.PastedText);
         StringAssert.EndsWith(preview, "orange juice.");
@@ -121,26 +124,26 @@ public sealed class CoreBehaviorTests
     [TestMethod]
     public async Task ReleaseAppliesTranscriptCorrectionsBeforePreviewHistoryAndPaste()
     {
-        string? preview = null;
+        var states = new List<DictationWorkflowState>();
         var history = new SessionHistory();
         var paster = new FakeClipboardPaster();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("  kuda likes c sharp  "),
             paster,
             history,
-            text => preview = text,
-            getTranscriptCorrections: () =>
+            () =>
             [
                 new TranscriptCorrection("kuda", "CUDA"),
                 new TranscriptCorrection("c sharp", "C#")
             ]);
+        workflow.StateChanged += states.Add;
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
-        Assert.AreEqual("CUDA likes C#.", preview);
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
+        Assert.AreEqual("CUDA likes C#.", states[^2].Transcript);
         Assert.AreEqual("CUDA likes C#.", paster.PastedText);
         CollectionAssert.AreEqual(new[] { "CUDA likes C#." }, history.Items.ToArray());
     }
@@ -149,28 +152,24 @@ public sealed class CoreBehaviorTests
     public async Task IncrementalSessionPublishesPartialTextButOnlyPastesFinalTranscript()
     {
         var session = new FakeDictationSession("  final text  ");
-        var updates = new List<TranscriptUpdate>();
         var history = new SessionHistory();
         var paster = new FakeClipboardPaster();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeDictationSessionFactory(session),
             paster,
-            history,
-            transcriptUpdateReady: updates.Add);
+            history);
 
-        var started = await controller.HandleHotkeyDownAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
         session.PublishPartial("partial text");
 
-        Assert.IsTrue(started);
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
         Assert.IsNull(paster.PastedText);
         Assert.AreEqual(0, history.Items.Count);
-        Assert.AreEqual(1, updates.Count);
-        Assert.AreEqual(TranscriptUpdateKind.Partial, updates[0].Kind);
-        Assert.AreEqual("partial text", updates[0].StableText);
+        Assert.AreEqual("partial text", workflow.CurrentState.Transcript);
 
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
         Assert.AreEqual("Final text.", paster.PastedText);
         CollectionAssert.AreEqual(new[] { "Final text." }, history.Items.ToArray());
         Assert.AreEqual(1, session.StartCount);
@@ -181,44 +180,38 @@ public sealed class CoreBehaviorTests
     public async Task IncrementalSessionPublishesCorrectedPartialTextForPreview()
     {
         var session = new FakeDictationSession("final text");
-        var updates = new List<TranscriptUpdate>();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeDictationSessionFactory(session),
             new FakeClipboardPaster(),
             new SessionHistory(),
-            transcriptUpdateReady: updates.Add,
-            getTranscriptCorrections: () =>
+            () =>
             [
                 new TranscriptCorrection("kuda", "CUDA"),
                 new TranscriptCorrection("c sharp", "C#")
             ]);
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
         session.PublishPartial("kuda likes c sharp");
 
-        Assert.AreEqual(1, updates.Count);
-        Assert.AreEqual(TranscriptUpdateKind.Partial, updates[0].Kind);
-        Assert.AreEqual("CUDA likes C#", updates[0].StableText);
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
+        Assert.AreEqual("CUDA likes C#", workflow.CurrentState.Transcript);
     }
 
     [TestMethod]
     public async Task IncrementalPreviewAppliesCorrectionAcrossStableAndUnstableBoundary()
     {
         var session = new FakeDictationSession("final text");
-        var updates = new List<TranscriptUpdate>();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeDictationSessionFactory(session),
             new FakeClipboardPaster(),
             new SessionHistory(),
-            transcriptUpdateReady: updates.Add,
-            getTranscriptCorrections: () => [new TranscriptCorrection("c sharp", "C#")]);
+            () => [new TranscriptCorrection("c sharp", "C#")]);
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
         session.PublishPartial("Use c", "sharp for this");
 
-        Assert.AreEqual(1, updates.Count);
-        Assert.AreEqual("Use C# for this", updates[0].StableText);
-        Assert.AreEqual(string.Empty, updates[0].UnstableText);
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
+        Assert.AreEqual("Use C# for this", workflow.CurrentState.Transcript);
     }
 
     [TestMethod]
@@ -226,15 +219,22 @@ public sealed class CoreBehaviorTests
     {
         var events = new List<string>();
         var paster = new FakeClipboardPaster(() => events.Add("paste"));
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("corrected final text"),
             paster,
-            new SessionHistory(),
-            finalTranscriptReady: _ => events.Add("transcript-ready"));
+            new SessionHistory());
+        workflow.StateChanged += state =>
+        {
+            if (state.Phase == DictationWorkflowPhase.Processing
+                && !string.IsNullOrWhiteSpace(state.Transcript))
+            {
+                events.Add("transcript-ready");
+            }
+        };
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
         CollectionAssert.AreEqual(
             new[] { "transcript-ready", "paste" },
@@ -245,14 +245,15 @@ public sealed class CoreBehaviorTests
     public async Task RecordingCapturesTheOriginalPasteTarget()
     {
         var paster = new FakeClipboardPaster();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("target test"),
             paster,
             new SessionHistory());
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
 
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
         Assert.AreEqual(1, paster.CaptureTargetCount);
         Assert.IsNull(paster.PastedText);
     }
@@ -289,8 +290,7 @@ public sealed class CoreBehaviorTests
             updates.Select(update => update.StableText).ToArray());
         Assert.IsFalse(File.Exists(chunkOne));
         Assert.IsFalse(File.Exists(chunkTwo));
-        Assert.IsTrue(File.Exists(finalAudio));
-        File.Delete(finalAudio);
+        Assert.IsFalse(File.Exists(finalAudio));
     }
 
     [TestMethod]
@@ -494,17 +494,24 @@ public sealed class CoreBehaviorTests
     public async Task PreviewFailureDoesNotBlockPaste()
     {
         var paster = new FakeClipboardPaster();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("still paste this"),
             paster,
-            new SessionHistory(),
-            _ => throw new InvalidOperationException("preview failed"));
+            new SessionHistory());
+        workflow.StateChanged += state =>
+        {
+            if (state.Phase == DictationWorkflowPhase.Processing
+                && !string.IsNullOrWhiteSpace(state.Transcript))
+            {
+                throw new InvalidOperationException("preview failed");
+            }
+        };
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
         Assert.AreEqual("Still paste this.", paster.PastedText);
     }
 
@@ -512,38 +519,46 @@ public sealed class CoreBehaviorTests
     public async Task DuplicateKeydownDoesNotStartSecondRecording()
     {
         var recorder = new FakeAudioRecorder("utterance.wav");
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             recorder,
             new FakeTranscriber("hello"),
             new FakeClipboardPaster(),
             new SessionHistory());
 
-        var firstStarted = await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var duplicateStarted = await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
 
-        Assert.IsTrue(firstStarted);
-        Assert.IsFalse(duplicateStarted);
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
+
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
+        Assert.AreEqual(1, recorder.StartCount);
+
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
+
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
         Assert.AreEqual(1, recorder.StartCount);
         Assert.AreEqual(1, recorder.StopCount);
     }
 
     [TestMethod]
-    public async Task FailedRecordingStartDoesNotLeaveControllerRecording()
+    public async Task FailedRecordingStartLeavesWorkflowRetryable()
     {
         var failingSession = new FailingStartDictationSession();
         var succeedingSession = new FakeDictationSession("hello");
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new SequenceDictationSessionFactory(failingSession, succeedingSession),
             new FakeClipboardPaster(),
             new SessionHistory());
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => controller.HandleHotkeyDownAsync(CancellationToken.None));
-        var startedAfterFailure = await controller.HandleHotkeyDownAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
 
-        Assert.IsTrue(startedAfterFailure);
+        Assert.AreEqual(DictationWorkflowPhase.Failed, workflow.CurrentState.Phase);
+        Assert.AreEqual("start failed", workflow.CurrentState.ErrorMessage);
+
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
         Assert.AreEqual(1, failingSession.StartCount);
         Assert.AreEqual(1, succeedingSession.StartCount);
     }
@@ -553,16 +568,16 @@ public sealed class CoreBehaviorTests
     {
         var history = new SessionHistory();
         var paster = new FakeClipboardPaster();
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder("utterance.wav"),
             new FakeTranscriber("   "),
             paster,
             history);
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.EmptyTranscript, outcome);
+        Assert.AreEqual(DictationWorkflowPhase.Empty, workflow.CurrentState.Phase);
         Assert.IsNull(paster.PastedText);
         Assert.AreEqual(0, history.Items.Count);
     }
@@ -572,16 +587,16 @@ public sealed class CoreBehaviorTests
     {
         var tempPath = Path.Combine(Path.GetTempPath(), $"parakeet-ptt-{Guid.NewGuid():N}.wav");
         await File.WriteAllTextAsync(tempPath, "fake wav");
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder(tempPath, deleteAfterUse: true),
             new FakeTranscriber("hello"),
             new FakeClipboardPaster(),
             new SessionHistory());
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
         Assert.IsFalse(File.Exists(tempPath));
     }
 
@@ -591,24 +606,22 @@ public sealed class CoreBehaviorTests
         var tempPath = Path.Combine(Path.GetTempPath(), $"parakeet-ptt-{Guid.NewGuid():N}.wav");
         await File.WriteAllTextAsync(tempPath, "fake wav");
         File.SetAttributes(tempPath, FileAttributes.ReadOnly);
-        string? warningPath = null;
-        var controller = new LegacyDictationControllerHarness(
+        var workflow = new DictationWorkflow(
             new FakeAudioRecorder(tempPath, deleteAfterUse: true),
             new FakeTranscriber("hello"),
             new FakeClipboardPaster(),
-            new SessionHistory(),
-            cleanupWarningReady: path => warningPath = path);
+            new SessionHistory());
 
-        var outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.NotRecording, outcome);
-        Assert.IsNull(warningPath);
+        Assert.AreEqual(DictationWorkflowPhase.Idle, workflow.CurrentState.Phase);
+        Assert.IsNull(workflow.CurrentState.CleanupWarningPath);
 
-        await controller.HandleHotkeyDownAsync(CancellationToken.None);
-        outcome = await controller.HandleHotkeyUpAsync(CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
+        await workflow.HandleAsync(DictationIntent.EndHold, CancellationToken.None);
 
-        Assert.AreEqual(DictationOutcome.Pasted, outcome);
-        Assert.AreEqual(tempPath, warningPath);
+        Assert.AreEqual(DictationWorkflowPhase.Pasted, workflow.CurrentState.Phase);
+        Assert.AreEqual(tempPath, workflow.CurrentState.CleanupWarningPath);
         File.SetAttributes(tempPath, FileAttributes.Normal);
         File.Delete(tempPath);
     }

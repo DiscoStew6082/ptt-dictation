@@ -825,7 +825,7 @@ public sealed class AppBehaviorTests
     {
         Assert.AreEqual(
             TimeSpan.FromMilliseconds(250),
-            TrayApplicationContext.PostPasteVisibilityDurationForTest);
+            DictationPresentation.PostPasteVisibilityDurationForTest);
     }
 
     [TestMethod]
