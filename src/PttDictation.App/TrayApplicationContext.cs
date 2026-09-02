@@ -12,6 +12,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly DictationWorkflow _dictationWorkflow;
     private readonly DictationPresentation _dictationPresentation;
     private readonly StatusSoundPlayer _statusSoundPlayer;
+    private readonly Func<SettingsForm> _settingsFormFactory;
     private readonly Icon _trayIcon;
     private readonly NotifyIcon _notifyIcon;
     private readonly GlobalHotkeySource _hotkeySource;
@@ -25,7 +26,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _exiting;
 
     public TrayApplicationContext()
+        : this(null)
     {
+    }
+
+    internal TrayApplicationContext(Func<SettingsForm>? settingsFormFactory)
+    {
+        _settingsFormFactory = settingsFormFactory
+            ?? (() => new SettingsForm(_settingsStore, _modelRegistry));
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         var staleAudioCleanupFailures = AudioResidueCleaner.DeleteStaleFiles(AppPaths.RootDirectory);
         _recorder = new WasapiAudioRecorder(AppPaths.RootDirectory);
@@ -152,12 +160,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowSettings()
     {
+        if (_settingsForm is null || _settingsForm.IsDisposed)
+        {
+            _settingsForm = CreateSettingsForm();
+        }
+
         _settingsForm = PresentSettingsForm(_settingsForm, CreateSettingsForm, _settings);
     }
 
     private SettingsForm CreateSettingsForm()
     {
-        var form = new SettingsForm(_settingsStore, _modelRegistry);
+        var form = _settingsFormFactory();
         form.SettingsSaved += (_, settings) =>
         {
             ApplySettings(settings);
@@ -190,6 +203,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         form.BringToFront();
         return form;
     }
+
+    internal SettingsForm? SettingsFormForTest => _settingsForm;
 
     private void ShowHistory()
     {

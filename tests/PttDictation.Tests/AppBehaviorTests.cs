@@ -449,6 +449,63 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    public void TrayOpenSettingsMenuWorksOnFirstClickAndAfterDisposedForm()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            TrayApplicationContext? context = null;
+            var firstFormWasOwnedWhenShown = false;
+            context = new TrayApplicationContext(() =>
+            {
+                var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+                form.Shown += (_, _) =>
+                {
+                    firstFormWasOwnedWhenShown = ReferenceEquals(context!.SettingsFormForTest, form);
+                };
+                return form;
+            });
+            try
+            {
+                var notifyIcon = (NotifyIcon?)typeof(TrayApplicationContext)
+                    .GetField("_notifyIcon", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.GetValue(context);
+                Assert.IsNotNull(notifyIcon?.ContextMenuStrip);
+                var openSettings = notifyIcon.ContextMenuStrip.Items
+                    .OfType<ToolStripMenuItem>()
+                    .Single(item => item.Text == "Open Settings");
+
+                openSettings.PerformClick();
+                Application.DoEvents();
+
+                var firstForm = (SettingsForm?)typeof(TrayApplicationContext)
+                    .GetField("_settingsForm", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.GetValue(context);
+                Assert.IsNotNull(firstForm);
+                Assert.IsTrue(firstForm.Visible);
+                Assert.IsTrue(firstFormWasOwnedWhenShown);
+
+                firstForm.Dispose();
+                openSettings.PerformClick();
+                Application.DoEvents();
+
+                var secondForm = (SettingsForm?)typeof(TrayApplicationContext)
+                    .GetField("_settingsForm", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.GetValue(context);
+                Assert.IsNotNull(secondForm);
+                Assert.AreNotSame(firstForm, secondForm);
+                Assert.IsTrue(secondForm.Visible);
+            }
+            finally
+            {
+                typeof(TrayApplicationContext)
+                    .GetMethod("ExitApplication", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.Invoke(context, null);
+            }
+        });
+    }
+
+    [TestMethod]
     public void SettingsFormBuildsIndependentHoldAndToggleHotkeys()
     {
         RunOnStaThread(() =>
