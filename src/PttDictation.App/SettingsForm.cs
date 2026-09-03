@@ -20,11 +20,16 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _device = new();
     private readonly CheckBox _notifications = new();
     private readonly CheckBox _sounds = new();
-    private readonly ListBox _corrections = new();
+    private readonly DataGridView _corrections = new();
     private readonly TextBox _correctionHeardAs = new();
     private readonly TextBox _correctionReplaceWith = new();
     private readonly TextBox _correctionPreviewInput = new();
     private readonly TextBox _correctionPreviewOutput = new();
+    private readonly Button _correctionAction = DarkTheme.Button("Add rule");
+    private readonly Button _newCorrection = DarkTheme.Button("New rule");
+    private readonly Button _deleteCorrection = DarkTheme.Button("Remove selected");
+    private readonly Label _correctionStatus = DarkTheme.HelpText(string.Empty);
+    private readonly Label _saveStatus = DarkTheme.HelpText("Changes are not active until saved.");
     private readonly Button _save = DarkTheme.Button("Save");
     private readonly Button _cancel = DarkTheme.Button("Cancel");
     private readonly Button _quit = DarkTheme.Button("Quit app");
@@ -42,6 +47,8 @@ internal sealed class SettingsForm : Form
     private string? _runtimePathOverride;
     private string? _modelPathOverride;
     private List<TranscriptCorrection> _transcriptCorrections = [];
+    private TranscriptCorrection? _selectedCorrection;
+    private bool _refreshingCorrectionEditor;
 
     public event EventHandler<AppSettings>? SettingsSaved;
     public event EventHandler? QuitRequested;
@@ -115,7 +122,7 @@ internal sealed class SettingsForm : Form
         content.Controls.Add(BuildPrimarySections());
         content.Controls.Add(CreateSection(
             "Corrections",
-            "Teach Parakeet how to replace names, acronyms, and frequently misheard phrases.",
+            "Replace exact words or phrases after transcription. This does not retrain the speech model.",
             BuildCorrectionFields(),
             Padding.Empty));
 
@@ -271,7 +278,7 @@ internal sealed class SettingsForm : Form
         _save.Click += async (_, _) => await SaveAsync();
         _save.Margin = new Padding(8, 0, 0, 0);
 
-        ConfigureActionButton(_cancel, "Cancel", 96);
+        ConfigureActionButton(_cancel, "Close", 96);
         _cancel.Click += (_, _) => Hide();
         _cancel.Margin = Padding.Empty;
 
@@ -291,20 +298,27 @@ internal sealed class SettingsForm : Form
         rightButtons.Controls.Add(_save);
         rightButtons.Controls.Add(_cancel);
 
+        _saveStatus.Dock = DockStyle.Fill;
+        _saveStatus.Height = 36;
+        _saveStatus.TextAlign = ContentAlignment.MiddleRight;
+        _saveStatus.Margin = new Padding(12, 0, 12, 0);
+
         var footer = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             AutoSize = true,
             BackColor = DarkTheme.Background,
             Padding = new Padding(0, 12, 0, 0),
             Margin = Padding.Empty
         };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.Controls.Add(_quit, 0, 0);
-        footer.Controls.Add(rightButtons, 1, 0);
+        footer.Controls.Add(_saveStatus, 1, 0);
+        footer.Controls.Add(rightButtons, 2, 0);
         return footer;
     }
 
@@ -434,52 +448,88 @@ internal sealed class SettingsForm : Form
     private TableLayoutPanel BuildCorrectionFields()
     {
         _correctionFields = CreateStack(DarkTheme.Surface);
-        StyleInput(_corrections);
+        _correctionFields.Controls.Add(DarkTheme.Label("Replacement rules"));
 
+        ConfigureCorrectionTable();
         _corrections.Dock = DockStyle.Top;
-        _corrections.Height = 76;
-        _corrections.DisplayMember = nameof(CorrectionListItem.DisplayText);
-        _corrections.Margin = new Padding(0, 0, 0, 8);
+        _corrections.Height = 198;
+        _corrections.Margin = new Padding(0, 3, 0, 10);
         _correctionFields.Controls.Add(_corrections);
 
-        var editRow = new WidthConstrainedTableLayoutPanel
+        var editor = new WidthConstrainedTableLayoutPanel
         {
             Dock = DockStyle.Top,
-            ColumnCount = 4,
+            ColumnCount = 2,
+            RowCount = 3,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = DarkTheme.Surface,
             Margin = new Padding(0, 0, 0, 8)
         };
-        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        editRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        editor.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        editor.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        editor.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var heardAsLabel = DarkTheme.Label("When the transcript contains");
+        heardAsLabel.Margin = new Padding(0, 0, 4, 3);
+        var replaceWithLabel = DarkTheme.Label("Replace it with");
+        replaceWithLabel.Margin = new Padding(4, 0, 0, 3);
 
         StyleInput(_correctionHeardAs);
         _correctionHeardAs.Dock = DockStyle.Fill;
-        _correctionHeardAs.PlaceholderText = "Heard as";
+        _correctionHeardAs.PlaceholderText = "For example: steward";
         _correctionHeardAs.Margin = new Padding(0, 0, 4, 0);
+        _correctionHeardAs.TextChanged += (_, _) => CorrectionDraftChanged();
+        _correctionHeardAs.KeyDown += CorrectionEditorKeyDown;
         StyleInput(_correctionReplaceWith);
         _correctionReplaceWith.Dock = DockStyle.Fill;
-        _correctionReplaceWith.PlaceholderText = "Replace with";
+        _correctionReplaceWith.PlaceholderText = "For example: Stewart";
         _correctionReplaceWith.Margin = new Padding(4, 0, 0, 0);
+        _correctionReplaceWith.TextChanged += (_, _) => CorrectionDraftChanged();
+        _correctionReplaceWith.KeyDown += CorrectionEditorKeyDown;
 
-        var add = DarkTheme.Button("Add");
-        ConfigureActionButton(add, "Add", 64);
-        add.Margin = new Padding(8, 0, 0, 0);
-        add.Click += (_, _) => AddCorrection();
+        ConfigureActionButton(_correctionAction, "Add rule", 92);
+        _correctionAction.Margin = Padding.Empty;
+        _correctionAction.Click += (_, _) => AddOrUpdateCorrection();
 
-        var delete = DarkTheme.Button("Delete");
-        ConfigureActionButton(delete, "Delete", 72);
-        delete.Margin = new Padding(8, 0, 0, 0);
-        delete.Click += (_, _) => DeleteSelectedCorrection();
+        ConfigureActionButton(_newCorrection, "New rule", 88);
+        _newCorrection.Margin = new Padding(8, 0, 0, 0);
+        _newCorrection.Click += (_, _) =>
+        {
+            StartNewCorrection();
+            _correctionStatus.Text = "Enter a phrase and its replacement, then test or add the rule.";
+        };
 
-        editRow.Controls.Add(_correctionHeardAs, 0, 0);
-        editRow.Controls.Add(_correctionReplaceWith, 1, 0);
-        editRow.Controls.Add(add, 2, 0);
-        editRow.Controls.Add(delete, 3, 0);
-        _correctionFields.Controls.Add(editRow);
+        ConfigureActionButton(_deleteCorrection, "Remove selected", 128);
+        _deleteCorrection.Margin = new Padding(8, 0, 0, 0);
+        _deleteCorrection.Click += (_, _) => DeleteSelectedCorrection();
+
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            BackColor = DarkTheme.Surface,
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        actions.Controls.Add(_correctionAction);
+        actions.Controls.Add(_newCorrection);
+        actions.Controls.Add(_deleteCorrection);
+
+        editor.Controls.Add(heardAsLabel, 0, 0);
+        editor.Controls.Add(replaceWithLabel, 1, 0);
+        editor.Controls.Add(_correctionHeardAs, 0, 1);
+        editor.Controls.Add(_correctionReplaceWith, 1, 1);
+        editor.Controls.Add(actions, 0, 2);
+        editor.SetColumnSpan(actions, 2);
+        _correctionFields.Controls.Add(editor);
+
+        _correctionStatus.Height = 34;
+        _correctionStatus.Margin = Padding.Empty;
+        _correctionFields.Controls.Add(_correctionStatus);
 
         _correctionLayout = new WidthConstrainedTableLayoutPanel
         {
@@ -500,13 +550,58 @@ internal sealed class SettingsForm : Form
         return _correctionLayout;
     }
 
+    private void ConfigureCorrectionTable()
+    {
+        _corrections.AllowUserToAddRows = false;
+        _corrections.AllowUserToDeleteRows = false;
+        _corrections.AllowUserToResizeRows = false;
+        _corrections.AutoGenerateColumns = false;
+        _corrections.BackgroundColor = DarkTheme.SurfaceRaised;
+        _corrections.BorderStyle = BorderStyle.FixedSingle;
+        _corrections.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        _corrections.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
+        _corrections.ColumnHeadersDefaultCellStyle.BackColor = DarkTheme.Surface;
+        _corrections.ColumnHeadersDefaultCellStyle.ForeColor = DarkTheme.Text;
+        _corrections.ColumnHeadersDefaultCellStyle.SelectionBackColor = DarkTheme.Surface;
+        _corrections.ColumnHeadersDefaultCellStyle.SelectionForeColor = DarkTheme.Text;
+        _corrections.ColumnHeadersHeight = 30;
+        _corrections.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        _corrections.DefaultCellStyle.BackColor = DarkTheme.SurfaceRaised;
+        _corrections.DefaultCellStyle.ForeColor = DarkTheme.Text;
+        _corrections.DefaultCellStyle.SelectionBackColor = Color.FromArgb(54, 75, 112);
+        _corrections.DefaultCellStyle.SelectionForeColor = DarkTheme.Text;
+        _corrections.EnableHeadersVisualStyles = false;
+        _corrections.GridColor = DarkTheme.Border;
+        _corrections.MultiSelect = false;
+        _corrections.ReadOnly = true;
+        _corrections.RowHeadersVisible = false;
+        _corrections.RowTemplate.Height = 28;
+        _corrections.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+
+        _corrections.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Heard as",
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+            FillWeight = 50,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _corrections.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Replace with",
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+            FillWeight = 50,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _corrections.SelectionChanged += (_, _) => LoadSelectedCorrection();
+    }
+
     private TableLayoutPanel BuildCorrectionPreview()
     {
         StyleInput(_correctionPreviewInput);
         _correctionPreviewInput.Dock = DockStyle.Fill;
         _correctionPreviewInput.Multiline = true;
         _correctionPreviewInput.MinimumSize = new Size(0, 42);
-        _correctionPreviewInput.PlaceholderText = "Type a phrase to test your corrections";
+        _correctionPreviewInput.PlaceholderText = "Try a sentence here before you save";
         _correctionPreviewInput.TextChanged += (_, _) => RefreshCorrectionPreview();
 
         StyleInput(_correctionPreviewOutput);
@@ -521,7 +616,7 @@ internal sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 4,
-            MinimumSize = new Size(0, 160),
+            MinimumSize = new Size(0, 198),
             BackColor = DarkTheme.Surface,
             Margin = new Padding(8, 0, 0, 0)
         };
@@ -530,9 +625,9 @@ internal sealed class SettingsForm : Form
         preview.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         preview.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
 
-        var beforeLabel = DarkTheme.Label("Test phrase");
+        var beforeLabel = DarkTheme.Label("Test your rules");
         beforeLabel.Margin = new Padding(0, 0, 0, 3);
-        var afterLabel = DarkTheme.Label("Corrected result");
+        var afterLabel = DarkTheme.Label("Result — includes the rule currently being typed");
         afterLabel.Margin = new Padding(0, 4, 0, 3);
         _correctionPreviewInput.Margin = Padding.Empty;
         _correctionPreviewOutput.Margin = Padding.Empty;
@@ -708,11 +803,24 @@ internal sealed class SettingsForm : Form
             : TranscriptionMode.Auto;
         RefreshModelDownloadState(selected);
         RefreshCorrectionsList();
+        StartNewCorrection();
         RefreshCorrectionPreview();
+        _saveStatus.Text = "All changes saved.";
     }
 
     private async Task SaveAsync()
     {
+        if (HasIncompleteCorrectionDraft())
+        {
+            _correctionStatus.Text = "Finish both correction fields before saving, or click New rule to clear them.";
+            return;
+        }
+
+        if (HasChangedCorrectionDraft())
+        {
+            AddOrUpdateCorrection();
+        }
+
         try
         {
             _settings = BuildSettingsFromControls();
@@ -725,7 +833,7 @@ internal sealed class SettingsForm : Form
 
         await _settingsStore.SaveAsync(_settings, CancellationToken.None);
         SettingsSaved?.Invoke(this, _settings);
-        Hide();
+        _saveStatus.Text = "Saved. New dictations use these rules.";
     }
 
     private AppSettings BuildSettingsFromControls()
@@ -899,16 +1007,23 @@ internal sealed class SettingsForm : Form
         return File.Exists(path) && new FileInfo(path).Length >= model.MinimumBytes;
     }
 
-    private void AddCorrection()
+    private void AddOrUpdateCorrection()
     {
         var heardAs = _correctionHeardAs.Text.Trim();
         var replaceWith = _correctionReplaceWith.Text.Trim();
         if (heardAs.Length == 0 || replaceWith.Length == 0)
         {
+            _correctionStatus.Text = "Enter both the text you hear and the replacement you want.";
             return;
         }
 
         var replacement = new TranscriptCorrection(heardAs, replaceWith);
+        var wasEditing = _selectedCorrection is not null;
+        if (_selectedCorrection is not null)
+        {
+            _transcriptCorrections.Remove(_selectedCorrection);
+        }
+
         var existing = _transcriptCorrections.FindIndex(
             correction => string.Equals(correction.HeardAs, heardAs, StringComparison.OrdinalIgnoreCase));
         if (existing >= 0)
@@ -921,34 +1036,186 @@ internal sealed class SettingsForm : Form
         }
 
         RefreshCorrectionsList();
+        StartNewCorrection();
+        _correctionStatus.Text = existing >= 0 || wasEditing
+            ? "Rule updated. Click Save to use it in new dictations."
+            : "Rule added. Click Save to use it in new dictations.";
+        _saveStatus.Text = "Unsaved correction changes.";
         RefreshCorrectionPreview();
     }
 
     private void DeleteSelectedCorrection()
     {
-        if (_corrections.SelectedItem is not CorrectionListItem selected)
+        if (_selectedCorrection is null)
         {
+            _correctionStatus.Text = "Select a rule in the table before removing it.";
             return;
         }
 
-        _transcriptCorrections.Remove(selected.Correction);
+        _transcriptCorrections.Remove(_selectedCorrection);
         RefreshCorrectionsList();
+        StartNewCorrection();
+        _correctionStatus.Text = "Rule removed. Click Save to make the removal permanent.";
+        _saveStatus.Text = "Unsaved correction changes.";
         RefreshCorrectionPreview();
     }
 
     private void RefreshCorrectionsList()
     {
-        _corrections.Items.Clear();
-        foreach (var correction in _transcriptCorrections)
+        _refreshingCorrectionEditor = true;
+        try
         {
-            _corrections.Items.Add(new CorrectionListItem(correction));
+            _corrections.Rows.Clear();
+            foreach (var correction in _transcriptCorrections)
+            {
+                var row = _corrections.Rows[_corrections.Rows.Add(correction.HeardAs, correction.ReplaceWith)];
+                row.Tag = correction;
+            }
+
+            _corrections.ClearSelection();
+            _corrections.CurrentCell = null;
+            _selectedCorrection = null;
+            _correctionStatus.Text = _transcriptCorrections.Count == 0
+                ? "No rules yet. Add one below, then test it on the right."
+                : $"{_transcriptCorrections.Count} rule{(_transcriptCorrections.Count == 1 ? string.Empty : "s")}. Select a row to edit it.";
         }
+        finally
+        {
+            _refreshingCorrectionEditor = false;
+        }
+    }
+
+    private void LoadSelectedCorrection()
+    {
+        if (_refreshingCorrectionEditor
+            || _corrections.SelectedRows.Count == 0
+            || _corrections.SelectedRows[0].Tag is not TranscriptCorrection selected)
+        {
+            return;
+        }
+
+        _refreshingCorrectionEditor = true;
+        try
+        {
+            _selectedCorrection = selected;
+            _correctionHeardAs.Text = selected.HeardAs;
+            _correctionReplaceWith.Text = selected.ReplaceWith;
+            _correctionAction.Text = "Update rule";
+            _deleteCorrection.Enabled = true;
+            _correctionStatus.Text = "Editing selected rule. Change either field, then click Update rule.";
+        }
+        finally
+        {
+            _refreshingCorrectionEditor = false;
+        }
+
+        RefreshCorrectionPreview();
+    }
+
+    private void StartNewCorrection()
+    {
+        _refreshingCorrectionEditor = true;
+        try
+        {
+            _selectedCorrection = null;
+            _corrections.ClearSelection();
+            _corrections.CurrentCell = null;
+            _correctionHeardAs.Clear();
+            _correctionReplaceWith.Clear();
+            _correctionAction.Text = "Add rule";
+            _correctionAction.Enabled = false;
+            _deleteCorrection.Enabled = false;
+        }
+        finally
+        {
+            _refreshingCorrectionEditor = false;
+        }
+
+        RefreshCorrectionPreview();
+    }
+
+    private void CorrectionDraftChanged()
+    {
+        if (_refreshingCorrectionEditor)
+        {
+            return;
+        }
+
+        _correctionAction.Enabled = !string.IsNullOrWhiteSpace(_correctionHeardAs.Text)
+            && !string.IsNullOrWhiteSpace(_correctionReplaceWith.Text);
+        _correctionStatus.Text = _selectedCorrection is null
+            ? "Draft rule. The test result includes it before you add it."
+            : "Editing selected rule. The test result includes your unsaved edits.";
+        RefreshCorrectionPreview();
+    }
+
+    private void CorrectionEditorKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Enter || !_correctionAction.Enabled)
+        {
+            return;
+        }
+
+        AddOrUpdateCorrection();
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
+
+    private bool HasIncompleteCorrectionDraft()
+    {
+        var hasHeardAs = !string.IsNullOrWhiteSpace(_correctionHeardAs.Text);
+        var hasReplacement = !string.IsNullOrWhiteSpace(_correctionReplaceWith.Text);
+        return hasHeardAs != hasReplacement;
+    }
+
+    private bool HasChangedCorrectionDraft()
+    {
+        var heardAs = _correctionHeardAs.Text.Trim();
+        var replaceWith = _correctionReplaceWith.Text.Trim();
+        if (heardAs.Length == 0 || replaceWith.Length == 0)
+        {
+            return false;
+        }
+
+        return _selectedCorrection is null
+            || !string.Equals(_selectedCorrection.HeardAs, heardAs, StringComparison.Ordinal)
+            || !string.Equals(_selectedCorrection.ReplaceWith, replaceWith, StringComparison.Ordinal);
     }
 
     private void RefreshCorrectionPreview()
     {
-        _correctionPreviewOutput.Text = new TranscriptCorrectionDictionary(_transcriptCorrections)
+        _correctionPreviewOutput.Text = new TranscriptCorrectionDictionary(CorrectionsForPreview())
             .Apply(_correctionPreviewInput.Text);
+    }
+
+    private IReadOnlyList<TranscriptCorrection> CorrectionsForPreview()
+    {
+        var heardAs = _correctionHeardAs.Text.Trim();
+        var replaceWith = _correctionReplaceWith.Text.Trim();
+        if (heardAs.Length == 0 || replaceWith.Length == 0)
+        {
+            return _transcriptCorrections;
+        }
+
+        var previewCorrections = _transcriptCorrections.ToList();
+        if (_selectedCorrection is not null)
+        {
+            previewCorrections.Remove(_selectedCorrection);
+        }
+
+        var existing = previewCorrections.FindIndex(
+            correction => string.Equals(correction.HeardAs, heardAs, StringComparison.OrdinalIgnoreCase));
+        var draft = new TranscriptCorrection(heardAs, replaceWith);
+        if (existing >= 0)
+        {
+            previewCorrections[existing] = draft;
+        }
+        else
+        {
+            previewCorrections.Add(draft);
+        }
+
+        return previewCorrections;
     }
 
     [Browsable(false)]
@@ -1079,6 +1346,38 @@ internal sealed class SettingsForm : Form
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal string CorrectionPreviewOutputForTest => _correctionPreviewOutput.Text;
 
+    internal string[] CorrectionColumnHeadersForTest =>
+        _corrections.Columns.Cast<DataGridViewColumn>().Select(column => column.HeaderText).ToArray();
+
+    internal int CorrectionVisibleRowCapacityForTest =>
+        Math.Max(0, (_corrections.Height - _corrections.ColumnHeadersHeight - 2) / _corrections.RowTemplate.Height);
+
+    internal int CorrectionRuleCountForTest => _corrections.Rows.Count;
+
+    internal string CorrectionHeardAsForTest => _correctionHeardAs.Text;
+
+    internal string CorrectionReplaceWithForTest => _correctionReplaceWith.Text;
+
+    internal string CorrectionActionTextForTest => _correctionAction.Text;
+
+    internal string SaveStatusTextForTest => _saveStatus.Text;
+
+    internal Control CorrectionEditorForTest =>
+        _correctionLayout ?? throw new InvalidOperationException("Correction editor has not been created.");
+
+    internal void SelectCorrectionForTest(int index)
+    {
+        _corrections.ClearSelection();
+        _corrections.CurrentCell = _corrections.Rows[index].Cells[0];
+        _corrections.Rows[index].Selected = true;
+        LoadSelectedCorrection();
+    }
+
+    internal void StartNewCorrectionForTest()
+    {
+        StartNewCorrection();
+    }
+
     internal void SetCorrectionDraftForTest(string heardAs, string replaceWith)
     {
         _correctionHeardAs.Text = heardAs;
@@ -1087,7 +1386,7 @@ internal sealed class SettingsForm : Form
 
     internal void AddCorrectionForTest()
     {
-        AddCorrection();
+        AddOrUpdateCorrection();
     }
 
     internal void DownloadSelectedModelForTest()
@@ -1146,8 +1445,4 @@ internal sealed class SettingsForm : Form
         base.OnFormClosing(e);
     }
 
-    private sealed record CorrectionListItem(TranscriptCorrection Correction)
-    {
-        public string DisplayText => $"{Correction.HeardAs} -> {Correction.ReplaceWith}";
-    }
 }

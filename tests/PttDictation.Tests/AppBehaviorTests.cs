@@ -823,6 +823,97 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    public void SettingsFormCorrectionEditorShowsRulesAndKeepsEditorAndPreviewInSync()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+            form.UseSettings(AppSettings.Default with
+            {
+                TranscriptCorrections =
+                [
+                    new TranscriptCorrection("quinn", "qwen"),
+                    new TranscriptCorrection("quin", "qwen"),
+                    new TranscriptCorrection("stuart", "stewart"),
+                    new TranscriptCorrection("steward", "stewart")
+                ]
+            });
+            form.Show();
+            Application.DoEvents();
+
+            CollectionAssert.AreEqual(
+                new[] { "Heard as", "Replace with" },
+                form.CorrectionColumnHeadersForTest);
+            Assert.IsGreaterThanOrEqualTo(5, form.CorrectionVisibleRowCapacityForTest);
+
+            form.SelectCorrectionForTest(2);
+
+            Assert.AreEqual("stuart", form.CorrectionHeardAsForTest);
+            Assert.AreEqual("stewart", form.CorrectionReplaceWithForTest);
+            Assert.AreEqual("Update rule", form.CorrectionActionTextForTest);
+
+            form.StartNewCorrectionForTest();
+            form.SetCorrectionDraftForTest("stork", "Stewart");
+            form.CorrectionPreviewInputForTest = "Trying stork again. Go to the store.";
+
+            Assert.AreEqual(
+                "Trying Stewart again. Go to the store.",
+                form.CorrectionPreviewOutputForTest);
+
+            form.AddCorrectionForTest();
+
+            Assert.AreEqual(5, form.CorrectionRuleCountForTest);
+            Assert.AreEqual(string.Empty, form.CorrectionHeardAsForTest);
+            Assert.AreEqual(string.Empty, form.CorrectionReplaceWithForTest);
+            Assert.AreEqual("Add rule", form.CorrectionActionTextForTest);
+            Assert.AreEqual(
+                "Trying Stewart again. Go to the store.",
+                form.CorrectionPreviewOutputForTest);
+
+            var previewPath = Environment.GetEnvironmentVariable("PARAKEET_CORRECTIONS_PREVIEW_PATH");
+            if (!string.IsNullOrWhiteSpace(previewPath))
+            {
+                var editor = form.CorrectionEditorForTest;
+                using var preview = new Bitmap(editor.Width, editor.Height);
+                editor.DrawToBitmap(preview, new Rectangle(Point.Empty, editor.Size));
+                preview.Save(previewPath);
+            }
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormSavePersistsCorrectionRulesWithoutClosingSettings()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            try
+            {
+                var store = new AppSettingsStore(path);
+                using var form = new SettingsForm(store, ModelRegistry.CreateDefault());
+                form.UseSettings(AppSettings.Default);
+                form.Show();
+                Application.DoEvents();
+                form.SetCorrectionDraftForTest("steward", "Stewart");
+
+                form.SaveForTest();
+
+                Assert.IsTrue(form.Visible);
+                StringAssert.Contains(form.SaveStatusTextForTest, "Saved");
+                var saved = store.Load();
+                Assert.AreEqual(1, saved.TranscriptCorrections.Count);
+                Assert.AreEqual("steward", saved.TranscriptCorrections[0].HeardAs);
+                Assert.AreEqual("Stewart", saved.TranscriptCorrections[0].ReplaceWith);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        });
+    }
+
+    [TestMethod]
     public void StatusOverlayAutoHidesExceptionalCompletionStatesWithoutShowingWindow()
     {
         RunOnStaThread(() =>
