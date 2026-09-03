@@ -6,6 +6,8 @@ namespace PttDictation.App;
 internal sealed class SettingsForm : Form
 {
     private const int TwoColumnMinimumContentWidth = 1200;
+    private const int PreferredWindowWidth = 1400;
+    private const int WorkingAreaMargin = 32;
     private readonly AppSettingsStore _settingsStore;
     private readonly ModelRegistry _modelRegistry;
     private readonly Func<ModelInfo, CancellationToken, Task<string>> _downloadModelAsync;
@@ -655,14 +657,23 @@ internal sealed class SettingsForm : Form
         }
 
         _initialWindowSizeApplied = true;
-        if (DeviceDpi < 144)
-        {
-            return;
-        }
-
         var workingArea = Screen.FromControl(this).WorkingArea;
-        var width = Math.Max(MinimumSize.Width, Math.Min(1400, workingArea.Width - 64));
-        var height = Math.Max(MinimumSize.Height, Math.Min(1000, workingArea.Height - 64));
+        var maximumWidth = Math.Max(MinimumSize.Width, workingArea.Width - WorkingAreaMargin);
+        var maximumHeight = Math.Max(MinimumSize.Height, workingArea.Height - WorkingAreaMargin);
+        var width = Math.Min(PreferredWindowWidth, maximumWidth);
+
+        Size = new Size(width, Math.Min(Math.Max(Height, MinimumSize.Height), maximumHeight));
+        ApplyResponsiveLayout(_contentHost.ClientSize.Width < TwoColumnMinimumContentWidth);
+        PerformLayout();
+
+        var content = _contentHost.Controls.Count == 0 ? null : _contentHost.Controls[0];
+        var fixedWindowHeight = Height - _contentHost.ClientSize.Height;
+        var requiredContentHeight = content is null
+            ? _contentHost.ClientSize.Height
+            : Math.Max(content.Height, content.GetPreferredSize(new Size(_contentHost.ClientSize.Width, 0)).Height);
+        var requiredWindowHeight = fixedWindowHeight + requiredContentHeight + 2;
+        var height = Math.Clamp(requiredWindowHeight, MinimumSize.Height, maximumHeight);
+
         Size = new Size(width, height);
         Location = new Point(
             workingArea.Left + Math.Max(0, (workingArea.Width - width) / 2),

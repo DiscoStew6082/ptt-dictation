@@ -550,13 +550,12 @@ public sealed class AppBehaviorTests
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
-            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault())
-            {
-                Size = new Size(680, 620)
-            };
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
             form.UseSettings(AppSettings.Default);
 
             form.Show();
+            Application.DoEvents();
+            form.Size = form.MinimumSize;
             Application.DoEvents();
             form.PerformLayout();
 
@@ -608,12 +607,11 @@ public sealed class AppBehaviorTests
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
-            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault())
-            {
-                Size = new Size(680, 620)
-            };
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
             form.UseSettings(AppSettings.Default);
             form.Show();
+            Application.DoEvents();
+            form.Size = form.MinimumSize;
             Application.DoEvents();
             form.ApplyHighDpiLayoutForTest();
             form.PerformLayout();
@@ -649,10 +647,7 @@ public sealed class AppBehaviorTests
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
-            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault())
-            {
-                Size = new Size(1400, 900)
-            };
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
             form.UseSettings(AppSettings.Default with
             {
                 TranscriptCorrections =
