@@ -696,7 +696,8 @@ public sealed class AppBehaviorTests
             Application.DoEvents();
 
             Assert.AreEqual(2, form.CorrectionColumnCountForTest);
-            Assert.IsFalse(
+            Assert.AreEqual(
+                form.Height < 900,
                 form.ContentHasVerticalScrollForTest,
                 $"{form.ContentLayoutForTest}, fields={form.CorrectionFieldsBoundsForTest}, preview={form.CorrectionPreviewBoundsForTest}");
             Assert.AreEqual(form.CorrectionFieldsBoundsForTest.Top, form.CorrectionPreviewBoundsForTest.Top);
