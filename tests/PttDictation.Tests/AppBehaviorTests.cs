@@ -690,6 +690,8 @@ public sealed class AppBehaviorTests
 
             form.Show();
             Application.DoEvents();
+            form.Size = new Size(1400, 1000);
+            form.ApplyWideLayoutForTest();
             form.PerformLayout();
             Application.DoEvents();
 
