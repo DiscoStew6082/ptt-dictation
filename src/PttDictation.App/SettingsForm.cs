@@ -26,7 +26,8 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _correctionHeardAs = new();
     private readonly TextBox _correctionReplaceWith = new();
     private readonly TextBox _correctionPreviewInput = new();
-    private readonly TextBox _correctionPreviewOutput = new();
+    private readonly Label _correctionPreviewResultLabel = DarkTheme.Label("Corrected result");
+    private readonly Label _correctionPreviewOutput = new();
     private readonly Button _correctionAction = DarkTheme.Button("Add rule");
     private readonly Button _newCorrection = DarkTheme.Button("New rule");
     private readonly Button _deleteCorrection = DarkTheme.Button("Remove selected");
@@ -602,11 +603,14 @@ internal sealed class SettingsForm : Form
         _correctionPreviewInput.TextChanged += (_, _) => RefreshCorrectionPreview();
 
         StyleInput(_correctionPreviewOutput);
-        _correctionPreviewOutput.Dock = DockStyle.Fill;
-        _correctionPreviewOutput.Multiline = true;
-        _correctionPreviewOutput.MinimumSize = new Size(0, 42);
-        _correctionPreviewOutput.ReadOnly = true;
-        _correctionPreviewOutput.PlaceholderText = "Corrected result";
+        _correctionPreviewOutput.AutoSize = false;
+        _correctionPreviewOutput.Dock = DockStyle.Top;
+        _correctionPreviewOutput.Height = 38;
+        _correctionPreviewOutput.BorderStyle = BorderStyle.FixedSingle;
+        _correctionPreviewOutput.Padding = new Padding(8, 0, 8, 0);
+        _correctionPreviewOutput.TextAlign = ContentAlignment.MiddleLeft;
+        _correctionPreviewOutput.AutoEllipsis = true;
+        _correctionPreviewOutput.UseMnemonic = false;
 
         var preview = new TableLayoutPanel
         {
@@ -618,19 +622,18 @@ internal sealed class SettingsForm : Form
             Margin = new Padding(8, 0, 0, 0)
         };
         preview.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        preview.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        preview.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         preview.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        preview.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        preview.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var beforeLabel = DarkTheme.Label("Test your rules");
         beforeLabel.Margin = new Padding(0, 0, 0, 3);
-        var afterLabel = DarkTheme.Label("Result — includes the rule currently being typed");
-        afterLabel.Margin = new Padding(0, 4, 0, 3);
+        _correctionPreviewResultLabel.Margin = new Padding(0, 6, 0, 3);
         _correctionPreviewInput.Margin = Padding.Empty;
         _correctionPreviewOutput.Margin = Padding.Empty;
         preview.Controls.Add(beforeLabel, 0, 0);
         preview.Controls.Add(_correctionPreviewInput, 0, 1);
-        preview.Controls.Add(afterLabel, 0, 2);
+        preview.Controls.Add(_correctionPreviewResultLabel, 0, 2);
         preview.Controls.Add(_correctionPreviewOutput, 0, 3);
         return preview;
     }
@@ -1188,8 +1191,12 @@ internal sealed class SettingsForm : Form
 
     private void RefreshCorrectionPreview()
     {
-        _correctionPreviewOutput.Text = new TranscriptCorrectionDictionary(CorrectionsForPreview())
-            .Apply(_correctionPreviewInput.Text);
+        var input = _correctionPreviewInput.Text;
+        var output = new TranscriptCorrectionDictionary(CorrectionsForPreview()).Apply(input);
+        var changed = input.Length > 0 && !string.Equals(input, output, StringComparison.Ordinal);
+        _correctionPreviewOutput.Text = output;
+        _correctionPreviewResultLabel.Visible = changed;
+        _correctionPreviewOutput.Visible = changed;
     }
 
     private IReadOnlyList<TranscriptCorrection> CorrectionsForPreview()
@@ -1319,7 +1326,7 @@ internal sealed class SettingsForm : Form
     internal bool CorrectionPreviewFitsForTest =>
         _correctionPreview is not null
         && _correctionPreviewInput.Height >= 42
-        && _correctionPreviewOutput.Height >= 42
+        && (!_correctionPreviewOutput.Visible || _correctionPreviewOutput.Height >= 38)
         && _correctionPreview.Margin.Bottom >= 12
         && DescendantsFit(_correctionPreview);
 
@@ -1358,6 +1365,8 @@ internal sealed class SettingsForm : Form
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal string CorrectionPreviewOutputForTest => _correctionPreviewOutput.Text;
+
+    internal bool CorrectionPreviewResultVisibleForTest => _correctionPreviewOutput.Visible;
 
     internal string[] CorrectionColumnHeadersForTest =>
         _corrections.Columns.Cast<DataGridViewColumn>().Select(column => column.HeaderText).ToArray();

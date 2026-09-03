@@ -892,10 +892,14 @@ public sealed class AppBehaviorTests
             Assert.AreEqual("stewart", form.CorrectionReplaceWithForTest);
             Assert.AreEqual("Update rule", form.CorrectionActionTextForTest);
 
+            form.CorrectionPreviewInputForTest = "Nothing here matches a rule.";
+            Assert.IsFalse(form.CorrectionPreviewResultVisibleForTest);
+
             form.StartNewCorrectionForTest();
             form.SetCorrectionDraftForTest("stork", "Stewart");
             form.CorrectionPreviewInputForTest = "Trying stork again. Go to the store.";
 
+            Assert.IsTrue(form.CorrectionPreviewResultVisibleForTest);
             Assert.AreEqual(
                 "Trying Stewart again. Go to the store.",
                 form.CorrectionPreviewOutputForTest);
