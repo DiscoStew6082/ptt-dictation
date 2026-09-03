@@ -7,7 +7,7 @@ Thanks for helping improve PTT Dictation.
 Prerequisites:
 
 - Windows 10 or later
-- .NET 10 SDK
+- .NET SDK 10.0.400 or newer
 - Visual Studio 2026 or another editor with .NET 10 SDK support
 
 The app targets .NET 10 LTS, which is supported until November 14, 2028.
