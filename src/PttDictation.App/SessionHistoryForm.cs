@@ -71,6 +71,7 @@ internal sealed class SessionHistoryForm : Form
         _items.Font = new Font("Segoe UI Variable Text", 10F, FontStyle.Regular, GraphicsUnit.Point);
         _items.Margin = Padding.Empty;
         DarkTheme.ApplyNativeDarkTheme(_items);
+        DarkTheme.ApplyTextEditingMenu(_items);
 
         var closeButton = DarkTheme.Button("Close");
         closeButton.Size = new Size(104, 36);

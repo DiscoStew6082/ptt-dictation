@@ -643,6 +643,10 @@ internal sealed class SettingsForm : Form
         control.BackColor = DarkTheme.SurfaceRaised;
         control.ForeColor = DarkTheme.Text;
         control.Font = DarkTheme.BodyFont;
+        if (control is TextBoxBase textBox)
+        {
+            DarkTheme.ApplyTextEditingMenu(textBox);
+        }
     }
 
     private static void StyleSelector(ComboBox selector)

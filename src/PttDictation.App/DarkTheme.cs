@@ -53,6 +53,74 @@ internal static class DarkTheme
         control.HandleCreated += (_, _) => NativeControlTheme.Apply(control.Handle);
     }
 
+    public static void ApplyTextEditingMenu(TextBoxBase textBox)
+    {
+        var menu = new ContextMenuStrip
+        {
+            BackColor = Surface,
+            ForeColor = Text,
+            ShowImageMargin = false,
+            Renderer = new ToolStripProfessionalRenderer(new DarkMenuColorTable())
+        };
+
+        if (!textBox.ReadOnly)
+        {
+            var undo = AddMenuItem(menu, "Undo", textBox.Undo);
+            menu.Items.Add(new ToolStripSeparator());
+            var cut = AddMenuItem(menu, "Cut", textBox.Cut);
+            var copy = AddMenuItem(menu, "Copy", textBox.Copy);
+            var paste = AddMenuItem(menu, "Paste", textBox.Paste);
+            var delete = AddMenuItem(menu, "Delete", () => textBox.SelectedText = string.Empty);
+            menu.Items.Add(new ToolStripSeparator());
+            var selectAll = AddMenuItem(menu, "Select All", textBox.SelectAll);
+
+            menu.Opening += (_, _) =>
+            {
+                undo.Enabled = textBox.CanUndo;
+                cut.Enabled = textBox.SelectionLength > 0;
+                copy.Enabled = textBox.SelectionLength > 0;
+                paste.Enabled = ClipboardContainsText();
+                delete.Enabled = textBox.SelectionLength > 0;
+                selectAll.Enabled = textBox.TextLength > 0 && textBox.SelectionLength < textBox.TextLength;
+            };
+        }
+        else
+        {
+            var copy = AddMenuItem(menu, "Copy", textBox.Copy);
+            menu.Items.Add(new ToolStripSeparator());
+            var selectAll = AddMenuItem(menu, "Select All", textBox.SelectAll);
+
+            menu.Opening += (_, _) =>
+            {
+                copy.Enabled = textBox.SelectionLength > 0;
+                selectAll.Enabled = textBox.TextLength > 0 && textBox.SelectionLength < textBox.TextLength;
+            };
+        }
+
+        textBox.ContextMenuStrip = menu;
+        textBox.Disposed += (_, _) => menu.Dispose();
+    }
+
+    private static ToolStripMenuItem AddMenuItem(ContextMenuStrip menu, string text, Action action)
+    {
+        var item = new ToolStripMenuItem(text);
+        item.Click += (_, _) => action();
+        menu.Items.Add(item);
+        return item;
+    }
+
+    private static bool ClipboardContainsText()
+    {
+        try
+        {
+            return Clipboard.ContainsText();
+        }
+        catch (ExternalException)
+        {
+            return false;
+        }
+    }
+
     public static Button Button(string text)
     {
         var button = new DarkButton

@@ -1486,6 +1486,7 @@ public sealed class AppBehaviorTests
             Assert.AreEqual(ScrollBars.Vertical, historyText.ScrollBars);
             Assert.IsFalse(historyText.TabStop);
             Assert.AreEqual(DarkTheme.SurfaceRaised, historyText.BackColor);
+            AssertDarkTextMenu(historyText, "Copy", "Select All");
             StringAssert.Contains(historyText.Text, "Why did it take longer on Kuda than CBU and CUDA?");
             Assert.AreEqual(closeButton.Size, quitButton.Size);
             Assert.AreEqual(ContentAlignment.MiddleCenter, closeButton.TextAlign);
@@ -1509,6 +1510,24 @@ public sealed class AppBehaviorTests
                 form.DrawToBitmap(preview, new Rectangle(Point.Empty, form.Size));
                 preview.Save(previewPath);
                 form.Hide();
+            }
+        });
+    }
+
+    [TestMethod]
+    public void SettingsCorrectionTextBoxesUseDarkEditingMenus()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
+
+            var textBoxes = FindControls<TextBox>(form).ToArray();
+
+            Assert.HasCount(3, textBoxes);
+            foreach (var textBox in textBoxes)
+            {
+                AssertDarkTextMenu(textBox, "Undo", "Cut", "Copy", "Paste", "Delete", "Select All");
             }
         });
     }
@@ -1645,6 +1664,35 @@ public sealed class AppBehaviorTests
         }
 
         return null;
+    }
+
+    private static IEnumerable<T> FindControls<T>(Control root)
+        where T : Control
+    {
+        foreach (Control child in root.Controls)
+        {
+            if (child is T typed)
+            {
+                yield return typed;
+            }
+
+            foreach (var nested in FindControls<T>(child))
+            {
+                yield return nested;
+            }
+        }
+    }
+
+    private static void AssertDarkTextMenu(TextBoxBase textBox, params string[] expectedItems)
+    {
+        var menu = textBox.ContextMenuStrip;
+        Assert.IsNotNull(menu);
+        Assert.AreEqual(DarkTheme.Surface, menu.BackColor);
+        Assert.AreEqual(DarkTheme.Text, menu.ForeColor);
+        Assert.IsInstanceOfType<ToolStripProfessionalRenderer>(menu.Renderer);
+        CollectionAssert.AreEqual(
+            expectedItems,
+            menu.Items.OfType<ToolStripMenuItem>().Select(item => item.Text).ToArray());
     }
 
     private static void AssertControlInsideClient(Form form, Control control)
