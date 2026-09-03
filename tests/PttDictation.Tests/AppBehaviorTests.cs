@@ -644,6 +644,50 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    public void SettingsFormDefaultLayoutAlignsCorrectionColumnsWithoutWindowScrolling()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault())
+            {
+                Size = new Size(1400, 900)
+            };
+            form.UseSettings(AppSettings.Default with
+            {
+                TranscriptCorrections =
+                [
+                    new TranscriptCorrection("quinn", "qwen"),
+                    new TranscriptCorrection("quin", "qwen"),
+                    new TranscriptCorrection("stuart", "stewart"),
+                    new TranscriptCorrection("steward", "stewart"),
+                    new TranscriptCorrection("blm", "vlm")
+                ]
+            });
+
+            form.Show();
+            Application.DoEvents();
+            form.PerformLayout();
+            Application.DoEvents();
+
+            Assert.AreEqual(2, form.CorrectionColumnCountForTest);
+            Assert.IsFalse(
+                form.ContentHasVerticalScrollForTest,
+                $"{form.ContentLayoutForTest}, fields={form.CorrectionFieldsBoundsForTest}, preview={form.CorrectionPreviewBoundsForTest}");
+            Assert.AreEqual(form.CorrectionFieldsBoundsForTest.Top, form.CorrectionPreviewBoundsForTest.Top);
+            Assert.AreEqual(form.CorrectionFieldsBoundsForTest.Bottom, form.CorrectionPreviewBoundsForTest.Bottom);
+
+            var previewPath = Environment.GetEnvironmentVariable("PARAKEET_SETTINGS_WIDE_PREVIEW_PATH");
+            if (!string.IsNullOrWhiteSpace(previewPath))
+            {
+                using var preview = new Bitmap(form.Width, form.Height);
+                form.DrawToBitmap(preview, new Rectangle(Point.Empty, form.Size));
+                preview.Save(previewPath);
+            }
+        });
+    }
+
+    [TestMethod]
     public void SettingsFormDisablesModelDownloadWhenSelectedModelIsPresent()
     {
         RunOnStaThread(() =>

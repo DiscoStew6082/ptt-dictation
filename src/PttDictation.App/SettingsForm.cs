@@ -28,7 +28,6 @@ internal sealed class SettingsForm : Form
     private readonly Button _correctionAction = DarkTheme.Button("Add rule");
     private readonly Button _newCorrection = DarkTheme.Button("New rule");
     private readonly Button _deleteCorrection = DarkTheme.Button("Remove selected");
-    private readonly Label _correctionStatus = DarkTheme.HelpText(string.Empty);
     private readonly Label _saveStatus = DarkTheme.HelpText("Changes are not active until saved.");
     private readonly Button _save = DarkTheme.Button("Save");
     private readonly Button _cancel = DarkTheme.Button("Cancel");
@@ -104,7 +103,7 @@ internal sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 3,
-            Padding = new Padding(20, 16, 20, 12),
+            Padding = new Padding(20, 12, 20, 8),
             BackColor = DarkTheme.Background
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -170,7 +169,7 @@ internal sealed class SettingsForm : Form
         _summary.BackColor = DarkTheme.Surface;
         _summary.Padding = new Padding(12, 0, 12, 0);
         _summary.TextAlign = ContentAlignment.MiddleLeft;
-        _summary.Margin = new Padding(0, 0, 0, 10);
+        _summary.Margin = new Padding(0, 0, 0, 6);
         header.Controls.Add(_summary);
         return header;
     }
@@ -197,7 +196,7 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = DarkTheme.Background,
-            Margin = new Padding(0, 0, 0, 12)
+            Margin = new Padding(0, 0, 0, 8)
         };
         _primarySections.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         _primarySections.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
@@ -247,7 +246,7 @@ internal sealed class SettingsForm : Form
         ConfigureCheckBox(
             _sounds,
             "Play status sounds",
-            42,
+            30,
             Padding.Empty);
     }
 
@@ -353,7 +352,7 @@ internal sealed class SettingsForm : Form
             Text = description,
             AutoSize = false,
             Dock = DockStyle.Top,
-            Height = title == "Corrections" ? 28 : 42,
+            Height = 28,
             ForeColor = DarkTheme.MutedText,
             BackColor = Color.Transparent,
             Margin = new Padding(0, 0, 0, 6)
@@ -378,8 +377,8 @@ internal sealed class SettingsForm : Form
     private static void AddField(TableLayoutPanel fields, string labelText, Control control)
     {
         fields.Controls.Add(DarkTheme.Label(labelText));
-        control.Height = 34;
-        control.Margin = new Padding(0, 0, 0, 6);
+        control.Height = 32;
+        control.Margin = new Padding(0, 0, 0, 4);
         fields.Controls.Add(control);
     }
 
@@ -410,9 +409,9 @@ internal sealed class SettingsForm : Form
         row.Controls.Add(_model, 0, 0);
         row.Controls.Add(_downloadModel, 1, 0);
         fields.Controls.Add(row);
-        _modelStatus.Height = 42;
+        _modelStatus.Height = 30;
         _modelStatus.BackColor = Color.Transparent;
-        _modelStatus.Margin = new Padding(0, 4, 0, 8);
+        _modelStatus.Margin = new Padding(0, 2, 0, 6);
         fields.Controls.Add(_modelStatus);
     }
 
@@ -452,7 +451,7 @@ internal sealed class SettingsForm : Form
 
         ConfigureCorrectionTable();
         _corrections.Dock = DockStyle.Top;
-        _corrections.Height = 198;
+        _corrections.Height = 172;
         _corrections.Margin = new Padding(0, 3, 0, 10);
         _correctionFields.Controls.Add(_corrections);
 
@@ -464,7 +463,7 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = DarkTheme.Surface,
-            Margin = new Padding(0, 0, 0, 8)
+            Margin = Padding.Empty
         };
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -472,9 +471,9 @@ internal sealed class SettingsForm : Form
         editor.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         editor.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var heardAsLabel = DarkTheme.Label("When the transcript contains");
+        var heardAsLabel = DarkTheme.Label("Heard as");
         heardAsLabel.Margin = new Padding(0, 0, 4, 3);
-        var replaceWithLabel = DarkTheme.Label("Replace it with");
+        var replaceWithLabel = DarkTheme.Label("Replace with");
         replaceWithLabel.Margin = new Padding(4, 0, 0, 3);
 
         StyleInput(_correctionHeardAs);
@@ -499,7 +498,7 @@ internal sealed class SettingsForm : Form
         _newCorrection.Click += (_, _) =>
         {
             StartNewCorrection();
-            _correctionStatus.Text = "Enter a phrase and its replacement, then test or add the rule.";
+            _saveStatus.Text = "Enter a phrase and its replacement, then test or add the rule.";
         };
 
         ConfigureActionButton(_deleteCorrection, "Remove selected", 128);
@@ -526,10 +525,6 @@ internal sealed class SettingsForm : Form
         editor.Controls.Add(actions, 0, 2);
         editor.SetColumnSpan(actions, 2);
         _correctionFields.Controls.Add(editor);
-
-        _correctionStatus.Height = 34;
-        _correctionStatus.Margin = Padding.Empty;
-        _correctionFields.Controls.Add(_correctionStatus);
 
         _correctionLayout = new WidthConstrainedTableLayoutPanel
         {
@@ -767,7 +762,7 @@ internal sealed class SettingsForm : Form
             _correctionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             _correctionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             _correctionFields.Margin = new Padding(0, 0, 8, 0);
-            _correctionPreview.Margin = new Padding(8, 0, 0, 12);
+            _correctionPreview.Margin = new Padding(8, 0, 0, 0);
             _correctionLayout.SetCellPosition(_correctionFields, new TableLayoutPanelCellPosition(0, 0));
             _correctionLayout.SetCellPosition(_correctionPreview, new TableLayoutPanelCellPosition(1, 0));
         }
@@ -812,7 +807,7 @@ internal sealed class SettingsForm : Form
     {
         if (HasIncompleteCorrectionDraft())
         {
-            _correctionStatus.Text = "Finish both correction fields before saving, or click New rule to clear them.";
+            _saveStatus.Text = "Finish both correction fields before saving, or click New rule to clear them.";
             return;
         }
 
@@ -1013,7 +1008,7 @@ internal sealed class SettingsForm : Form
         var replaceWith = _correctionReplaceWith.Text.Trim();
         if (heardAs.Length == 0 || replaceWith.Length == 0)
         {
-            _correctionStatus.Text = "Enter both the text you hear and the replacement you want.";
+            _saveStatus.Text = "Enter both the text you hear and the replacement you want.";
             return;
         }
 
@@ -1037,10 +1032,9 @@ internal sealed class SettingsForm : Form
 
         RefreshCorrectionsList();
         StartNewCorrection();
-        _correctionStatus.Text = existing >= 0 || wasEditing
+        _saveStatus.Text = existing >= 0 || wasEditing
             ? "Rule updated. Click Save to use it in new dictations."
             : "Rule added. Click Save to use it in new dictations.";
-        _saveStatus.Text = "Unsaved correction changes.";
         RefreshCorrectionPreview();
     }
 
@@ -1048,15 +1042,14 @@ internal sealed class SettingsForm : Form
     {
         if (_selectedCorrection is null)
         {
-            _correctionStatus.Text = "Select a rule in the table before removing it.";
+            _saveStatus.Text = "Select a rule in the table before removing it.";
             return;
         }
 
         _transcriptCorrections.Remove(_selectedCorrection);
         RefreshCorrectionsList();
         StartNewCorrection();
-        _correctionStatus.Text = "Rule removed. Click Save to make the removal permanent.";
-        _saveStatus.Text = "Unsaved correction changes.";
+        _saveStatus.Text = "Rule removed. Click Save to make the removal permanent.";
         RefreshCorrectionPreview();
     }
 
@@ -1075,7 +1068,7 @@ internal sealed class SettingsForm : Form
             _corrections.ClearSelection();
             _corrections.CurrentCell = null;
             _selectedCorrection = null;
-            _correctionStatus.Text = _transcriptCorrections.Count == 0
+            _saveStatus.Text = _transcriptCorrections.Count == 0
                 ? "No rules yet. Add one below, then test it on the right."
                 : $"{_transcriptCorrections.Count} rule{(_transcriptCorrections.Count == 1 ? string.Empty : "s")}. Select a row to edit it.";
         }
@@ -1102,7 +1095,7 @@ internal sealed class SettingsForm : Form
             _correctionReplaceWith.Text = selected.ReplaceWith;
             _correctionAction.Text = "Update rule";
             _deleteCorrection.Enabled = true;
-            _correctionStatus.Text = "Editing selected rule. Change either field, then click Update rule.";
+            _saveStatus.Text = "Editing selected rule. Change either field, then click Update rule.";
         }
         finally
         {
@@ -1143,7 +1136,7 @@ internal sealed class SettingsForm : Form
 
         _correctionAction.Enabled = !string.IsNullOrWhiteSpace(_correctionHeardAs.Text)
             && !string.IsNullOrWhiteSpace(_correctionReplaceWith.Text);
-        _correctionStatus.Text = _selectedCorrection is null
+        _saveStatus.Text = _selectedCorrection is null
             ? "Draft rule. The test result includes it before you add it."
             : "Editing selected rule. The test result includes your unsaved edits.";
         RefreshCorrectionPreview();
@@ -1296,6 +1289,8 @@ internal sealed class SettingsForm : Form
 
     internal bool ContentHasHorizontalScrollForTest => _contentHost.HorizontalScroll.Visible;
 
+    internal bool ContentHasVerticalScrollForTest => _contentHost.VerticalScroll.Visible;
+
     internal bool PrimarySectionsFitContentForTest =>
         _recordingSection is not null
         && _transcriptionSection is not null
@@ -1303,7 +1298,8 @@ internal sealed class SettingsForm : Form
         && DescendantsFit(_transcriptionSection);
 
     internal string ContentLayoutForTest =>
-        $"host={_contentHost.ClientSize}, content={_contentHost.Controls[0].Size}, display={_contentHost.DisplayRectangle.Size}";
+        $"host={_contentHost.ClientSize}, content={_contentHost.Controls[0].Size}, display={_contentHost.DisplayRectangle.Size}, "
+        + $"primary={_primarySections?.Bounds}, corrections={_correctionLayout?.Bounds}";
 
     internal int PrimarySectionColumnCountForTest => _primarySections?.ColumnCount ?? 0;
 
@@ -1315,6 +1311,12 @@ internal sealed class SettingsForm : Form
         && _correctionPreviewOutput.Height >= 42
         && _correctionPreview.Margin.Bottom >= 12
         && DescendantsFit(_correctionPreview);
+
+    internal Rectangle CorrectionFieldsBoundsForTest =>
+        _correctionFields?.Bounds ?? Rectangle.Empty;
+
+    internal Rectangle CorrectionPreviewBoundsForTest =>
+        _correctionPreview?.Bounds ?? Rectangle.Empty;
 
     internal void ApplyHighDpiLayoutForTest()
     {
