@@ -125,7 +125,7 @@ Release builds from this repository publish the zip, checksum, and CycloneDX SBO
 
 ## Build from Source
 
-Contributors need the .NET 10 SDK. Run the test suite and create a self-contained Windows build with:
+Contributors need .NET SDK 10.0.400 or newer. Run the test suite and create a self-contained Windows build with:
 
 ```powershell
 dotnet test PttDictation.sln

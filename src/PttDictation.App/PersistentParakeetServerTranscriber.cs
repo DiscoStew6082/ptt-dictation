@@ -15,7 +15,7 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
     private readonly string _serverPath;
     private readonly SemaphoreSlim _startupLock = new(1, 1);
     private readonly SemaphoreSlim _requestLock = new(1, 1);
-    private readonly HttpClient _httpClient = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly HttpClient _httpClient;
     private Process? _serverProcess;
     private Uri? _endpoint;
     private Task<string>? _standardOutput;
@@ -26,6 +26,14 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
     {
         _options = options;
         _serverPath = serverPath;
+        _httpClient = new HttpClient(new SocketsHttpHandler
+        {
+            UseProxy = false,
+            ConnectCallback = ConnectToExpectedServerAsync
+        })
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
     }
 
     public async Task WarmUpAsync(CancellationToken cancellationToken)
@@ -110,6 +118,7 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
         byte[] wav,
         CancellationToken cancellationToken)
     {
+        EnsureServerOwnsEndpoint(endpoint);
         using var audioContent = new ByteArrayContent(wav);
         audioContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
         using var form = new MultipartFormDataContent();
@@ -305,7 +314,13 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
             {
                 using var client = new TcpClient();
                 await client.ConnectAsync(IPAddress.Loopback, port, linked.Token);
-                return;
+                if (TcpListenerProcessInspector.IsOwnedBy(IPAddress.Loopback, port, process.Id))
+                {
+                    return;
+                }
+
+                throw new InvalidOperationException(
+                    "A different local process claimed the Parakeet server port.");
             }
             catch (SocketException)
             {
@@ -317,6 +332,58 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
     private bool ServerIsRunning()
     {
         return _serverProcess is { HasExited: false } && _endpoint is not null;
+    }
+
+    private void EnsureServerOwnsEndpoint(Uri endpoint)
+    {
+        var process = _serverProcess;
+        if (process is not null
+            && !process.HasExited
+            && TcpListenerProcessInspector.IsOwnedBy(IPAddress.Loopback, endpoint.Port, process.Id))
+        {
+            return;
+        }
+
+        StopServer();
+        throw new InvalidOperationException(
+            "The Parakeet endpoint is not owned by the expected local server process.");
+    }
+
+    private async ValueTask<Stream> ConnectToExpectedServerAsync(
+        SocketsHttpConnectionContext context,
+        CancellationToken cancellationToken)
+    {
+        var process = _serverProcess;
+        if (!string.Equals(context.DnsEndPoint.Host, IPAddress.Loopback.ToString(), StringComparison.Ordinal)
+            || process is null
+            || process.HasExited)
+        {
+            throw new InvalidOperationException(
+                "The Parakeet endpoint is not owned by the expected local server process.");
+        }
+
+        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+        {
+            NoDelay = true
+        };
+        try
+        {
+            await socket.ConnectAsync(
+                new IPEndPoint(IPAddress.Loopback, context.DnsEndPoint.Port),
+                cancellationToken);
+            if (!TcpListenerProcessInspector.IsConnectionOwnedBy(socket, process.Id))
+            {
+                throw new InvalidOperationException(
+                    "A different local process accepted the Parakeet audio connection.");
+            }
+
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
     }
 
     private async Task<string> StopServerAndReadErrorAsync()

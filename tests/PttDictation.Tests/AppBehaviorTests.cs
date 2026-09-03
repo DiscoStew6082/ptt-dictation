@@ -1,5 +1,7 @@
 using PttDictation.App;
 using PttDictation.Core;
+using System.Net;
+using System.Net.Sockets;
 
 namespace PttDictation.Tests;
 
@@ -288,6 +290,32 @@ public sealed class AppBehaviorTests
         Assert.AreEqual("three", result.Words[1].Text);
         Assert.AreEqual(TimeSpan.FromSeconds(0.80), result.Words[1].Start);
         Assert.AreEqual(0.91, result.Words[1].Confidence);
+    }
+
+    [TestMethod]
+    public void TcpListenerOwnershipRequiresTheExpectedProcess()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        Assert.IsTrue(TcpListenerProcessInspector.IsOwnedBy(IPAddress.Loopback, port, Environment.ProcessId));
+        Assert.IsFalse(TcpListenerProcessInspector.IsOwnedBy(IPAddress.Loopback, port, int.MaxValue));
+    }
+
+    [TestMethod]
+    public async Task TcpConnectionOwnershipRequiresTheProcessThatAcceptedTheSocket()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var endpoint = (IPEndPoint)listener.LocalEndpoint;
+        var acceptTask = listener.AcceptSocketAsync();
+        using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        await client.ConnectAsync(endpoint);
+        using var server = await acceptTask;
+
+        Assert.IsTrue(TcpListenerProcessInspector.IsConnectionOwnedBy(client, Environment.ProcessId));
+        Assert.IsFalse(TcpListenerProcessInspector.IsConnectionOwnedBy(client, int.MaxValue));
     }
 
     [TestMethod]

@@ -32,11 +32,11 @@ jobs:
       - name: Restore
         run: dotnet restore PttDictation.sln --locked-mode
 
-      - name: Test
-        run: dotnet test PttDictation.sln --configuration Release --no-restore
-
       - name: Audit NuGet packages
         run: dotnet list PttDictation.sln package --vulnerable --include-transitive
+
+      - name: Test
+        run: dotnet test PttDictation.sln --configuration Release --no-restore
 
       - name: Publish
         run: dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o publish\ptt-dictation-win-x64
