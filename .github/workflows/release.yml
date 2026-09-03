@@ -41,6 +41,17 @@ jobs:
       - name: Publish
         run: dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o publish\ptt-dictation-win-x64
 
+      - name: Verify bundled runtime security baseline
+        shell: pwsh
+        run: |
+          $coreLibrary = Get-Item publish\ptt-dictation-win-x64\System.Private.CoreLib.dll
+          $runtimeVersion = [Version]($coreLibrary.VersionInfo.ProductVersion.Split('-')[0])
+          $minimumVersion = [Version]'10.0.11'
+          if ($runtimeVersion -lt $minimumVersion) {
+            throw "Published runtime $runtimeVersion is older than the required security baseline $minimumVersion."
+          }
+          Write-Host "Published runtime $runtimeVersion meets the security baseline."
+
       - name: Restore locked SBOM tool
         run: dotnet tool restore
 

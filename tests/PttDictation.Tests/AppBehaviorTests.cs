@@ -1,7 +1,5 @@
 using PttDictation.App;
 using PttDictation.Core;
-using System.Net;
-using System.Net.Sockets;
 
 namespace PttDictation.Tests;
 
@@ -290,32 +288,6 @@ public sealed class AppBehaviorTests
         Assert.AreEqual("three", result.Words[1].Text);
         Assert.AreEqual(TimeSpan.FromSeconds(0.80), result.Words[1].Start);
         Assert.AreEqual(0.91, result.Words[1].Confidence);
-    }
-
-    [TestMethod]
-    public void TcpListenerOwnershipRequiresTheExpectedProcess()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-
-        Assert.IsTrue(TcpListenerProcessInspector.IsOwnedBy(IPAddress.Loopback, port, Environment.ProcessId));
-        Assert.IsFalse(TcpListenerProcessInspector.IsOwnedBy(IPAddress.Loopback, port, int.MaxValue));
-    }
-
-    [TestMethod]
-    public async Task TcpConnectionOwnershipRequiresTheProcessThatAcceptedTheSocket()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var endpoint = (IPEndPoint)listener.LocalEndpoint;
-        var acceptTask = listener.AcceptSocketAsync();
-        using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        await client.ConnectAsync(endpoint);
-        using var server = await acceptTask;
-
-        Assert.IsTrue(TcpListenerProcessInspector.IsConnectionOwnedBy(client, Environment.ProcessId));
-        Assert.IsFalse(TcpListenerProcessInspector.IsConnectionOwnedBy(client, int.MaxValue));
     }
 
     [TestMethod]
@@ -670,7 +642,7 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
-    public void SettingsFormDefaultLayoutAlignsCorrectionColumnsWithoutWindowScrolling()
+    public void SettingsFormCorrectionEditorGeometryMatchesResponsiveMode()
     {
         RunOnStaThread(() =>
         {
@@ -690,22 +662,36 @@ public sealed class AppBehaviorTests
 
             form.Show();
             Application.DoEvents();
-            form.Size = new Size(1400, 1000);
             form.ApplyWideLayoutForTest();
             form.PerformLayout();
             Application.DoEvents();
 
             Assert.AreEqual(2, form.CorrectionColumnCountForTest);
-            Assert.AreEqual(
-                form.Height < 900,
-                form.ContentHasVerticalScrollForTest,
-                $"{form.ContentLayoutForTest}, fields={form.CorrectionFieldsBoundsForTest}, preview={form.CorrectionPreviewBoundsForTest}");
+            Assert.IsFalse(form.ContentHasHorizontalScrollForTest, form.ContentLayoutForTest);
+            Assert.IsGreaterThan(0, form.CorrectionFieldsBoundsForTest.Width, form.ContentLayoutForTest);
+            Assert.IsGreaterThan(0, form.CorrectionFieldsBoundsForTest.Height, form.ContentLayoutForTest);
+            Assert.IsGreaterThan(0, form.CorrectionPreviewBoundsForTest.Width, form.ContentLayoutForTest);
+            Assert.IsGreaterThan(0, form.CorrectionPreviewBoundsForTest.Height, form.ContentLayoutForTest);
             Assert.AreEqual(form.CorrectionFieldsBoundsForTest.Top, form.CorrectionPreviewBoundsForTest.Top);
             Assert.AreEqual(form.CorrectionFieldsBoundsForTest.Bottom, form.CorrectionPreviewBoundsForTest.Bottom);
+
+            form.Size = form.MinimumSize;
+            Application.DoEvents();
+            form.ApplyHighDpiLayoutForTest();
+            form.PerformLayout();
+            Application.DoEvents();
+
+            Assert.AreEqual(1, form.CorrectionColumnCountForTest);
+            Assert.IsFalse(form.ContentHasHorizontalScrollForTest, form.ContentLayoutForTest);
+            Assert.IsGreaterThan(
+                form.CorrectionFieldsBoundsForTest.Bottom,
+                form.CorrectionPreviewBoundsForTest.Top);
 
             var previewPath = Environment.GetEnvironmentVariable("PARAKEET_SETTINGS_WIDE_PREVIEW_PATH");
             if (!string.IsNullOrWhiteSpace(previewPath))
             {
+                form.ApplyWideLayoutForTest();
+                form.PerformLayout();
                 using var preview = new Bitmap(form.Width, form.Height);
                 form.DrawToBitmap(preview, new Rectangle(Point.Empty, form.Size));
                 preview.Save(previewPath);

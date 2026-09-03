@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 
 namespace PttDictation.App;
 
-internal static class TcpListenerProcessInspector
+internal static class TcpProcessInspector
 {
     private const int AddressFamilyInterNetwork = 2;
     private const uint ErrorSuccess = 0;
