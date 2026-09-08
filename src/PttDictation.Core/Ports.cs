@@ -46,11 +46,19 @@ public interface IClipboardPaster
     Task PasteAsync(string text, CancellationToken cancellationToken);
 }
 
+public interface ILiveClipboardPaster : IClipboardPaster
+{
+    void UpdatePreview(string text);
+
+    void EndSession();
+}
+
 public sealed record RecordedAudio(
     string Path,
     TimeSpan Duration,
     bool DeleteAfterUse = false,
-    TimeSpan? OverlapDuration = null)
+    TimeSpan? OverlapDuration = null,
+    bool IsCumulative = false)
 {
     public void Deconstruct(out string path, out TimeSpan duration, out bool deleteAfterUse)
     {

@@ -1,6 +1,7 @@
 namespace PttDictation.App;
 
-internal sealed class PcmChunkBuffer(int bytesPerSecond, int chunkBytes, int overlapBytes) : IDisposable
+internal sealed class PcmChunkBuffer(int bytesPerSecond, int chunkBytes, int overlapBytes, int? contextBytes = null,
+    bool cumulative = false) : IDisposable
 {
     private readonly MemoryStream _pcm = new();
     private long _chunkStartByte;
@@ -23,21 +24,24 @@ internal sealed class PcmChunkBuffer(int bytesPerSecond, int chunkBytes, int ove
             return null;
         }
 
-        var chunkStart = checked((int)_chunkStartByte);
         var chunkEnd = checked((int)(_chunkStartByte + chunkBytes));
+        // Keep publication cadence independent from recognition context. Early
+        // previews grow their look-back window without waiting for it to fill.
+        var chunkStart = cumulative ? 0 : Math.Max(0, chunkEnd - Math.Max(chunkBytes, contextBytes ?? chunkBytes));
         var chunkLength = chunkEnd - chunkStart;
         var chunkPcm = new byte[chunkLength];
         Buffer.BlockCopy(buffer.Array!, buffer.Offset + chunkStart, chunkPcm, 0, chunkLength);
         _chunkStartByte = Math.Max(0, chunkEnd - overlapBytes);
         var overlapDuration = _hasCreatedChunk
-            ? TimeSpan.FromSeconds((double)overlapBytes / bytesPerSecond)
+            ? TimeSpan.FromSeconds((double)(chunkLength - (chunkBytes - overlapBytes)) / bytesPerSecond)
             : TimeSpan.Zero;
         _hasCreatedChunk = true;
         return new PendingAudioChunk(
             path,
             chunkPcm,
             TimeSpan.FromSeconds((double)chunkPcm.Length / bytesPerSecond),
-            overlapDuration);
+            overlapDuration,
+            cumulative);
     }
 
     public byte[] ToArray()
@@ -51,4 +55,5 @@ internal sealed class PcmChunkBuffer(int bytesPerSecond, int chunkBytes, int ove
     }
 }
 
-internal sealed record PendingAudioChunk(string Path, byte[] Pcm, TimeSpan Duration, TimeSpan OverlapDuration);
+internal sealed record PendingAudioChunk(string Path, byte[] Pcm, TimeSpan Duration, TimeSpan OverlapDuration,
+    bool IsCumulative = false);

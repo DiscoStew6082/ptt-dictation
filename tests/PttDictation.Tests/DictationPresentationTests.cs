@@ -7,6 +7,33 @@ namespace PttDictation.Tests;
 public sealed class DictationPresentationTests
 {
     [TestMethod]
+    public void LiveTextboxRecordingAndProcessingNeverShowFloatingOverlay()
+    {
+        RunOnStaThread(async () =>
+        {
+            using var overlay = new StatusOverlayForm();
+            using var cancel = new ToolStripMenuItem();
+            var state = new DictationWorkflowState(DictationWorkflowPhase.Recording);
+            var inlineReady = false;
+            var sounds = new List<StatusSound>();
+            var environment = CreateEnvironment(() => AppSettings.Default, () => state,
+                playStatusSound: sounds.Add) with { IsInlinePreview = () => inlineReady };
+            var presentation = new DictationPresentation(overlay, cancel, environment);
+            await presentation.ApplyAsync(state);
+            Assert.IsFalse(overlay.Visible, "Capturing the destination must not flash the large overlay.");
+            inlineReady = true;
+            state = state with { Transcript = "Words in the selected textbox" };
+            await presentation.ApplyAsync(state);
+            Assert.IsFalse(overlay.Visible, "Live text needs no floating transcription window.");
+            state = state with { Phase = DictationWorkflowPhase.Processing };
+            await presentation.ApplyAsync(state);
+            Assert.IsFalse(overlay.Visible, "Final processing must not open a corner indicator.");
+            Assert.IsTrue(cancel.Enabled);
+            CollectionAssert.AreEqual(new[] { StatusSound.Listening, StatusSound.Transcribing }, sounds);
+        });
+    }
+
+    [TestMethod]
     public void EnteringToggleRecordingPresentsConfiguredTriggerAndEnablesCancellation()
     {
         RunOnStaThread(async () =>

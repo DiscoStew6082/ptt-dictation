@@ -8,7 +8,9 @@ Security fixes are intended for the latest release only. Supported builds target
 
 ## Trust Boundaries
 
-- Clipboard paste is a local OS boundary. Transcripts are temporarily placed on the clipboard and pasted into the active app; clipboard restoration is best-effort.
+- Clipboard insertion is a local OS boundary. Interim and final transcripts are temporarily placed on the clipboard; restoration is best-effort. Other local applications may observe them. Destination editors receive real text during live recording, so their normal autosave and text-processing behavior applies.
+- UI Automation reads the original editable field's text and selection to validate replacement of only this recording's text. These surrounding editor snapshots are transient. Known password, disabled, and read-only fields are excluded; uncertain writes stop instead of falling back to a duplicate whole-transcript paste.
+- Recognition-stage comparisons and recovery transcripts remain in session-only history. This development checkpoint additionally enables local diagnostic logging of dictated text, recognition stages, timing, and errors under `%LOCALAPPDATA%\PttDictation\diagnostics\experimental`. The log rotates at 4 MiB and retains up to three complete recordings. Diagnostic files may contain sensitive speech and remain local; they are not automatically uploaded. Original clipboard contents and surrounding editor text are excluded.
 - Runtime and model path overrides trust the selected local files. Do not point the app at untrusted executables or models.
 - The low-level keyboard hook is used to detect the push-to-talk hotkey while the app is running.
 - Runtime/model downloads contact upstream hosts on first use unless local paths are configured.

@@ -82,7 +82,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             recorder.DataAvailable += OnDataAvailable;
             recorder.RecordingStopped += OnRecordingStopped;
 
-            pcm = new PcmChunkBuffer(BytesPerSecond, ChunkBytes, ChunkOverlapBytes);
+            pcm = new PcmChunkBuffer(BytesPerSecond, ChunkBytes, ChunkOverlapBytes, cumulative: true);
             lock (_gate)
             {
                 ThrowIfDisposed();

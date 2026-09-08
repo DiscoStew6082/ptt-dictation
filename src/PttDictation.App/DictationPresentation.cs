@@ -11,7 +11,9 @@ internal sealed record DictationPresentationEnvironment(
     Action<string> ShowCleanupWarning,
     Action<string, string, ToolTipIcon> ShowTrayNotification,
     Action<StatusSound> PlayStatusSound,
-    Func<TimeSpan, Task> DelayAsync);
+    Func<TimeSpan, Task> DelayAsync,
+    Func<bool>? IsInlinePreview = null,
+    Func<string?>? GetHoldingReason = null);
 
 internal enum StatusSound
 {
@@ -76,6 +78,7 @@ internal sealed class DictationPresentation
         }
 
         _cancelItem.Enabled = state.CanCancel;
+        _overlay.SetInlinePreview(_environment.IsInlinePreview?.Invoke() == true);
 
         if (string.IsNullOrWhiteSpace(state.CleanupWarningPath))
         {
@@ -92,6 +95,19 @@ internal sealed class DictationPresentation
 
         var phaseChanged = state.Phase != _previousPhase;
         _previousPhase = state.Phase;
+
+        // The live-paste workflow presents words in the destination editor.
+        // This includes the asynchronous capture interval and focus pauses;
+        // neither should flash a transcript card over that editor.
+        if (_environment.IsInlinePreview is not null
+            && state.Phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing)
+        {
+            _overlay.HideRecording();
+            if (phaseChanged)
+                _environment.PlayStatusSound(state.Phase == DictationWorkflowPhase.Recording
+                    ? StatusSound.Listening : StatusSound.Transcribing);
+            return;
+        }
 
         switch (state.Phase)
         {
@@ -114,11 +130,18 @@ internal sealed class DictationPresentation
             case DictationWorkflowPhase.Cancelled:
                 if (phaseChanged)
                 {
-                    ShowStatus(DictationStatusCatalog.DictationCancelled, ToolTipIcon.Info);
+                    var cancelled = _environment.IsInlinePreview is null
+                        ? DictationStatusCatalog.DictationCancelled
+                        : DictationStatusCatalog.DictationCancelled with
+                        {
+                            Message = "Recording stopped. Text already inserted remains in the textbox."
+                        };
+                    ShowStatus(cancelled, ToolTipIcon.Info);
                 }
 
                 break;
             case DictationWorkflowPhase.Failed:
+                _environment.RefreshHistory();
                 if (phaseChanged)
                 {
                     _environment.PlayStatusSound(StatusSound.Error);
@@ -146,9 +169,10 @@ internal sealed class DictationPresentation
             _overlay.ShowProcessingTranscript(state.Transcript);
         }
 
-        if (!string.IsNullOrWhiteSpace(state.ProcessingDetail))
+        var detail = _environment.GetHoldingReason?.Invoke() ?? state.ProcessingDetail;
+        if (!string.IsNullOrWhiteSpace(detail))
         {
-            _overlay.ShowProcessingDetail(state.ProcessingDetail);
+            _overlay.ShowProcessingDetail(detail);
         }
     }
 

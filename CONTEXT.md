@@ -1,6 +1,6 @@
 # PTT Dictation
 
-PTT Dictation turns a user-controlled microphone recording into locally transcribed text pasted into the app where recording began.
+PTT Dictation turns a user-controlled microphone recording into locally transcribed text inserted into the selected textbox where recording began. Supported editors receive revisable live text followed by a final replacement. Recording and processing do not open a floating transcript overlay.
 
 ## Language
 
@@ -21,5 +21,9 @@ The sounds, visible status, controls, and history feedback through which the cur
 _Avoid_: UI state, workflow view
 
 **Dictation cancellation**:
-A user decision to abandon an active dictation workflow during recording or processing. Cancellation discards the workflow without pasting text or adding it to history.
+A user decision to abandon an active dictation workflow during recording or processing. Cancellation stops further insertion without undoing text already inserted or adding a history entry.
 _Avoid_: Paste cancellation
+
+**Correction draft**:
+An unsaved phrase and replacement being added or used to edit a selected correction rule. A complete draft participates in the correction preview; saved rules become active for new dictations.
+_Avoid_: Pending replacement, temporary rule

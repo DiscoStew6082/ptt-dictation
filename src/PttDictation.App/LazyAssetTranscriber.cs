@@ -25,13 +25,16 @@ internal sealed class LazyAssetTranscriber(
 
     public async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
     {
+        var recordingId = DiagnosticTrace.CurrentRecordingId;
+        DiagnosticTrace.Write("runtime.transcribe_requested", new { modeOverride = modeOverride?.ToString() }, recordingId: recordingId);
         var inner = await EnsureInnerAsync(cancellationToken);
         try
         {
             return await inner.TranscribeAsync(wavPath, cancellationToken);
         }
-        catch when (getSettings().DevicePreference == DevicePreference.Cuda)
+        catch (Exception ex) when (getSettings().DevicePreference == DevicePreference.Cuda)
         {
+            DiagnosticTrace.Write("runtime.cuda_retry", new { cancellationRequested = cancellationToken.IsCancellationRequested }, ex, recordingId);
             reportStatus("CUDA transcription failed; retrying with CPU runtime.");
             var settings = getSettings() with
             {
@@ -112,6 +115,7 @@ internal sealed class LazyAssetTranscriber(
                 effectiveSettings.DevicePreference,
                 runtimePath,
                 modelPath);
+            DiagnosticTrace.Write("runtime.selected", new { effectiveSettings.SelectedModelId, mode = effectiveSettings.TranscriptionMode.ToString(), device = effectiveSettings.DevicePreference.ToString(), runtime = Path.GetFileName(runtimePath), model = Path.GetFileName(modelPath), implementation = _inner.GetType().Name });
             return _inner;
         }
         finally

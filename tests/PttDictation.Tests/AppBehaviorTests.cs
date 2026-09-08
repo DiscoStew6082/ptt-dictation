@@ -974,6 +974,128 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    public void SettingsFormSavesSelectedRuleCollisionExactlyAsPreviewed()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            try
+            {
+                var store = new AppSettingsStore(path);
+                using var form = new SettingsForm(store, ModelRegistry.CreateDefault());
+                form.UseSettings(AppSettings.Default with
+                {
+                    TranscriptCorrections = [new("quinn", "Qwen"), new("steward", "Stewart")]
+                });
+                form.Show();
+                Application.DoEvents();
+                form.SelectCorrectionForTest(0);
+                form.SetCorrectionDraftForTest(" STEWARD ", " Stu ");
+                form.CorrectionPreviewInputForTest = "quinn steward";
+                Assert.AreEqual("quinn Stu", form.CorrectionPreviewOutputForTest);
+
+                form.SaveForTest();
+
+                var saved = store.Load();
+                CollectionAssert.AreEqual(
+                    new[] { new TranscriptCorrection("STEWARD", "Stu") },
+                    saved.TranscriptCorrections.ToArray());
+                Assert.AreEqual(form.CorrectionPreviewOutputForTest,
+                    TranscriptCorrectionDictionary.Apply("quinn steward", saved.TranscriptCorrections));
+                Assert.AreEqual(1, form.CorrectionRuleCountForTest);
+                Assert.AreEqual(string.Empty, form.CorrectionHeardAsForTest);
+                Assert.AreEqual("Add rule", form.CorrectionActionTextForTest);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        });
+    }
+
+    [TestMethod]
+    public void SettingsFormIncompleteDraftLeavesSavedRulesUntouchedAndReloadDiscardsEdits()
+    {
+        RunOnStaThread(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
+            try
+            {
+                var store = new AppSettingsStore(path);
+                using var form = new SettingsForm(store, ModelRegistry.CreateDefault());
+                form.UseSettings(AppSettings.Default with
+                {
+                    TranscriptCorrections = [new("quinn", "Qwen")]
+                });
+                form.SaveForTest();
+                var originalFile = File.ReadAllText(path);
+                var saves = 0;
+                form.SettingsSaved += (_, _) => saves++;
+                form.Show();
+                Application.DoEvents();
+                form.SelectCorrectionForTest(0);
+                form.SetCorrectionDraftForTest("steward", " ");
+
+                form.SaveForTest();
+
+                Assert.AreEqual(originalFile, File.ReadAllText(path));
+                Assert.AreEqual(0, saves);
+                StringAssert.Contains(form.SaveStatusTextForTest, "Finish both correction fields");
+                Assert.AreEqual("steward", form.CorrectionHeardAsForTest);
+
+                form.UseSettings(store.Load());
+
+                Assert.AreEqual(string.Empty, form.CorrectionHeardAsForTest);
+                Assert.AreEqual("Add rule", form.CorrectionActionTextForTest);
+                form.CorrectionPreviewInputForTest = "quinn steward";
+                Assert.AreEqual("Qwen steward", form.CorrectionPreviewOutputForTest);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        });
+    }
+
+    [TestMethod]
+    public void InlineRecordingUsesSmallIndicatorThroughFinalProcessing()
+    {
+        RunOnStaThread(() =>
+        {
+            using var overlay = new StatusOverlayForm();
+            overlay.ApplyStatusForTest(DictationStatusCatalog.Listening, ListeningTriggerMode.Toggle);
+            overlay.SetInlinePreview(true);
+            overlay.UpdateActivityLevelForTest(.4);
+            Assert.AreEqual(new Size(260, 84), overlay.Size);
+            Assert.IsTrue(overlay.LiveActivityTimerEnabledForTest);
+            Assert.IsTrue(overlay.ActivityMeterVisibleForTest);
+            Assert.IsTrue(overlay.ShowWithoutActivationForTest);
+            Assert.IsTrue(overlay.ActivityMeterTopForTest >= overlay.TextPanelBottomForTest);
+            StringAssert.StartsWith(overlay.TitleTextForTest, "Listening  ");
+            SaveOverlayPreviewIfRequested(overlay, "PTT_INLINE_LISTENING_PREVIEW_PATH");
+
+            overlay.ShowProcessing();
+            Assert.AreEqual(StatusOverlayForm.InlineSizeForTest, overlay.Size);
+            Assert.IsFalse(overlay.ActivityMeterVisibleForTest);
+            Assert.AreEqual("Processing", overlay.TitleTextForTest);
+            SaveOverlayPreviewIfRequested(overlay, "PTT_INLINE_PROCESSING_PREVIEW_PATH");
+
+            overlay.SetInlinePreview(false);
+            Assert.AreEqual(StatusOverlayForm.ListeningSizeForTest, overlay.Size);
+            overlay.HideRecording();
+        });
+    }
+
+    [TestMethod]
+    public void InlineIndicatorUsesUpperRightOfTheWorkingArea()
+    {
+        Assert.AreEqual(new Point(1640, 20), StatusOverlayForm.CalculateInlineLocation(
+            new Rectangle(0, 0, 1920, 1040), new Size(260, 84)));
+        Assert.AreEqual(new Point(-280, -1060), StatusOverlayForm.CalculateInlineLocation(
+            new Rectangle(-1920, -1080, 1920, 1040), new Size(260, 84)));
+    }
+
+    [TestMethod]
     public void StatusOverlayAutoHidesExceptionalCompletionStatesWithoutShowingWindow()
     {
         RunOnStaThread(() =>

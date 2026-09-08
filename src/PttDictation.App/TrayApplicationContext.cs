@@ -10,6 +10,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly WasapiAudioRecorder _recorder;
     private readonly LazyAssetTranscriber _transcriber;
     private readonly DictationWorkflow _dictationWorkflow;
+    private readonly LiveClipboardPaster _livePaster;
     private readonly DictationPresentation _dictationPresentation;
     private readonly StatusSoundPlayer _statusSoundPlayer;
     private readonly Func<SettingsForm> _settingsFormFactory;
@@ -45,9 +46,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             () => _settings,
             settings => _settings = settings,
             message => workflow?.ReportProcessingDetail(message));
+        _livePaster = new LiveClipboardPaster();
         workflow = new DictationWorkflow(
             new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, _transcriber),
-            new ClipboardPaster(),
+            _livePaster,
             _history,
             getTranscriptCorrections: () => _settings.TranscriptCorrections);
         _dictationWorkflow = workflow;
@@ -72,7 +74,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 ShowCleanupWarning,
                 ShowTrayNotification,
                 PlayStatusSound: _statusSoundPlayer.Play,
-                DelayAsync: Task.Delay));
+                DelayAsync: Task.Delay,
+                IsInlinePreview: () => _livePaster.InlinePreview,
+                GetHoldingReason: () => _livePaster.HoldingReason));
+        _livePaster.PresentationChanged += OnInsertionPresentationChanged;
         _dictationWorkflow.StateChanged += OnDictationStateChanged;
 
         _notifyIcon.DoubleClick += (_, _) => ShowSettings();
@@ -166,6 +171,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _settingsForm = PresentSettingsForm(_settingsForm, CreateSettingsForm, _settings);
+    }
+
+    private void OnInsertionPresentationChanged()
+    {
+        PostToUi(() => _dictationPresentation.ApplyAsync(_dictationWorkflow.CurrentState));
     }
 
     private SettingsForm CreateSettingsForm()
@@ -328,6 +338,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _exiting = true;
         _lifetime.Cancel();
+        _livePaster.PresentationChanged -= OnInsertionPresentationChanged;
+        _livePaster.Dispose();
         _dictationWorkflow.StateChanged -= OnDictationStateChanged;
         _recorder.AudioLevelChanged -= OnAudioLevelChanged;
         _hotkeySource.Dispose();

@@ -12,6 +12,9 @@ public sealed class DictationWorkflow
     private DictationTriggerMode? _activeTriggerMode;
     private DictationWorkflowState _state = DictationWorkflowState.Idle;
     private bool _starting;
+    private string _rawPreview = string.Empty;
+    private string _lastPreview = string.Empty;
+    private string? _recordingId;
 
     public DictationWorkflow(
         IAudioRecorder recorder,
@@ -115,6 +118,9 @@ public sealed class DictationWorkflow
             }
 
             _starting = true;
+            _recordingId = DiagnosticTrace.BeginRecording(mode.ToString());
+            _rawPreview = string.Empty;
+            _lastPreview = string.Empty;
             _activeTriggerMode = mode;
             operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _operation = operation;
@@ -125,13 +131,16 @@ public sealed class DictationWorkflow
 
         try
         {
+            using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
+            Trace("workflow.capture_target");
             _clipboardPaster.CaptureTarget();
             await session.StartAsync(operation.Token);
             operation.Token.ThrowIfCancellationRequested();
             Publish(new DictationWorkflowState(DictationWorkflowPhase.Recording, mode));
         }
-        catch (OperationCanceledException) when (operation.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (operation.IsCancellationRequested)
         {
+            Trace("workflow.start_cancelled", error: ex);
             await TryCancelSessionAsync(session);
             Publish(new DictationWorkflowState(
                 DictationWorkflowPhase.Cancelled,
@@ -140,6 +149,7 @@ public sealed class DictationWorkflow
         }
         catch (Exception ex)
         {
+            Trace("workflow.start_failed", error: ex);
             Publish(new DictationWorkflowState(
                 DictationWorkflowPhase.Failed,
                 ErrorMessage: ex.Message,
@@ -181,7 +191,10 @@ public sealed class DictationWorkflow
         }
 
         Publish(processing);
+        using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
+        Trace("workflow.finish_started");
         string? sessionResultCleanupWarningPath = null;
+        TranscriptComparison? comparison = null;
         try
         {
             var sessionResult = await session.StopAsync(operation.Token);
@@ -192,8 +205,21 @@ public sealed class DictationWorkflow
                 sessionResult.Transcript.Text,
                 _getTranscriptCorrections());
             var cleaned = TranscriptNormalizer.Normalize(corrected);
+            Trace("workflow.final_text_stages", new { raw = sessionResult.Transcript.Text, dictionaryCorrected = corrected, normalized = cleaned });
+            comparison = new TranscriptComparison(
+                _rawPreview, _lastPreview, sessionResult.Transcript.Text, corrected, cleaned);
             if (cleaned.Length == 0)
             {
+                if (_clipboardPaster is ILiveClipboardPaster && !string.IsNullOrWhiteSpace(_lastPreview))
+                {
+                    _history.Add(_lastPreview, comparison);
+                    Publish(new DictationWorkflowState(
+                        DictationWorkflowPhase.Failed,
+                        Transcript: _lastPreview,
+                        ErrorMessage: "Final recognition returned no text. Your preview is preserved in Session History.",
+                        CleanupWarningPath: cleanupWarningPath));
+                    return;
+                }
                 Publish(new DictationWorkflowState(
                     DictationWorkflowPhase.Empty,
                     CleanupWarningPath: cleanupWarningPath));
@@ -206,27 +232,40 @@ public sealed class DictationWorkflow
                 cleaned,
                 CurrentState.ProcessingDetail,
                 CleanupWarningPath: cleanupWarningPath));
+            Trace("workflow.paste_started", new { text = cleaned });
             await _clipboardPaster.PasteAsync(cleaned, operation.Token);
+            Trace("workflow.paste_completed");
             operation.Token.ThrowIfCancellationRequested();
-            _history.Add(cleaned);
+            _history.Add(cleaned, comparison);
             Publish(new DictationWorkflowState(
                 DictationWorkflowPhase.Pasted,
                 Transcript: cleaned,
                 CleanupWarningPath: cleanupWarningPath));
         }
-        catch (OperationCanceledException) when (operation.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (operation.IsCancellationRequested)
         {
+            Trace("workflow.finish_cancelled", error: ex);
             PublishCancellationIfNeeded(session, sessionResultCleanupWarningPath);
         }
-        catch (Exception) when (operation.IsCancellationRequested)
+        catch (Exception ex) when (operation.IsCancellationRequested)
         {
+            Trace("workflow.finish_failure_during_cancellation", error: ex);
             PublishCancellationIfNeeded(session, sessionResultCleanupWarningPath);
         }
         catch (Exception ex)
         {
+            Trace("workflow.finish_failed", error: ex);
+            var retained = comparison?.FinalText;
+            if (_clipboardPaster is ILiveClipboardPaster)
+            {
+                retained = string.IsNullOrWhiteSpace(retained) ? _lastPreview : retained;
+                _history.Add(retained, comparison);
+            }
             Publish(new DictationWorkflowState(
                 DictationWorkflowPhase.Failed,
-                ErrorMessage: ex.Message,
+                Transcript: retained ?? string.Empty,
+                ErrorMessage: ex.Message + (_clipboardPaster is ILiveClipboardPaster && !string.IsNullOrWhiteSpace(retained)
+                    ? " Your transcript is available in Session History." : string.Empty),
                 CleanupWarningPath: sessionResultCleanupWarningPath ?? session.CleanupWarningPath));
         }
         finally
@@ -253,6 +292,7 @@ public sealed class DictationWorkflow
         }
 
         operation?.Cancel();
+        (_clipboardPaster as ILiveClipboardPaster)?.EndSession();
         Publish(new DictationWorkflowState(
             DictationWorkflowPhase.Cancelled,
             CleanupWarningPath: CurrentState.CleanupWarningPath));
@@ -268,6 +308,7 @@ public sealed class DictationWorkflow
             }
             catch (Exception ex)
             {
+                Trace("workflow.cancel_failed", error: ex);
                 Publish(new DictationWorkflowState(
                     DictationWorkflowPhase.Failed,
                     ErrorMessage: ex.Message,
@@ -312,6 +353,12 @@ public sealed class DictationWorkflow
         {
             if (_state.Phase == DictationWorkflowPhase.Recording)
             {
+                _rawPreview = string.IsNullOrWhiteSpace(update.UnstableText)
+                    ? update.StableText
+                    : $"{update.StableText} {update.UnstableText}".Trim();
+                _lastPreview = transcript;
+                Trace("workflow.preview_text_stages", new { raw = _rawPreview, dictionaryCorrected = transcript });
+                (_clipboardPaster as ILiveClipboardPaster)?.UpdatePreview(transcript);
                 next = _state with { Transcript = transcript };
             }
         }
@@ -353,6 +400,7 @@ public sealed class DictationWorkflow
 
     private void Publish(DictationWorkflowState state)
     {
+        Trace("workflow.state", new { phase = state.Phase.ToString(), state.ErrorMessage });
         Action<DictationWorkflowState>? stateChanged;
         lock (_gate)
         {
@@ -364,8 +412,9 @@ public sealed class DictationWorkflow
         {
             stateChanged?.Invoke(state);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Trace("workflow.state_subscriber_failed", error: ex);
         }
     }
 
@@ -376,6 +425,7 @@ public sealed class DictationWorkflow
         {
             if (ReferenceEquals(_session, session))
             {
+                (_clipboardPaster as ILiveClipboardPaster)?.EndSession();
                 _session = null;
                 _activeTriggerMode = null;
             }
@@ -388,16 +438,20 @@ public sealed class DictationWorkflow
         }
     }
 
-    private static async Task TryCancelSessionAsync(IDictationSession session)
+    private async Task TryCancelSessionAsync(IDictationSession session)
     {
         try
         {
             await session.CancelAsync(CancellationToken.None);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Trace("workflow.cancel_failed", error: ex);
         }
     }
+
+    private void Trace(string stage, object? data = null, Exception? error = null)
+        => DiagnosticTrace.Write(stage, data, error, _recordingId);
 
 }
 

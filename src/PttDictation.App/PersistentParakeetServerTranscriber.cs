@@ -58,18 +58,28 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
 
     public async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
     {
+        var recordingId = DiagnosticTrace.CurrentRecordingId;
+        var queuedAt = Environment.TickCount64;
+        DiagnosticTrace.Write("server.request_queued", recordingId: recordingId);
         var endpoint = await EnsureServerAsync(cancellationToken);
         await _requestLock.WaitAsync(cancellationToken);
+        DiagnosticTrace.Write("server.request_started", new { queueMilliseconds = Environment.TickCount64 - queuedAt }, recordingId: recordingId);
         try
         {
             var stopwatch = Stopwatch.StartNew();
             var wav = await File.ReadAllBytesAsync(wavPath, cancellationToken);
             var result = await TranscribeAllUtterancesAsync(
                 wav,
-                (segment, token) => SendSegmentAsync(endpoint, Path.GetFileName(wavPath), segment, token),
+                (segment, token) => SendSegmentAsync(endpoint, Path.GetFileName(wavPath), segment, token, recordingId),
                 cancellationToken);
             stopwatch.Stop();
+            DiagnosticTrace.Write("server.request_completed", new { elapsedMilliseconds = stopwatch.Elapsed.TotalMilliseconds, result.Text, result.Words }, recordingId: recordingId);
             return result with { InferenceTime = stopwatch.Elapsed };
+        }
+        catch (Exception ex)
+        {
+            DiagnosticTrace.Write(ex is OperationCanceledException ? "server.request_cancelled" : "server.request_failed", new { stderrTail = CompletedErrorTail() }, ex, recordingId);
+            throw;
         }
         finally
         {
@@ -131,7 +141,8 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
         Uri endpoint,
         string fileName,
         byte[] wav,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? recordingId)
     {
         using var audioContent = new ByteArrayContent(wav);
         audioContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
@@ -142,6 +153,7 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
 
         using var response = await _httpClient.PostAsync(endpoint, form, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        DiagnosticTrace.Write("server.http_response", new { status = (int)response.StatusCode, body }, recordingId: recordingId);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException(
@@ -245,22 +257,26 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
             }
 
             _serverProcess = process;
+            DiagnosticTrace.Write("server.process_started", new { process.Id, runtime = Path.GetFileName(_serverPath), model = Path.GetFileName(_options.ModelPath), port });
             _standardOutput = process.StandardOutput.ReadToEndAsync();
             _standardError = process.StandardError.ReadToEndAsync();
             _endpoint = new Uri($"http://127.0.0.1:{port}/v1/audio/transcriptions");
             try
             {
                 await WaitUntilReadyAsync(process, port, cancellationToken);
+                DiagnosticTrace.Write("server.ready", new { process.Id, port });
                 return _endpoint;
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
+                DiagnosticTrace.Write("server.start_cancelled", error: ex);
                 StopServer();
                 throw;
             }
-            catch
+            catch (Exception ex)
             {
                 var detail = await StopServerAndReadErrorAsync();
+                DiagnosticTrace.Write("server.start_failed", new { stderrTail = Tail(detail) }, ex);
                 throw new InvalidOperationException(
                     string.IsNullOrWhiteSpace(detail)
                         ? "The Parakeet local server did not become ready."
@@ -372,8 +388,9 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
         {
             return _standardError is null ? string.Empty : await _standardError;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            DiagnosticTrace.Write("server.stderr_read_failed", error: ex);
             return string.Empty;
         }
     }
@@ -396,8 +413,9 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
                 process.WaitForExit(5000);
             }
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex)
         {
+            DiagnosticTrace.Write("server.stop_failed", error: ex);
         }
         finally
         {
@@ -423,6 +441,13 @@ internal sealed class PersistentParakeetServerTranscriber : ITranscriber, IWarma
     {
         return text.Replace("<EOU>", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
     }
+
+    // Observe only already-completed reads; tracing must never wait for a running
+    // server to close stderr or introduce another reader on the process stream.
+    private string? CompletedErrorTail()
+        => _standardError is { IsCompletedSuccessfully: true } error ? Tail(error.Result) : null;
+
+    private static string Tail(string text) => text.Length <= 8192 ? text : text[^8192..];
 
     private void ThrowIfDisposed()
     {

@@ -1,6 +1,7 @@
 using PttDictation.Core;
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 
 namespace PttDictation.App;
 
@@ -10,6 +11,7 @@ internal sealed class StatusOverlayForm : Form
     private const int WsExToolWindow = 0x00000080;
     private static readonly Size CompactOverlaySize = new(560, 160);
     private static readonly Size ListeningOverlaySize = new(560, 326);
+    private static readonly Size InlineIndicatorSize = new(260, 84);
     private const int StandardTitleHeight = 36;
     private const int StandardTextPanelHeight = 104;
     private const int ListeningTextPanelHeight = 164;
@@ -19,9 +21,11 @@ internal sealed class StatusOverlayForm : Form
     private static readonly Color ProcessingAccent = Color.FromArgb(245, 171, 64);
 
     private readonly Panel _accent = new();
+    private readonly Panel _content = new();
     private readonly Panel _textPanel = new();
     private readonly Label _title = new();
     private readonly Label _message = new();
+    private readonly NonActivatingTranscriptBox _transcript = new();
     private readonly ActivityMeterControl _activityMeter = new();
     private readonly System.Windows.Forms.Timer _hideTimer = new();
     private readonly System.Windows.Forms.Timer _liveActivityTimer = new();
@@ -31,6 +35,7 @@ internal sealed class StatusOverlayForm : Form
     private string? _liveTranscriptText;
     private string _processingDetail = DefaultProcessingDetail;
     private bool _activityMeterRequestedVisible;
+    private bool _inlinePreview;
 
     public StatusOverlayForm()
     {
@@ -66,26 +71,38 @@ internal sealed class StatusOverlayForm : Form
         _message.TextAlign = ContentAlignment.MiddleLeft;
         _message.AutoEllipsis = true;
 
+        _transcript.Dock = DockStyle.Fill;
+        _transcript.Multiline = true;
+        _transcript.ReadOnly = true;
+        _transcript.WordWrap = true;
+        _transcript.ScrollBars = ScrollBars.Vertical;
+        _transcript.BorderStyle = BorderStyle.None;
+        _transcript.BackColor = DarkTheme.Surface;
+        _transcript.ForeColor = DarkTheme.MutedText;
+        _transcript.Font = DarkTheme.BodyFont;
+        _transcript.TabStop = false;
+        _transcript.Visible = false;
+        DarkTheme.ApplyNativeDarkTheme(_transcript);
+        DarkTheme.ApplyTextEditingMenu(_transcript);
+
         _textPanel.Dock = DockStyle.Top;
         _textPanel.Height = StandardTextPanelHeight;
         _textPanel.BackColor = Color.Transparent;
         _textPanel.Controls.Add(_message);
+        _textPanel.Controls.Add(_transcript);
         _textPanel.Controls.Add(_title);
 
         _activityMeter.Dock = DockStyle.Bottom;
         _activityMeter.Height = 194;
         _activityMeter.Visible = false;
 
-        var content = new Panel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(16, 12, 16, 14),
-            BackColor = DarkTheme.Surface
-        };
-        content.Controls.Add(_activityMeter);
-        content.Controls.Add(_textPanel);
+        _content.Dock = DockStyle.Fill;
+        _content.Padding = new Padding(16, 12, 16, 14);
+        _content.BackColor = DarkTheme.Surface;
+        _content.Controls.Add(_activityMeter);
+        _content.Controls.Add(_textPanel);
 
-        Controls.Add(content);
+        Controls.Add(_content);
         Controls.Add(_accent);
 
         _hideTimer.Tick += (_, _) =>
@@ -105,6 +122,7 @@ internal sealed class StatusOverlayForm : Form
     internal static Size DefaultSizeForTest => CompactOverlaySize;
 
     internal static Size ListeningSizeForTest => ListeningOverlaySize;
+    internal static Size InlineSizeForTest => InlineIndicatorSize;
 
     internal bool ShowWithoutActivationForTest => ShowWithoutActivation;
 
@@ -167,7 +185,7 @@ internal sealed class StatusOverlayForm : Form
     {
         _hideTimer.Stop();
         ApplyStatus(status, mode, hotkeyName);
-        PositionBottomCenter();
+        PositionOverlay();
 
         if (!Visible)
         {
@@ -184,6 +202,17 @@ internal sealed class StatusOverlayForm : Form
         StopLiveActivity();
     }
 
+    public void SetInlinePreview(bool enabled)
+    {
+        var changed = _inlinePreview != enabled;
+        _inlinePreview = enabled;
+        if (_activityMeterRequestedVisible)
+            UpdateLiveActivity();
+        else if (string.Equals(_title.Text, "Processing", StringComparison.Ordinal))
+            RefreshProcessingMessage();
+        if (changed && Visible) PositionOverlay();
+    }
+
     public void ShowProcessing()
     {
         _hideTimer.Stop();
@@ -191,15 +220,12 @@ internal sealed class StatusOverlayForm : Form
         _activityMeterRequestedVisible = false;
         _activityMeter.Visible = false;
         _processingDetail = DefaultProcessingDetail;
-        UseOverlaySize(ListeningOverlaySize);
         _accent.BackColor = ProcessingAccent;
-        _textPanel.Height = ProcessingTextPanelHeight;
-        _title.Height = StandardTitleHeight;
         _title.Text = "Processing";
         _message.AutoEllipsis = false;
         _message.TextAlign = ContentAlignment.TopLeft;
         RefreshProcessingMessage();
-        PositionBottomCenter();
+        PositionOverlay();
         if (!Visible)
         {
             Show();
@@ -289,7 +315,7 @@ internal sealed class StatusOverlayForm : Form
         _listeningHotkeyName = hotkeyName ?? _listeningHotkeyName;
         _liveTranscriptText = transcript.Trim();
         UpdateLiveActivity();
-        PositionBottomCenter();
+        PositionOverlay();
         if (!Visible)
         {
             Show();
@@ -322,6 +348,7 @@ internal sealed class StatusOverlayForm : Form
             _textPanel.Dispose();
             _title.Dispose();
             _message.Dispose();
+            _transcript.Dispose();
             _accent.Dispose();
         }
 
@@ -397,6 +424,7 @@ internal sealed class StatusOverlayForm : Form
 
     private void ConfigureStandardTextPanel()
     {
+        _content.Padding = new Padding(16, 12, 16, 14);
         _textPanel.Height = StandardTextPanelHeight;
         _activityMeter.Height = 194;
         _title.Height = StandardTitleHeight;
@@ -405,16 +433,24 @@ internal sealed class StatusOverlayForm : Form
         _textPanel.Cursor = Cursors.Default;
         _message.AutoEllipsis = true;
         _message.TextAlign = ContentAlignment.MiddleLeft;
+        _message.Visible = true;
+        _transcript.Visible = false;
     }
 
     private void UpdateLiveActivity()
     {
+        ConfigureActivityLayout(processing: false);
         var elapsed = DateTimeOffset.UtcNow - _listeningStartedAt;
-        if (string.IsNullOrWhiteSpace(_liveTranscriptText))
+        if (_inlinePreview || string.IsNullOrWhiteSpace(_liveTranscriptText))
         {
+            _title.Text = _inlinePreview
+                ? $"Listening  {(int)elapsed.TotalMinutes:00}:{elapsed.Seconds:00}"
+                : DictationStatusCatalog.Listening.Title;
             _message.AutoEllipsis = true;
             _message.TextAlign = ContentAlignment.MiddleLeft;
             _message.Text = ListeningStatusFormatter.Format(elapsed, _listeningTriggerMode, _listeningHotkeyName);
+            _message.Visible = !_inlinePreview;
+            _transcript.Visible = false;
         }
         else
         {
@@ -422,6 +458,7 @@ internal sealed class StatusOverlayForm : Form
             _message.AutoEllipsis = false;
             _message.TextAlign = ContentAlignment.TopLeft;
             _message.Text = $"{ListeningStatusFormatter.FormatHint(_listeningTriggerMode, _listeningHotkeyName)}{Environment.NewLine}{_liveTranscriptText}";
+            ShowScrollableTranscript(_message.Text);
         }
 
         _activityMeter.Decay();
@@ -429,16 +466,61 @@ internal sealed class StatusOverlayForm : Form
 
     private void RefreshProcessingMessage()
     {
-        _message.Text = string.IsNullOrWhiteSpace(_liveTranscriptText)
+        ConfigureActivityLayout(processing: true);
+        _message.Text = _inlinePreview || string.IsNullOrWhiteSpace(_liveTranscriptText)
             ? _processingDetail
             : $"{_processingDetail}{Environment.NewLine}{Environment.NewLine}{_liveTranscriptText}";
+        if (_inlinePreview || string.IsNullOrWhiteSpace(_liveTranscriptText))
+        {
+            _message.Visible = true;
+            _transcript.Visible = false;
+        }
+        else
+        {
+            ShowScrollableTranscript(_message.Text);
+        }
     }
 
-    private void PositionBottomCenter()
+    private void ConfigureActivityLayout(bool processing)
+    {
+        _content.Padding = _inlinePreview ? new Padding(12, 8, 12, 8) : new Padding(16, 12, 16, 14);
+        UseOverlaySize(_inlinePreview ? InlineIndicatorSize : ListeningOverlaySize);
+        _title.Height = _inlinePreview ? 28 : StandardTitleHeight;
+        _textPanel.Height = _inlinePreview ? (processing ? 66 : 28)
+            : (processing ? ProcessingTextPanelHeight : ListeningTextPanelHeight);
+        _activityMeter.Height = _inlinePreview ? 26 : ListeningActivityMeterHeight;
+        if (processing) _message.AutoEllipsis = _inlinePreview;
+    }
+
+    private void ShowScrollableTranscript(string text)
+    {
+        _message.Visible = false;
+        _transcript.Visible = true;
+        if (string.Equals(_transcript.Text, text, StringComparison.Ordinal))
+            return;
+
+        _transcript.Text = text;
+        _transcript.Select(_transcript.TextLength, 0);
+        _transcript.ScrollToLatest();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (_transcript.Visible)
+            _transcript.ScrollToLatest();
+    }
+
+    private void PositionOverlay()
     {
         var area = Screen.GetWorkingArea(Cursor.Position);
-        Location = CalculateBottomCenterLocation(area, Size);
+        Location = _inlinePreview && (_activityMeterRequestedVisible || _title.Text == "Processing")
+            ? CalculateInlineLocation(area, Size)
+            : CalculateBottomCenterLocation(area, Size);
     }
+
+    internal static Point CalculateInlineLocation(Rectangle area, Size size)
+        => new(Math.Max(area.Left + 20, area.Right - size.Width - 20), area.Top + 20);
 
     internal static Point CalculateBottomCenterLocationForTest(Rectangle workingArea, Size overlaySize)
     {
@@ -459,9 +541,37 @@ internal sealed class StatusOverlayForm : Form
 
     private void UseOverlaySize(Size size)
     {
+        if (Size == size) return;
+        MinimumSize = System.Drawing.Size.Empty;
+        MaximumSize = System.Drawing.Size.Empty;
         Size = size;
         MinimumSize = size;
         MaximumSize = size;
+    }
+
+    private sealed class NonActivatingTranscriptBox : TextBox
+    {
+        public void ScrollToLatest()
+        {
+            // EM_SCROLL/SB_BOTTOM works without moving keyboard focus into this preview.
+            SendMessage(Handle, 0x00B5, 7, 0);
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern nint SendMessage(nint window, uint message, nint wParam, nint lParam);
+
+        protected override void WndProc(ref Message m)
+        {
+            const int WmMouseActivate = 0x0021;
+            const int MaNoActivate = 3;
+            if (m.Msg == WmMouseActivate)
+            {
+                m.Result = MaNoActivate;
+                return;
+            }
+
+            base.WndProc(ref m);
+        }
     }
 
     private sealed class ActivityMeterControl : Control

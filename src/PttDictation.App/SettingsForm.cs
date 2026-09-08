@@ -48,8 +48,7 @@ internal sealed class SettingsForm : Form
     private AppSettings _settings = AppSettings.Default;
     private string? _runtimePathOverride;
     private string? _modelPathOverride;
-    private List<TranscriptCorrection> _transcriptCorrections = [];
-    private TranscriptCorrection? _selectedCorrection;
+    private TranscriptCorrectionEditor _correctionEditor = new([]);
     private bool _refreshingCorrectionEditor;
 
     public event EventHandler<AppSettings>? SettingsSaved;
@@ -802,7 +801,7 @@ internal sealed class SettingsForm : Form
         RefreshHotkeySummary();
         _runtimePathOverride = settings.RuntimePath;
         _modelPathOverride = settings.ModelPath;
-        _transcriptCorrections = settings.TranscriptCorrections.ToList();
+        _correctionEditor = new TranscriptCorrectionEditor(settings.TranscriptCorrections);
         _device.SelectedItem = settings.DevicePreference;
         _mode.SelectedItem = settings.TranscriptionMode;
         _notifications.Checked = settings.NotificationsEnabled;
@@ -823,15 +822,17 @@ internal sealed class SettingsForm : Form
 
     private async Task SaveAsync()
     {
-        if (HasIncompleteCorrectionDraft())
+        var correctionResult = _correctionEditor.PrepareSave();
+        if (correctionResult == CorrectionEditResult.Incomplete)
         {
             _saveStatus.Text = "Finish both correction fields before saving, or click New rule to clear them.";
             return;
         }
 
-        if (HasChangedCorrectionDraft())
+        if (correctionResult is CorrectionEditResult.Added or CorrectionEditResult.Updated)
         {
-            AddOrUpdateCorrection();
+            RefreshCorrectionsList();
+            StartNewCorrection();
         }
 
         try
@@ -882,7 +883,7 @@ internal sealed class SettingsForm : Form
             DevicePreference = _device.SelectedItem is DevicePreference preference ? preference : DevicePreference.Cuda,
             NotificationsEnabled = _notifications.Checked,
             AudibleStatusEnabled = _sounds.Checked,
-            TranscriptCorrections = _transcriptCorrections.ToList()
+            TranscriptCorrections = _correctionEditor.Rules.ToList()
         };
     }
 
@@ -1022,35 +1023,16 @@ internal sealed class SettingsForm : Form
 
     private void AddOrUpdateCorrection()
     {
-        var heardAs = _correctionHeardAs.Text.Trim();
-        var replaceWith = _correctionReplaceWith.Text.Trim();
-        if (heardAs.Length == 0 || replaceWith.Length == 0)
+        var result = _correctionEditor.CommitDraft();
+        if (result == CorrectionEditResult.Incomplete)
         {
             _saveStatus.Text = "Enter both the text you hear and the replacement you want.";
             return;
         }
 
-        var replacement = new TranscriptCorrection(heardAs, replaceWith);
-        var wasEditing = _selectedCorrection is not null;
-        if (_selectedCorrection is not null)
-        {
-            _transcriptCorrections.Remove(_selectedCorrection);
-        }
-
-        var existing = _transcriptCorrections.FindIndex(
-            correction => string.Equals(correction.HeardAs, heardAs, StringComparison.OrdinalIgnoreCase));
-        if (existing >= 0)
-        {
-            _transcriptCorrections[existing] = replacement;
-        }
-        else
-        {
-            _transcriptCorrections.Add(replacement);
-        }
-
         RefreshCorrectionsList();
         StartNewCorrection();
-        _saveStatus.Text = existing >= 0 || wasEditing
+        _saveStatus.Text = result == CorrectionEditResult.Updated
             ? "Rule updated. Click Save to use it in new dictations."
             : "Rule added. Click Save to use it in new dictations.";
         RefreshCorrectionPreview();
@@ -1058,13 +1040,12 @@ internal sealed class SettingsForm : Form
 
     private void DeleteSelectedCorrection()
     {
-        if (_selectedCorrection is null)
+        if (!_correctionEditor.RemoveSelected())
         {
             _saveStatus.Text = "Select a rule in the table before removing it.";
             return;
         }
 
-        _transcriptCorrections.Remove(_selectedCorrection);
         RefreshCorrectionsList();
         StartNewCorrection();
         _saveStatus.Text = "Rule removed. Click Save to make the removal permanent.";
@@ -1077,7 +1058,7 @@ internal sealed class SettingsForm : Form
         try
         {
             _corrections.Rows.Clear();
-            foreach (var correction in _transcriptCorrections)
+            foreach (var correction in _correctionEditor.Rules)
             {
                 var row = _corrections.Rows[_corrections.Rows.Add(correction.HeardAs, correction.ReplaceWith)];
                 row.Tag = correction;
@@ -1085,10 +1066,10 @@ internal sealed class SettingsForm : Form
 
             _corrections.ClearSelection();
             _corrections.CurrentCell = null;
-            _selectedCorrection = null;
-            _saveStatus.Text = _transcriptCorrections.Count == 0
+            var count = _correctionEditor.Rules.Count;
+            _saveStatus.Text = count == 0
                 ? "No rules yet. Add one below, then test it on the right."
-                : $"{_transcriptCorrections.Count} rule{(_transcriptCorrections.Count == 1 ? string.Empty : "s")}. Select a row to edit it.";
+                : $"{count} rule{(count == 1 ? string.Empty : "s")}. Select a row to edit it.";
         }
         finally
         {
@@ -1108,10 +1089,11 @@ internal sealed class SettingsForm : Form
         _refreshingCorrectionEditor = true;
         try
         {
-            _selectedCorrection = selected;
-            _correctionHeardAs.Text = selected.HeardAs;
-            _correctionReplaceWith.Text = selected.ReplaceWith;
+            _correctionEditor.Select(selected);
+            _correctionHeardAs.Text = _correctionEditor.Draft.HeardAs;
+            _correctionReplaceWith.Text = _correctionEditor.Draft.ReplaceWith;
             _correctionAction.Text = "Update rule";
+            _correctionAction.Enabled = _correctionEditor.CanCommit;
             _deleteCorrection.Enabled = true;
             _saveStatus.Text = "Editing selected rule. Change either field, then click Update rule.";
         }
@@ -1128,7 +1110,7 @@ internal sealed class SettingsForm : Form
         _refreshingCorrectionEditor = true;
         try
         {
-            _selectedCorrection = null;
+            _correctionEditor.StartNewDraft();
             _corrections.ClearSelection();
             _corrections.CurrentCell = null;
             _correctionHeardAs.Clear();
@@ -1152,9 +1134,9 @@ internal sealed class SettingsForm : Form
             return;
         }
 
-        _correctionAction.Enabled = !string.IsNullOrWhiteSpace(_correctionHeardAs.Text)
-            && !string.IsNullOrWhiteSpace(_correctionReplaceWith.Text);
-        _saveStatus.Text = _selectedCorrection is null
+        _correctionEditor.UpdateDraft(_correctionHeardAs.Text, _correctionReplaceWith.Text);
+        _correctionAction.Enabled = _correctionEditor.CanCommit;
+        _saveStatus.Text = _correctionEditor.SelectedCorrection is null
             ? "Draft rule. The test result includes it before you add it."
             : "Editing selected rule. The test result includes your unsaved edits.";
         RefreshCorrectionPreview();
@@ -1172,65 +1154,14 @@ internal sealed class SettingsForm : Form
         e.SuppressKeyPress = true;
     }
 
-    private bool HasIncompleteCorrectionDraft()
-    {
-        var hasHeardAs = !string.IsNullOrWhiteSpace(_correctionHeardAs.Text);
-        var hasReplacement = !string.IsNullOrWhiteSpace(_correctionReplaceWith.Text);
-        return hasHeardAs != hasReplacement;
-    }
-
-    private bool HasChangedCorrectionDraft()
-    {
-        var heardAs = _correctionHeardAs.Text.Trim();
-        var replaceWith = _correctionReplaceWith.Text.Trim();
-        if (heardAs.Length == 0 || replaceWith.Length == 0)
-        {
-            return false;
-        }
-
-        return _selectedCorrection is null
-            || !string.Equals(_selectedCorrection.HeardAs, heardAs, StringComparison.Ordinal)
-            || !string.Equals(_selectedCorrection.ReplaceWith, replaceWith, StringComparison.Ordinal);
-    }
-
     private void RefreshCorrectionPreview()
     {
         var input = _correctionPreviewInput.Text;
-        var output = new TranscriptCorrectionDictionary(CorrectionsForPreview()).Apply(input);
+        var output = _correctionEditor.Preview(input);
         var changed = input.Length > 0 && !string.Equals(input, output, StringComparison.Ordinal);
         _correctionPreviewOutput.Text = output;
         _correctionPreviewResultLabel.Visible = changed;
         _correctionPreviewOutput.Visible = changed;
-    }
-
-    private IReadOnlyList<TranscriptCorrection> CorrectionsForPreview()
-    {
-        var heardAs = _correctionHeardAs.Text.Trim();
-        var replaceWith = _correctionReplaceWith.Text.Trim();
-        if (heardAs.Length == 0 || replaceWith.Length == 0)
-        {
-            return _transcriptCorrections;
-        }
-
-        var previewCorrections = _transcriptCorrections.ToList();
-        if (_selectedCorrection is not null)
-        {
-            previewCorrections.Remove(_selectedCorrection);
-        }
-
-        var existing = previewCorrections.FindIndex(
-            correction => string.Equals(correction.HeardAs, heardAs, StringComparison.OrdinalIgnoreCase));
-        var draft = new TranscriptCorrection(heardAs, replaceWith);
-        if (existing >= 0)
-        {
-            previewCorrections[existing] = draft;
-        }
-        else
-        {
-            previewCorrections.Add(draft);
-        }
-
-        return previewCorrections;
     }
 
     [Browsable(false)]
@@ -1434,7 +1365,20 @@ internal sealed class SettingsForm : Form
 
     internal void SaveForTest()
     {
-        SaveAsync().GetAwaiter().GetResult();
+        var task = SaveAsync();
+        var deadline = Environment.TickCount64 + 10_000;
+        while (!task.IsCompleted)
+        {
+            if (Environment.TickCount64 >= deadline)
+            {
+                throw new TimeoutException("Settings save did not complete.");
+            }
+
+            Application.DoEvents();
+            Thread.Sleep(1);
+        }
+
+        task.GetAwaiter().GetResult();
     }
 
     internal AppSettings BuildSettingsForTest()

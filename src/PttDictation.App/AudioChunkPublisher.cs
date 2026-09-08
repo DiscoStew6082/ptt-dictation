@@ -23,7 +23,8 @@ internal static class AudioChunkPublisher
                 chunk.Path,
                 chunk.Duration,
                 DeleteAfterUse: true,
-                OverlapDuration: chunk.OverlapDuration));
+                OverlapDuration: chunk.OverlapDuration,
+                IsCumulative: chunk.IsCumulative));
         }
         catch (IOException)
         {

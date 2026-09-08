@@ -77,7 +77,7 @@ internal sealed class GlobalHotkeySource : IDisposable
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && ProcessKeyEvent(Marshal.ReadInt32(lParam), wParam.ToInt32()))
+        if (nCode >= 0 && ProcessHookEvent(lParam, wParam.ToInt32()))
         {
             return (IntPtr)1;
         }
@@ -86,6 +86,16 @@ internal sealed class GlobalHotkeySource : IDisposable
     }
 
     internal bool ProcessKeyEventForTest(int virtualKey, int message) => ProcessKeyEvent(virtualKey, message);
+
+    internal bool ProcessHookEventForTest(IntPtr data, int message) => ProcessHookEvent(data, message);
+
+    private bool ProcessHookEvent(IntPtr data, int message)
+    {
+        var key = Marshal.PtrToStructure<KeyboardHookData>(data);
+        // Our paste shortcut must reach the target without changing physical hold/toggle state.
+        if (key.ExtraInfo == WindowsPasteInput.InputMarker) return false;
+        return ProcessKeyEvent((int)key.VirtualKey, message);
+    }
 
     internal static int VirtualKeyForTest(DictationHotkey hotkey) => DictationHotkeyCatalog.VirtualKey(hotkey);
 
@@ -149,6 +159,16 @@ internal sealed class GlobalHotkeySource : IDisposable
     }
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KeyboardHookData
+    {
+        public uint VirtualKey;
+        public uint ScanCode;
+        public uint Flags;
+        public uint Time;
+        public nuint ExtraInfo;
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);

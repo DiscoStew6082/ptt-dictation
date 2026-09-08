@@ -36,10 +36,15 @@ public sealed class ChunkedTranscribingDictationSession(
     private readonly IncrementalTranscriptAssembler _assembler = new();
     private readonly Dictionary<string, RecordedAudio> _ownedChunks = new(StringComparer.OrdinalIgnoreCase);
     private Task _chunkProcessing = Task.CompletedTask;
+    private readonly LinkedList<QueuedAudioChunk> _pendingChunks = new();
+    private bool _chunkWorkerRunning;
+    private TimeSpan? _latestCumulativeDuration;
     private CancellationTokenSource? _chunkCancellation;
     private string? _cleanupWarningPath;
     private bool _started;
     private bool _stopping;
+    private string? _recordingId;
+    private int _nextChunkId;
 
     public event Action<TranscriptUpdate>? TranscriptUpdated;
 
@@ -69,6 +74,9 @@ public sealed class ChunkedTranscribingDictationSession(
             }
 
             _started = true;
+            _recordingId = DiagnosticTrace.CurrentRecordingId;
+            _nextChunkId = 0;
+            _latestCumulativeDuration = null;
             _stopping = false;
             _chunkProcessing = Task.CompletedTask;
             _chunkCancellation = new CancellationTokenSource();
@@ -77,13 +85,16 @@ public sealed class ChunkedTranscribingDictationSession(
         }
 
         recorder.AudioChunkReady += OnAudioChunkReady;
+        Trace("chunk_session.start");
         try
         {
             await recorder.StartAsync(cancellationToken);
+            Trace("chunk_session.started");
             BeginPreviewWarmUp();
         }
-        catch
+        catch (Exception ex)
         {
+            Trace("chunk_session.start_failed", error: ex);
             recorder.AudioChunkReady -= OnAudioChunkReady;
             lock (_gate)
             {
@@ -105,19 +116,25 @@ public sealed class ChunkedTranscribingDictationSession(
         }
     }
 
-    private static async Task WarmUpWithoutBlockingRecordingAsync(IWarmableTranscriber warmable)
+    private async Task WarmUpWithoutBlockingRecordingAsync(IWarmableTranscriber warmable)
     {
+        using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
         try
         {
+            Trace("preview.warmup_started");
             await warmable.WarmUpAsync(CancellationToken.None);
+            Trace("preview.warmup_completed");
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Trace(ex is OperationCanceledException ? "preview.warmup_cancelled" : "preview.warmup_failed", error: ex);
         }
     }
 
     public async Task<DictationSessionResult> StopAsync(CancellationToken cancellationToken)
     {
+        using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
+        Trace("chunk_session.stop");
         RecordedAudio? finalAudio = null;
         try
         {
@@ -127,17 +144,21 @@ public sealed class ChunkedTranscribingDictationSession(
             }
 
             finalAudio = await recorder.StopAsync(cancellationToken);
+            Trace("chunk_session.audio_stopped", new { finalAudio.Duration });
             recorder.AudioChunkReady -= OnAudioChunkReady;
             CancelChunkProcessing();
             await WaitForChunkProcessingToSettleAsync();
             ReleaseOutstandingChunks();
+            Trace("recognition.final_started");
             var finalTranscript = await finalTranscriber.TranscribeAsync(finalAudio.Path, cancellationToken);
+            Trace("recognition.final_raw", finalTranscript);
             Release(finalAudio);
             finalAudio = null;
             return new DictationSessionResult(finalTranscript, CleanupWarningPath);
         }
-        catch
+        catch (Exception ex)
         {
+            Trace(ex is OperationCanceledException ? "chunk_session.stop_cancelled" : "chunk_session.stop_failed", error: ex);
             Release(finalAudio);
             ReleaseOutstandingChunks();
 
@@ -161,6 +182,8 @@ public sealed class ChunkedTranscribingDictationSession(
 
     public async Task CancelAsync(CancellationToken cancellationToken)
     {
+        using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
+        Trace("chunk_session.cancel_started");
         RecordedAudio? finalAudio = null;
         try
         {
@@ -175,6 +198,11 @@ public sealed class ChunkedTranscribingDictationSession(
             }
 
             finalAudio = await recorder.StopAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            Trace(ex is OperationCanceledException ? "chunk_session.cancel_cancelled" : "chunk_session.cancel_failed", error: ex);
+            throw;
         }
         finally
         {
@@ -191,6 +219,7 @@ public sealed class ChunkedTranscribingDictationSession(
                 _chunkCancellation?.Dispose();
                 _chunkCancellation = null;
             }
+            Trace("chunk_session.cancel_cleanup_completed");
         }
     }
 
@@ -200,8 +229,9 @@ public sealed class ChunkedTranscribingDictationSession(
         {
             _chunkCancellation?.Cancel();
         }
-        catch (ObjectDisposedException)
+        catch (ObjectDisposedException ex)
         {
+            Trace("chunk_session.cancel_disposed", error: ex);
         }
     }
 
@@ -211,43 +241,98 @@ public sealed class ChunkedTranscribingDictationSession(
         {
             if (!_started || _stopping)
             {
+                Trace("chunk.rejected", new { reason = "session_not_accepting", chunk.Duration, chunk.OverlapDuration });
                 TryDeleteIfNeeded(chunk);
                 return;
             }
 
+            if (chunk.IsCumulative)
+            {
+                // WAV publication tasks can finish out of capture order. Duration
+                // identifies a complete prefix; arrival order does not.
+                if (_latestCumulativeDuration is { } latest && chunk.Duration <= latest)
+                {
+                    Trace("chunk.stale_snapshot", new { chunk.Duration, latestDuration = latest });
+                    if (!_ownedChunks.ContainsKey(chunk.Path)) Release(chunk);
+                    return;
+                }
+                _latestCumulativeDuration = chunk.Duration;
+            }
             var cancellationToken = _chunkCancellation?.Token ?? CancellationToken.None;
             _ownedChunks[chunk.Path] = chunk;
-            _chunkProcessing = _chunkProcessing
-                .ContinueWith(
-                    _ => ProcessChunkAsync(chunk, cancellationToken),
-                    CancellationToken.None,
-                    TaskContinuationOptions.None,
-                    TaskScheduler.Default)
-                .Unwrap();
+            var queuedAt = Environment.TickCount64;
+            var chunkId = ++_nextChunkId;
+            // A newer complete snapshot supersedes an unstarted complete snapshot.
+            // Keep one active inference and only the newest pending snapshot, so
+            // longer dictations cannot build a queue of obsolete preview work.
+            if (chunk.IsCumulative && _pendingChunks.Last is { Value.Audio.IsCumulative: true } superseded)
+            {
+                _pendingChunks.RemoveLast();
+                ReleaseOwnedChunk(superseded.Value.Audio);
+                Trace("chunk.superseded", new { chunkId = superseded.Value.Id, replacementChunkId = chunkId });
+            }
+            _pendingChunks.AddLast(new QueuedAudioChunk(chunk, cancellationToken, queuedAt, chunkId));
+            Trace("chunk.queued", new { chunkId, chunk.Duration, chunk.OverlapDuration, chunk.IsCumulative, ownedChunks = _ownedChunks.Count });
+            if (!_chunkWorkerRunning)
+            {
+                _chunkWorkerRunning = true;
+                _chunkProcessing = Task.Run(ProcessQueuedChunksAsync);
+            }
         }
     }
 
-    private async Task ProcessChunkAsync(RecordedAudio chunk, CancellationToken cancellationToken)
+    private sealed record QueuedAudioChunk(RecordedAudio Audio, CancellationToken Cancellation, long QueuedAt, int Id);
+
+    private async Task ProcessQueuedChunksAsync()
     {
+        while (true)
+        {
+            QueuedAudioChunk queued;
+            lock (_gate)
+            {
+                if (_pendingChunks.First is not { } next)
+                {
+                    _chunkWorkerRunning = false;
+                    return;
+                }
+                queued = next.Value;
+                _pendingChunks.RemoveFirst();
+            }
+            if (queued.Cancellation.IsCancellationRequested) ReleaseOwnedChunk(queued.Audio);
+            else await ProcessChunkAsync(queued.Audio, queued.Cancellation, queued.QueuedAt, queued.Id);
+        }
+    }
+
+    private async Task ProcessChunkAsync(RecordedAudio chunk, CancellationToken cancellationToken, long queuedAt, int chunkId)
+    {
+        using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
+        var startedAt = Environment.TickCount64;
+        Trace("chunk.started", new { chunkId, queueMilliseconds = startedAt - queuedAt, chunk.Duration, chunk.OverlapDuration });
         try
         {
             var transcript = await previewTranscriber.TranscribeAsync(chunk.Path, cancellationToken);
+            Trace("recognition.chunk_raw", new { chunkId, transcript.Text, transcript.Words, transcript.InferenceTime, transcript.Confidence });
             if (cancellationToken.IsCancellationRequested)
             {
+                Trace("chunk.result_cancelled", new { chunkId });
                 return;
             }
 
-            var stableText = _assembler.Add(transcript, chunk.OverlapDuration.GetValueOrDefault());
+            var stableText = chunk.IsCumulative ? transcript.Text
+                : _assembler.Add(transcript, chunk.OverlapDuration.GetValueOrDefault());
+            Trace("preview.assembled", new { chunkId, chunk.IsCumulative, text = stableText });
             if (stableText.Length > 0)
             {
                 TryPublish(new TranscriptUpdate(TranscriptUpdateKind.Partial, stableText));
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Trace(ex is OperationCanceledException ? "chunk.cancelled" : "chunk.failed", new { chunkId }, ex);
         }
         finally
         {
+            Trace("chunk.finished", new { chunkId, elapsedMilliseconds = Environment.TickCount64 - startedAt });
             ReleaseOwnedChunk(chunk);
         }
     }
@@ -259,11 +344,13 @@ public sealed class ChunkedTranscribingDictationSession(
         {
             await chunkProcessing.WaitAsync(TimeSpan.FromSeconds(2));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            Trace("chunk.settle_cancelled", error: ex);
         }
-        catch (TimeoutException)
+        catch (TimeoutException ex)
         {
+            Trace("chunk.settle_timeout", error: ex);
         }
     }
 
@@ -281,8 +368,9 @@ public sealed class ChunkedTranscribingDictationSession(
         {
             TranscriptUpdated?.Invoke(update);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Trace("preview.subscriber_failed", error: ex);
         }
     }
 
@@ -332,6 +420,9 @@ public sealed class ChunkedTranscribingDictationSession(
             _cleanupWarningPath ??= warningPath;
         }
     }
+
+    private void Trace(string stage, object? data = null, Exception? error = null)
+        => DiagnosticTrace.Write(stage, data, error, _recordingId);
 }
 
 internal sealed class IncrementalTranscriptAssembler

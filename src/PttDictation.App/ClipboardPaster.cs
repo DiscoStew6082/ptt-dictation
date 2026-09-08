@@ -3,6 +3,13 @@ using System.Runtime.InteropServices;
 
 namespace PttDictation.App;
 
+// Raised only before keyboard input, while the clipboard sequence is still ours.
+// A temporary failed read must not be confused with an ambiguous submitted paste.
+internal sealed class ClipboardReadUnavailableException : InvalidOperationException
+{
+    public ClipboardReadUnavailableException() : base("The dictation clipboard could not be read yet. No paste was sent.") { }
+}
+
 internal sealed class ClipboardPaster : IClipboardPaster
 {
     private static readonly IClipboardRestoreQueue SharedRestoreQueue =
@@ -53,34 +60,67 @@ internal sealed class ClipboardPaster : IClipboardPaster
             await Task.Delay(75, cancellationToken);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+        PasteToCurrentTarget(text, () => _foregroundWindow.GetForegroundWindow() == _capturedTarget);
+    }
+
+    internal void PasteToCurrentTarget(string text, Func<bool> targetIsCurrent)
+    {
+        var recordingId = DiagnosticTrace.CurrentRecordingId;
+        DiagnosticTrace.Write("clipboard.paste_started", new { text }, recordingId: recordingId);
+        if (!targetIsCurrent())
+        {
+            DiagnosticTrace.Write("clipboard.target_rejected", recordingId: recordingId);
+            throw new InvalidOperationException("The original textbox is not focused. Nothing was pasted.");
+        }
+
         IDataObject? previous = null;
         var clipboardChanged = false;
         uint clipboardSequence = 0;
+        var stage = "snapshot";
         try
         {
             lock (_clipboardOwnershipSync)
             {
                 previous = GetOriginalClipboardSnapshot();
+                DiagnosticTrace.Write("clipboard.snapshot_completed", recordingId: recordingId);
+                stage = "set_text";
                 clipboardSequence = _clipboard.SetText(text);
+                DiagnosticTrace.Write("clipboard.text_set", new { clipboardSequence }, recordingId: recordingId);
                 clipboardChanged = true;
                 TrackClipboardOwnership(clipboardSequence, previous);
-                if (_foregroundWindow.GetForegroundWindow() != _capturedTarget
-                    || !_clipboard.IsCurrent(clipboardSequence, text))
+                stage = "validate";
+                var clipboardCurrent = _clipboard.IsCurrent(clipboardSequence, text);
+                var targetCurrent = targetIsCurrent();
+                DiagnosticTrace.Write("clipboard.validate", new { clipboardSequence, clipboardCurrent, targetCurrent }, recordingId: recordingId);
+                if (!clipboardCurrent && targetCurrent && _clipboard.IsSequenceCurrent(clipboardSequence))
+                {
+                    throw new ClipboardReadUnavailableException();
+                }
+                if (!clipboardCurrent || !targetCurrent)
                 {
                     throw new InvalidOperationException("The paste target or clipboard changed. Nothing was pasted.");
                 }
 
+                stage = "send_paste";
                 _clipboard.SendPaste();
+                DiagnosticTrace.Write("clipboard.paste_sent", new { clipboardSequence }, recordingId: recordingId);
             }
 
-            _restoreQueue.Enqueue(() => RestoreOwnedClipboard(clipboardSequence, previous));
+            stage = "queue_restore";
+            _restoreQueue.Enqueue(() => RestoreOwnedClipboard(clipboardSequence, previous, recordingId));
             clipboardChanged = false;
+        }
+        catch (Exception ex)
+        {
+            DiagnosticTrace.Write("clipboard.paste_failed", new { stage, clipboardSequence, clipboardChanged }, ex, recordingId);
+            throw;
         }
         finally
         {
             if (clipboardChanged)
             {
-                _restoreQueue.EnqueueImmediate(() => RestoreOwnedClipboard(clipboardSequence, previous));
+                _restoreQueue.EnqueueImmediate(() => RestoreOwnedClipboard(clipboardSequence, previous, recordingId));
             }
         }
     }
@@ -110,13 +150,21 @@ internal sealed class ClipboardPaster : IClipboardPaster
         }
     }
 
-    private void RestoreOwnedClipboard(uint sequence, IDataObject? originalClipboard)
+    private void RestoreOwnedClipboard(uint sequence, IDataObject? originalClipboard, string? recordingId)
     {
+        using var traceScope = DiagnosticTrace.EnterRecording(recordingId ?? string.Empty);
         lock (_clipboardOwnershipSync)
         {
             try
             {
+                DiagnosticTrace.Write("clipboard.restore_started", new { sequence }, recordingId: recordingId);
                 _clipboard.RestoreIfCurrent(sequence, originalClipboard);
+                DiagnosticTrace.Write("clipboard.restore_returned", new { sequence }, recordingId: recordingId);
+            }
+            catch (Exception ex)
+            {
+                DiagnosticTrace.Write("clipboard.restore_failed", new { sequence }, ex, recordingId);
+                throw;
             }
             finally
             {
@@ -217,8 +265,9 @@ internal sealed class WindowsClipboardPasteBackend : IClipboardPasteBackend
                 snapshot.SetData(format, autoConvert: false, DetachClipboardValue(value));
                 copiedFormats++;
             }
-            catch (ExternalException)
+            catch (ExternalException ex)
             {
+                DiagnosticTrace.Write("clipboard.format_snapshot_failed", error: ex);
             }
         }
 
@@ -238,9 +287,15 @@ internal sealed class WindowsClipboardPasteBackend : IClipboardPasteBackend
 
     public bool IsCurrent(uint expectedSequence, string pastedText)
     {
-        return _clipboard.GetSequenceNumber() == expectedSequence
-            && _clipboard.ContainsText()
-            && _clipboard.GetText() == pastedText;
+        var before = _clipboard.GetSequenceNumber();
+        if (before != expectedSequence) return false;
+        var containsText = _clipboard.ContainsText();
+        var textMatches = containsText && _clipboard.GetText() == pastedText;
+        var after = _clipboard.GetSequenceNumber();
+        var current = textMatches && after == expectedSequence;
+        if (!current)
+            DiagnosticTrace.Write("clipboard.read_unconfirmed", new { expectedSequence, before, after, containsText, textMatches });
+        return current;
     }
 
     public bool IsSequenceCurrent(uint expectedSequence)
@@ -248,12 +303,13 @@ internal sealed class WindowsClipboardPasteBackend : IClipboardPasteBackend
         return _clipboard.GetSequenceNumber() == expectedSequence;
     }
 
-    public void SendPaste() => SendKeys.SendWait("^v");
+    public void SendPaste() => WindowsPasteInput.SendPaste();
 
     public void RestoreIfCurrent(uint expectedSequence, IDataObject? previous)
     {
         if (_clipboard.GetSequenceNumber() != expectedSequence)
         {
+            DiagnosticTrace.Write("clipboard.restore_skipped", new { expectedSequence, reason = "sequence_changed" });
             return;
         }
 
@@ -265,6 +321,7 @@ internal sealed class WindowsClipboardPasteBackend : IClipboardPasteBackend
         {
             _clipboard.SetDataObject(previous);
         }
+        DiagnosticTrace.Write("clipboard.restore_applied", new { expectedSequence });
     }
 
     private static object DetachClipboardValue(object value)

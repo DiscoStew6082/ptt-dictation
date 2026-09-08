@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/DiscoStew6082/ptt-dictation/actions/workflows/ci.yml/badge.svg)](https://github.com/DiscoStew6082/ptt-dictation/actions/workflows/ci.yml)
 
-PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold your selected hold-to-talk key, speak, and release: the app records a temporary 16 kHz mono WAV, transcribes it, normalizes the result, pastes it into the active app, and restores the previous clipboard contents when possible. The defaults are Right Ctrl for hold-to-talk and Right Shift for toggle-to-talk.
+PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold your selected hold-to-talk key, speak, and release: the app records a temporary 16 kHz mono WAV and inserts live transcription into the original textbox when its editor supports safe text replacement. The final recognition result replaces that recording's text in place. Other supported editable fields receive one final paste. The defaults are Right Ctrl for hold-to-talk and Right Shift for toggle-to-talk.
 
 It is named for the workflow rather than a particular AI vendor or model. The built-in transcription engine currently uses Parakeet models through `parakeet.cpp`, while the application core talks to a replaceable transcription interface.
 
@@ -18,10 +18,11 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 ## Features
 
 - Independently configurable hold-to-talk and toggle-to-talk keys.
-- Complete live recording text on one continuous overlay that tracks processing in place and disappears only after paste completes.
-- Visible first-use runtime/model download progress with cancellable finalization.
+- Live text in supported destination textboxes, without a floating recording or processing overlay. Existing audible state feedback and tray cancellation remain available.
+- Focus changes pause insertion while recording continues. Return to the original textbox to resume; stopping elsewhere holds the result without switching windows.
+- Cancellable finalization and first-use runtime/model downloads.
 - Local transcription with downloadable Parakeet runtime/model assets.
-- Session-only transcript history.
+- Session-only transcript history with raw preview, corrected preview, final recognition, phrase replacements, and final formatting comparisons. Failed insertion preserves the completed transcript here for copying.
 - Runtime/model path overrides for local experimentation.
 - Dark-mode-first Windows Forms UI.
 
@@ -44,7 +45,7 @@ The current app downloads and runs `parakeet.cpp` with a supported Parakeet GGUF
 
 ## Start with the interesting code
 
-- [`ChunkedTranscribingDictationSession.cs`](src/PttDictation.Core/ChunkedTranscribingDictationSession.cs) — overlapping-chunk scheduling and incremental transcript assembly.
+- [`ChunkedTranscribingDictationSession.cs`](src/PttDictation.Core/ChunkedTranscribingDictationSession.cs) — serial recognition scheduling, latest-snapshot coalescing, revisable full-recording previews, and legacy overlapping-chunk assembly.
 - [`ParakeetCliTranscriber.cs`](src/PttDictation.Core/ParakeetCliTranscriber.cs) — `parakeet.cpp` process integration, streaming, cancellation, and CUDA-to-CPU fallback.
 - [`CoreBehaviorTests.cs`](tests/PttDictation.Tests/CoreBehaviorTests.cs) — behavioral coverage for chunk reconciliation, transcription modes, asset validation, and failure paths.
 
@@ -54,7 +55,10 @@ PTT Dictation is designed for local dictation. Temporary recordings are made on 
 
 Trust-boundary notes:
 
-- Paste is implemented through the Windows clipboard. The app remembers the foreground window where recording began, restores that target before paste, temporarily places the corrected transcript on the clipboard, and attempts to restore the previous clipboard contents afterward. Other local apps with clipboard access may observe clipboard contents while paste is in progress.
+- Insertion uses the Windows clipboard. Live dictation temporarily places each revised transcript on the clipboard, checks the original textbox and owned text range, inserts it, and attempts to restore the prior clipboard. Other local apps with clipboard access may observe interim and final transcripts. The app does not force focus back after a window change.
+- Windows UI Automation reads the destination's text and selection to protect surrounding content; those editor snapshots are transient and are not added to transcript history. Password and known read-only fields are excluded. If the editor changes unexpectedly after insertion begins, automatic replacement stops and the completed transcript is kept in Session History.
+- Cancelling stops further insertion; it does not undo text already inserted. Recognition-stage comparisons stay in memory for the current app session.
+- This development checkpoint enables local diagnostic traces under `%LOCALAPPDATA%\PttDictation\diagnostics\experimental`. They include dictated text, recognition stages, timing, and errors, and retain up to three complete recordings. Logs rotate at 4 MiB. These files are separate from session history and may contain sensitive speech; they are not uploaded automatically or included in the repository. Original clipboard contents and surrounding textbox text are not logged.
 - Transcript correction rules are stored locally with settings and are applied before history and paste.
 - The configurable hold and toggle keys use a low-level Windows keyboard hook. The hook consumes only the selected keys and is used for hotkey state, not transcript collection.
 - Runtime/model downloads leave the local machine to fetch third-party artifacts; transcription itself runs locally.

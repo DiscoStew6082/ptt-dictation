@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PttDictation.Core\PttDictation.Core.csproj" />
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
   </ItemGroup>
 
   <ItemGroup>
