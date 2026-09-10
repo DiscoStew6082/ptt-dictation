@@ -98,6 +98,13 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         get
         {
             try { return _surface.IsFocused; }
+            catch (ElementNotAvailableException ex)
+            {
+                // A destroyed UIA element cannot regain focus. Let the live
+                // output mark this session failed instead of holding it forever.
+                Trace("target.unavailable", error: ex);
+                throw new InvalidOperationException("The original textbox is no longer available.", ex);
+            }
             catch (Exception ex) when (IsProviderFailure(ex)) { Trace("target.focus_read_failed", error: ex); return false; }
         }
     }
@@ -328,9 +335,18 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
         return valueReadOnly is false || textReadOnly is false || editControl;
     }
 
-    public bool IsFocused => _foregroundWindow != IntPtr.Zero && GetForegroundWindow() == _foregroundWindow
-        && _element is not null && _element.Current.HasKeyboardFocus
-        && Automation.Compare(_element, AutomationElement.FocusedElement);
+    public bool IsFocused
+    {
+        get
+        {
+            if (_element is null) return false;
+            // Probe the captured element even while its window is in the
+            // background, so a closed editor does not look merely unfocused.
+            var hasKeyboardFocus = _element.Current.HasKeyboardFocus;
+            return _foregroundWindow != IntPtr.Zero && GetForegroundWindow() == _foregroundWindow
+                && hasKeyboardFocus && Automation.Compare(_element, AutomationElement.FocusedElement);
+        }
+    }
     public bool SupportsReplacement => _supportsReplacement;
     public bool CanPasteFallback { get; }
 
@@ -351,44 +367,7 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     }
 
     public bool Select(string prefix, string ownedText, string suffix)
-    {
-        var document = _pattern!.DocumentRange;
-        if (document.GetText(-1) != prefix + ownedText + suffix)
-        {
-            DiagnosticTrace.Write("target.select_rejected", new { reason = "document_changed" });
-            return false;
-        }
-        var owned = document.Clone();
-        // Find complete unchanged surroundings rather than equating .NET UTF-16
-        // lengths with the provider's character units (emoji and CRLF differ).
-        if (prefix.Length > 0)
-        {
-            var before = document.FindText(prefix, backward: false, ignoreCase: false);
-            if (before is null || before.CompareEndpoints(TextPatternRangeEndpoint.Start, document, TextPatternRangeEndpoint.Start) != 0)
-            {
-                DiagnosticTrace.Write("target.select_rejected", new { reason = "prefix_range_not_found" });
-                return false;
-            }
-            owned.MoveEndpointByRange(TextPatternRangeEndpoint.Start, before, TextPatternRangeEndpoint.End);
-        }
-        if (suffix.Length > 0)
-        {
-            var after = document.FindText(suffix, backward: true, ignoreCase: false);
-            if (after is null || after.CompareEndpoints(TextPatternRangeEndpoint.End, document, TextPatternRangeEndpoint.End) != 0)
-            {
-                DiagnosticTrace.Write("target.select_rejected", new { reason = "suffix_range_not_found" });
-                return false;
-            }
-            owned.MoveEndpointByRange(TextPatternRangeEndpoint.End, after, TextPatternRangeEndpoint.Start);
-        }
-        if (owned.GetText(-1) != ownedText || !IsFocused)
-        {
-            DiagnosticTrace.Write("target.select_rejected", new { reason = "owned_text_or_focus_changed" });
-            return false;
-        }
-        owned.Select();
-        return true;
-    }
+        => TextRangeSelector.Select(new AutomationTextRange(_pattern!.DocumentRange), prefix, ownedText, suffix, () => IsFocused);
 
     public void RevealCaret()
     {

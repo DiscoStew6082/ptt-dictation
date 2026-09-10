@@ -7,6 +7,7 @@ namespace PttDictation.App;
 // clipboard operations run on an STA worker. Neither blocks the hotkey/UI loop.
 internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 {
+    private const long FinalFocusWaitMilliseconds = 5000;
     private readonly Func<Func<IWindowsTextTarget>> _prepareCapture;
     private readonly Func<Func<bool>> _beginCaptureGuard;
     private readonly Action<Action> _confirmCapture;
@@ -128,6 +129,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         lock (session)
         {
             session.Desired = text;
+            session.FinishingSince = Environment.TickCount64;
             session.Finishing = true;
         }
         Trace(session, "inline.final_requested", new { text });
@@ -175,6 +177,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             var target = session.Target!;
             if (!target.IsFocused)
             {
+                if (session.Finishing && Environment.TickCount64 - session.FinishingSince >= FinalFocusWaitMilliseconds)
+                    throw new InvalidOperationException("The original textbox did not regain focus after dictation stopped.");
                 if (!session.FocusPaused) Trace(session, "inline.focus_paused");
                 session.FocusPaused = true;
                 SetPresentation(false, "Dictation is held. Return to the original textbox to insert it.");
@@ -307,6 +311,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         public volatile bool Active = true;
         public volatile bool Ready;
         public volatile bool Finishing;
+        public long FinishingSince;
         public bool Conflicted;
         public bool Fallback;
         public string? Failure;
