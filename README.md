@@ -92,7 +92,7 @@ On first use the app downloads assets under `%LOCALAPPDATA%\PttDictation`:
 
 Expect first-run downloads to be hundreds of MB for the default model and runtime assets. The optional larger multilingual model is about 1.4 GB.
 
-Open the tray menu for settings, model downloads, transcript correction preview, and session-only transcript history.
+The tray icon is red while recording or processing and green when idle, including after completion, cancellation, or failure. Open the tray menu for settings, model downloads, transcript correction preview, and session-only transcript history.
 
 To try the low-latency realtime display, open settings and select one of the experimental realtime models:
 
@@ -133,10 +133,10 @@ Contributors need .NET SDK 10.0.400 or newer. Run the test suite and create a se
 
 ```powershell
 dotnet test PttDictation.sln
-dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
+dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\next-build
 ```
 
-The executable will be written to `publish\ptt-dictation-win-x64\PttDictation.exe`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development and release workflow.
+The build is staged in `publish\next-build`. To update this machine's existing installation, run `pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build`. The permanent executable remains `C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`; pin that executable to Start. The installer verifies the files and running process at that exact path and attempts rollback if installation fails. See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and the complete development and release workflow.
 
 ## Validation
 
@@ -144,7 +144,7 @@ Run:
 
 ```powershell
 dotnet test PttDictation.sln
-dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
+dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\next-build
 ```
 
 Real smoke test performed with `parakeet-v0.4.0-bin-win-cpu-x64.zip` and `tdt_ctc-110m-f16.gguf` against a generated speech WAV:

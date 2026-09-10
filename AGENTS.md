@@ -2,6 +2,15 @@
 
 - Default to dark mode first.
 - For Discord/paste-friendly benchmark result displays, put model identity and quantization as text above the table, then keep the table columns focused on metrics such as context, wall time, prompt TPS, and generation TPS.
+- Complete authorized implementation with relevant verification and a Git commit before reporting it finished, unless the user explicitly requests uncommitted work. When pushing is authorized, finish the push and verify the remote commit without another continuation prompt. Report the commit hash and push status prominently; identify and finish earlier agent work rather than treating it as unexplained user edits.
+
+## Permanent local installation and pinned shortcuts
+
+- The user's permanent executable is `C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`. Start-menu pins must continue to target this exact path across updates.
+- For every authorized local app update, validate the intended source/package, publish to a separate staging directory, then run `pwsh -File scripts\Update-LocalApp.ps1 -StagedPath <staging-directory>`. This script is required for local deployment; never leave the user running a staging, experimental, versioned, or worktree executable.
+- Do not publish directly over the live directory, relocate or delete it, or change the script's fixed destination without explicit user approval to relocate the installation and migrate shortcuts. A successful source build alone is not an installed update.
+- The script checks the package, installs at the fixed path, verifies all package hashes and one normally launched process with no arguments, and attempts to restore/restart the previous package if installation fails. Report any failed recovery explicitly. It retains a backup and a deployment receipt; these are not alternative launch locations.
+- Use `pwsh -File scripts\Update-LocalApp.ps1 -VerifyOnly` for read-only path/process/hash verification. A missing receipt means the existing package predates this deployment workflow, not that an update was verified. UI acceptance remains separate.
 
 ## Supported interaction and acceptance evidence
 

@@ -2,12 +2,11 @@ namespace PttDictation.App;
 
 internal static class TrayIconFactory
 {
-    private const string IconResourceName = "PttDictation.AppIcon.ico";
-
-    public static Icon Create()
+    public static Icon Create(bool active = false)
     {
-        using var stream = typeof(TrayIconFactory).Assembly.GetManifestResourceStream(IconResourceName)
-            ?? throw new InvalidOperationException($"Embedded app icon '{IconResourceName}' was not found.");
+        var resourceName = active ? "PttDictation.TrayActive.ico" : "PttDictation.TrayIdle.ico";
+        using var stream = typeof(TrayIconFactory).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Embedded tray icon '{resourceName}' was not found.");
         using var icon = new Icon(stream, 16, 16);
         return (Icon)icon.Clone();
     }

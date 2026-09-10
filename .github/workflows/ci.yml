@@ -51,3 +51,7 @@ jobs:
 
       - name: Test
         run: dotnet test PttDictation.sln --configuration Release --no-restore
+
+      - name: Test permanent local deployment workflow
+        shell: pwsh
+        run: ./scripts/Test-LocalAppDeployment.ps1

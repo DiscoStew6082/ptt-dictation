@@ -15,6 +15,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly StatusSoundPlayer _statusSoundPlayer;
     private readonly Func<SettingsForm> _settingsFormFactory;
     private readonly Icon _trayIcon;
+    private readonly Icon _activeTrayIcon;
     private readonly NotifyIcon _notifyIcon;
     private readonly GlobalHotkeySource _hotkeySource;
     private readonly StatusOverlayForm _statusOverlay = new();
@@ -56,6 +57,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _statusSoundPlayer = new StatusSoundPlayer(() => _settings);
 
         _trayIcon = TrayIconFactory.Create();
+        _activeTrayIcon = TrayIconFactory.Create(active: true);
         _notifyIcon = new NotifyIcon
         {
             Icon = _trayIcon,
@@ -263,7 +265,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnDictationStateChanged(DictationWorkflowState state)
     {
-        PostToUi(() => _dictationPresentation.ApplyAsync(state));
+        PostToUi(() =>
+        {
+            if (_exiting)
+            {
+                return Task.CompletedTask;
+            }
+
+            var icon = state.Phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing
+                ? _activeTrayIcon
+                : _trayIcon;
+            if (!ReferenceEquals(_notifyIcon.Icon, icon))
+            {
+                _notifyIcon.Icon = icon;
+            }
+
+            return _dictationPresentation.ApplyAsync(state);
+        });
     }
 
     private void UpdateTrayText()
@@ -346,6 +364,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _trayIcon.Dispose();
+        _activeTrayIcon.Dispose();
         _statusOverlay.Dispose();
         _settingsForm?.Dispose();
         _historyForm?.Dispose();

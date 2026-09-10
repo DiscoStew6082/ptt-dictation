@@ -1,6 +1,8 @@
 param(
     [string]$OutputPath = (Join-Path $PSScriptRoot "..\src\PttDictation.App\Assets\PttDictation.ico"),
-    [string]$PreviewPath = ""
+    [string]$PreviewPath = "",
+    [ValidateSet("Default", "Idle", "Active")]
+    [string]$TrayState = "Default"
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,9 +48,19 @@ function New-IconPng {
             $Size - ($margin * 2),
             $Size - ($margin * 2))
         $keyPath = New-RoundedRectanglePath $keyBounds ([single]($Size * 0.19))
-        $surfaceBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 27, 31, 39))
+        $surfaceColor = switch ($TrayState) {
+            "Idle" { [System.Drawing.Color]::FromArgb(255, 22, 163, 74) }
+            "Active" { [System.Drawing.Color]::FromArgb(255, 220, 38, 38) }
+            default { [System.Drawing.Color]::FromArgb(255, 27, 31, 39) }
+        }
+        $accentColor = switch ($TrayState) {
+            "Idle" { [System.Drawing.Color]::FromArgb(255, 74, 222, 128) }
+            "Active" { [System.Drawing.Color]::FromArgb(255, 248, 113, 113) }
+            default { [System.Drawing.Color]::FromArgb(255, 45, 212, 191) }
+        }
+        $surfaceBrush = [System.Drawing.SolidBrush]::new($surfaceColor)
         $borderPen = [System.Drawing.Pen]::new(
-            [System.Drawing.Color]::FromArgb(255, 45, 212, 191),
+            $accentColor,
             [single][Math]::Max(1, $Size * 0.045))
 
         $bodyBounds = [System.Drawing.RectangleF]::new(
@@ -63,7 +75,12 @@ function New-IconPng {
             [single][Math]::Max(1.25, $Size * 0.065))
         $microphonePen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
         $microphonePen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-        $statusBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 245, 171, 64))
+        $statusColor = if ($TrayState -eq "Default") {
+            [System.Drawing.Color]::FromArgb(255, 245, 171, 64)
+        } else {
+            $surfaceColor
+        }
+        $statusBrush = [System.Drawing.SolidBrush]::new($statusColor)
 
         try {
             $graphics.FillPath($surfaceBrush, $keyPath)

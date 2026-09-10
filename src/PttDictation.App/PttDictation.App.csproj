@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\PttDictation.ico" LogicalName="PttDictation.AppIcon.ico" />
+    <EmbeddedResource Include="Assets\TrayIdle.ico" LogicalName="PttDictation.TrayIdle.ico" />
+    <EmbeddedResource Include="Assets\TrayActive.ico" LogicalName="PttDictation.TrayActive.ico" />
   </ItemGroup>
 
   <PropertyGroup>

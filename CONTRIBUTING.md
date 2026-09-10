@@ -20,10 +20,27 @@ dotnet test PttDictation.sln --configuration Release --no-restore
 dotnet list PttDictation.sln package --vulnerable --include-transitive
 ```
 
-Create a local release build with:
+For this machine's pinned local installation, publish a tested build to staging and use the deployment script (PowerShell 7):
 
 ```powershell
-dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\ptt-dictation-win-x64
+dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\next-build
+pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build
+```
+
+The deployment script deliberately fixes the destination to `C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`, independent of the current directory or worktree. Keep Start-menu pins pointed there. It requires an existing installation, rejects incomplete or linked packages, checks every installed file's SHA-256, and verifies exactly one normally launched process at that path with no arguments. An installation failure triggers restoration and restart of the previous package; recovery failures are reported explicitly. The previous package is retained in a `.backup-*` directory for recovery, and the installed package receives `deployment-receipt.json` with hashes and the fixed executable path.
+
+To inspect the installation without replacing files or restarting the app:
+
+```powershell
+pwsh -File scripts\Update-LocalApp.ps1 -VerifyOnly
+```
+
+This reports process IDs (empty if stopped) and checks receipt hashes when a receipt exists. A package installed before this workflow has no receipt; its path and current hashes can be inspected, but are not proof of a verified deployment. Process and file checks do not replace tray/hotkey acceptance. For builds on other machines or CI packaging, publish into a separate artifact folder without using this machine-specific installer.
+
+Run the deployment regression checks without touching the live installation:
+
+```powershell
+pwsh -File scripts\Test-LocalAppDeployment.ps1
 ```
 
 Before publishing a release, verify the build and record a SHA-256 checksum for the zip:
