@@ -13,6 +13,31 @@ public sealed class PersistentParakeetSecurityTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
     [TestMethod]
+    public async Task FileReadinessWaitsUntilTheWriterReleasesItsFile()
+    {
+        var testDirectory = CreateTestDirectory();
+        try
+        {
+            var readyPath = Path.Combine(testDirectory, "locked-ready");
+            Task<string> readiness;
+            using (var writer = new FileStream(readyPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await writer.WriteAsync("ready"u8.ToArray());
+                await writer.FlushAsync();
+
+                readiness = WaitForFileTextAsync(readyPath);
+                Assert.IsFalse(readiness.IsCompleted, "Readiness must keep waiting while the writer holds the file.");
+            }
+
+            Assert.AreEqual("ready", await readiness.WaitAsync(TestTimeout));
+        }
+        finally
+        {
+            Directory.Delete(testDirectory, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ProcessBoundConnectorSendsPayloadOnlyToTheExpectedProcess()
     {
         var testDirectory = CreateTestDirectory();
@@ -259,12 +284,22 @@ public sealed class PersistentParakeetSecurityTests
     private static async Task<string> WaitForFileTextAsync(string path)
     {
         using var timeout = new CancellationTokenSource(TestTimeout);
-        while (!File.Exists(path))
+        while (true)
         {
+            if (File.Exists(path))
+            {
+                try
+                {
+                    return await File.ReadAllTextAsync(path, timeout.Token);
+                }
+                catch (IOException exception) when ((exception.HResult & 0xffff) is 32 or 33)
+                {
+                    // The marker can exist before the probe releases its write handle.
+                }
+            }
+
             await Task.Delay(20, timeout.Token);
         }
-
-        return await File.ReadAllTextAsync(path, timeout.Token);
     }
 
     private static async Task WaitForExitAsync(Process process)

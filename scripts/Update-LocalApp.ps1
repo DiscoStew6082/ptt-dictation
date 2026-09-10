@@ -88,6 +88,30 @@ function Start-AndVerifyLive {
     return $running[0]
 }
 
+function Stop-LiveProcess($Process) {
+    # Snapshot only this app's direct transcription workers before its PID exits.
+    # Recheck each identity afterward so PID reuse cannot stop unrelated work.
+    $current = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.ProcessId)")
+    if ($current.Count -eq 0) { return }
+    if ($current[0].ExecutablePath -ne $liveExe -or $current[0].CreationDate -ne $Process.CreationDate) {
+        throw 'The live process identity changed before shutdown.'
+    }
+    $workers = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Process.ProcessId) AND Name = 'parakeet-server.exe'" |
+        Where-Object { $_.CreationDate -ge $Process.CreationDate })
+    Stop-Process -Id $Process.ProcessId -ErrorAction Stop
+    Wait-Process -Id $Process.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+    foreach ($worker in $workers) {
+        $remaining = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($worker.ProcessId)")
+        if ($remaining.Count -eq 1 -and
+            $remaining[0].ParentProcessId -eq $Process.ProcessId -and
+            $remaining[0].CreationDate -eq $worker.CreationDate -and
+            $remaining[0].ExecutablePath -eq $worker.ExecutablePath) {
+            Stop-Process -Id $worker.ProcessId -ErrorAction Stop
+            Wait-Process -Id $worker.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Copy-PublishPackage([string]$Source, [string]$Destination) {
     # Preserve the live directory and existing executable in place so shell
     # shortcuts cannot follow a renamed executable into a backup directory.
@@ -166,9 +190,8 @@ try {
     $installStarted = $false
     try {
         foreach ($process in $running) {
-            Stop-Process -Id $process.ProcessId -ErrorAction Stop
             $stopped = $true
-            Wait-Process -Id $process.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+            Stop-LiveProcess $process
         }
         $installStarted = $true
         Copy-PublishPackage $prepared $liveDirectory
@@ -190,8 +213,7 @@ try {
         try {
             if ($installStarted) {
                 foreach ($process in @(Get-LiveProcesses)) {
-                    Stop-Process -Id $process.ProcessId -ErrorAction Stop
-                    Wait-Process -Id $process.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+                    Stop-LiveProcess $process
                 }
                 Copy-PublishPackage $backup $liveDirectory
                 Assert-PackageHashes $liveDirectory $oldHashes

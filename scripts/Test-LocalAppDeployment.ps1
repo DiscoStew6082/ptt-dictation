@@ -37,19 +37,41 @@ function Invoke-Fixture([string]$Scenario) {
         Set-Content -LiteralPath $testScript
     $global:pttTestExpectedExe = Join-Path $live 'PttDictation.exe'
     $global:pttTestRunning = @([pscustomobject]@{
-        ProcessId = 101; ExecutablePath = $global:pttTestExpectedExe; CommandLine = '"' + $global:pttTestExpectedExe + '"'
+        ProcessId = 101; ExecutablePath = $global:pttTestExpectedExe; CommandLine = '"' + $global:pttTestExpectedExe + '"'; CreationDate = [datetime]'2026-01-01'
     })
+    $global:pttTestWorkers = @()
+    if ($Scenario -eq 'owned-worker') {
+        $global:pttTestWorkers = @(101, 999 | ForEach-Object {
+            [pscustomobject]@{ ProcessId = $_ + 1000; ParentProcessId = $_; Name = 'parakeet-server.exe';
+                ExecutablePath = (Join-Path $caseRoot 'runtime\parakeet-server.exe'); CreationDate = [datetime]'2026-01-01' }
+        })
+        $global:pttTestWorkers += [pscustomobject]@{ ProcessId = 1102; ParentProcessId = 101; Name = 'parakeet-server.exe';
+            ExecutablePath = (Join-Path $caseRoot 'runtime\parakeet-server.exe'); CreationDate = [datetime]'2025-01-01' }
+    }
     $global:pttTestStartCount = 0
     $global:pttTestStopCount = 0
     $global:pttTestFailure = $Scenario
     $oldHash = (Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash
 
-    function Get-CimInstance { param($ClassName, $Filter) return $global:pttTestRunning }
+    function Get-CimInstance {
+        param($ClassName, $Filter)
+        if ($Filter -eq "Name = 'PttDictation.exe'") { return $global:pttTestRunning }
+        if ($Filter -match '^ParentProcessId = (\d+)') {
+            $parentId = [int]$Matches[1]
+            return @($global:pttTestWorkers | Where-Object ParentProcessId -eq $parentId)
+        }
+        if ($Filter -match '^ProcessId = (\d+)$') {
+            $processId = [int]$Matches[1]
+            return @(@($global:pttTestRunning) + @($global:pttTestWorkers) | Where-Object ProcessId -eq $processId)
+        }
+        throw "Unexpected process query: $Filter"
+    }
     function Stop-Process {
         param($Id, $ErrorAction)
-        Assert ($Id -in @($global:pttTestRunning | ForEach-Object ProcessId)) 'Attempted to stop an unrelated PID.'
+        Assert ($Id -in @($global:pttTestRunning | ForEach-Object ProcessId) -or $Id -eq 1101) 'Attempted to stop an unrelated PID.'
         $global:pttTestStopCount++
-        $global:pttTestRunning = @()
+        $global:pttTestRunning = @($global:pttTestRunning | Where-Object ProcessId -ne $Id)
+        $global:pttTestWorkers = @($global:pttTestWorkers | Where-Object ProcessId -ne $Id)
     }
     function Wait-Process { param($Id, $Timeout, $ErrorAction) }
     function Start-Sleep { param($Seconds) }
@@ -62,7 +84,7 @@ function Invoke-Fixture([string]$Scenario) {
         $newId = 200 + $global:pttTestStartCount
         if ($global:pttTestFailure -ne 'startup-failure' -or $global:pttTestStartCount -gt 1) {
             $global:pttTestRunning = @([pscustomobject]@{
-                ProcessId = $newId; ExecutablePath = $FilePath; CommandLine = '"' + $FilePath + '"'
+                ProcessId = $newId; ExecutablePath = $FilePath; CommandLine = '"' + $FilePath + '"'; CreationDate = [datetime]'2026-01-02'
             })
         }
         return [pscustomobject]@{ Id = $newId }
@@ -93,9 +115,15 @@ function Invoke-Fixture([string]$Scenario) {
     try { $result = & $testScript @arguments }
     catch { $caught = $_ }
 
-    if ($Scenario -eq 'success') {
+    if ($Scenario -in @('success', 'owned-worker')) {
         Assert ($null -eq $caught) "Install failed: $caught"
-        Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq 1) 'Expected one stop and one normal start.'
+        $expectedStops = if ($Scenario -eq 'owned-worker') { 2 } else { 1 }
+        Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'Expected the app and its owned worker to stop, followed by one normal start.'
+        if ($Scenario -eq 'owned-worker') {
+            Assert ($global:pttTestWorkers.Count -eq 2 -and
+                1999 -in @($global:pttTestWorkers | ForEach-Object ProcessId) -and
+                1102 -in @($global:pttTestWorkers | ForEach-Object ProcessId)) 'Owned worker survived or an unrelated/older worker was stopped.'
+        }
         Assert ((Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash -eq
             (Get-FileHash -LiteralPath (Join-Path $stage 'PttDictation.dll')).Hash) 'New package was not installed.'
         $verified = & $testScript -VerifyOnly
@@ -106,7 +134,7 @@ function Invoke-Fixture([string]$Scenario) {
         $tamperError = $null
         try { $null = & $testScript -VerifyOnly } catch { $tamperError = $_ }
         Assert ($null -ne $tamperError -and "$tamperError" -like '*hash mismatch*') 'Tampered asset was not rejected.'
-        Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq 1) 'VerifyOnly changed process state.'
+        Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'VerifyOnly changed process state.'
     }
     elseif ($Scenario -eq 'verify-existing') {
         Assert ($null -eq $caught) "Read-only verification failed: $caught"
@@ -141,11 +169,11 @@ function Invoke-Fixture([string]$Scenario) {
 }
 
 try {
-    foreach ($scenario in @('success', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
+    foreach ($scenario in @('owned-worker', 'success', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
         'ancestor-as-source', 'unexpected-arguments', 'other-location', 'verify-existing')) {
         Invoke-Fixture $scenario
     }
-    Write-Host 'PASS: all 9 deployment scenarios (including receipt tampering detection).'
+    Write-Host 'PASS: all 10 deployment scenarios (including receipt tampering detection).'
 }
 finally {
     $resolved = [IO.Path]::GetFullPath($testRoot)
@@ -155,5 +183,5 @@ finally {
         throw "Unsafe test cleanup target: $resolved"
     }
     Remove-Item -LiteralPath $resolved -Recurse -Force
-    Remove-Variable -Scope Global -Name pttTestExpectedExe,pttTestRunning,pttTestStartCount,pttTestStopCount,pttTestFailure -ErrorAction SilentlyContinue
+    Remove-Variable -Scope Global -Name pttTestExpectedExe,pttTestRunning,pttTestWorkers,pttTestStartCount,pttTestStopCount,pttTestFailure -ErrorAction SilentlyContinue
 }
