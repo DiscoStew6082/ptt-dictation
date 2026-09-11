@@ -19,7 +19,8 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 
 - Independently configurable hold-to-talk and toggle-to-talk keys.
 - Live text in supported destination textboxes, without a floating recording or processing overlay. Existing audible state feedback and tray cancellation remain available.
-- Focus changes pause insertion while recording continues. Return to the original textbox to resume. After stopping, PTT waits up to five seconds for focus to return before ending with an error and keeping the completed transcript in Session History. If Windows reports that the captured textbox no longer exists, finishing fails immediately. The app does not switch windows for you.
+- Focus changes pause insertion while recording continues. Return to the original textbox to resume. After stopping, PTT waits up to five seconds for focus to return before ending with an error and keeping the completed transcript in Session History. The app does not switch windows for you.
+- If text insertion fails or Windows loses access to the captured editor reference, PTT automatically stops recording, finishes recognition, and keeps the transcript in Session History. The textbox may still be visible when its automation reference fails. Final recognition remains cancellable; after completion, another dictation can start normally.
 - Cancellable finalization and first-use runtime/model downloads.
 - Local transcription with downloadable Parakeet runtime/model assets.
 - Session-only transcript history with raw preview, corrected preview, final recognition, phrase replacements, and final formatting comparisons. Failed insertion preserves the completed transcript here for copying.

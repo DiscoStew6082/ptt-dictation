@@ -7,6 +7,10 @@ namespace PttDictation.App;
 
 internal enum TextTargetUpdateResult { Success, Pending, Unfocused, Unsupported, Conflict }
 
+internal sealed class TextTargetUnavailableException(ElementNotAvailableException innerException)
+    : InvalidOperationException("Windows can no longer access the original textbox's automation reference. The textbox may still be visible; its identity and selected text cannot be verified safely.", innerException)
+{ }
+
 internal interface IWindowsTextTarget
 {
     bool IsFocused { get; }
@@ -100,10 +104,10 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             try { return _surface.IsFocused; }
             catch (ElementNotAvailableException ex)
             {
-                // A destroyed UIA element cannot regain focus. Let the live
-                // output mark this session failed instead of holding it forever.
-                Trace("target.unavailable", error: ex);
-                throw new InvalidOperationException("The original textbox is no longer available.", ex);
+                // The captured automation reference cannot verify the original
+                // editor. Its visible textbox may still exist after a UI rebuild.
+                // Never redirect this recording to a newly focused element.
+                throw Unavailable("focus", ex);
             }
             catch (Exception ex) when (IsProviderFailure(ex)) { Trace("target.focus_read_failed", error: ex); return false; }
         }
@@ -128,7 +132,12 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 if (!valid) Trace("target.prepared_invalid", new { reason = "snapshot_or_focus_changed", current.IsConsistent, snapshotMatches = current == expected });
                 return valid;
             }
-            catch (Exception ex) when (IsProviderFailure(ex)) { Trace("target.prepared_failed", error: ex); return false; }
+            catch (ElementNotAvailableException ex) { throw Unavailable("prepared_selection", ex); }
+            catch (Exception ex) when (ex is not TextTargetUnavailableException && IsProviderFailure(ex))
+            {
+                Trace("target.prepared_failed", error: ex);
+                return false;
+            }
         }
     }
 
@@ -251,7 +260,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             }
             return TextTargetUpdateResult.Pending;
         }
-        catch (Exception ex) when (IsProviderFailure(ex))
+        catch (ElementNotAvailableException ex) { throw Unavailable("replacement", ex); }
+        catch (Exception ex) when (ex is not TextTargetUnavailableException && IsProviderFailure(ex))
         {
             return Conflict("provider_failure", ex);
         }
@@ -260,6 +270,12 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private string Prefix => _initialDecorationDisappeared ? "" : _initial!.Prefix;
     private string Suffix => _initialDecorationDisappeared ? "" : _initial!.Suffix;
     private string ExpectedDocument(string text) => Prefix + text + Suffix;
+    private TextTargetUnavailableException Unavailable(string operation, ElementNotAvailableException error)
+    {
+        Trace("target.unavailable", new { operation }, error);
+        return new TextTargetUnavailableException(error);
+    }
+
     private TextTargetUpdateResult Conflict(string reason, Exception? error = null)
     {
         Trace("target.conflict", new { reason }, error);

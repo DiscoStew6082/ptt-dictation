@@ -6,6 +6,56 @@ namespace PttDictation.Tests;
 public sealed class LiveClipboardPasterTests
 {
     [TestMethod]
+    public void RetiringCaptureDuringFailurePresentationCannotNotifyTheNextCapture()
+    {
+        var target = new Target();
+        using var output = Create(target, []);
+        var oldFailures = 0;
+        var newFailures = 0;
+        Action<Exception> oldListener = _ => oldFailures++;
+        Action<Exception> newListener = _ => newFailures++;
+        output.InsertionFailed += oldListener;
+        output.CaptureTarget();
+        output.UpdatePreview("owned words");
+        output.Pump();
+        output.Pump();
+        var retired = false;
+        output.PresentationChanged += () =>
+        {
+            if (retired || output.HoldingReason is null) return;
+            retired = true;
+            output.EndSession();
+            output.InsertionFailed -= oldListener;
+            output.InsertionFailed += newListener;
+            target.Conflict = false;
+            output.CaptureTarget();
+        };
+
+        target.Conflict = true;
+        output.UpdatePreview("revision");
+        output.Pump();
+
+        Assert.IsTrue(retired);
+        Assert.AreEqual(1, oldFailures);
+        Assert.AreEqual(0, newFailures, "An old capture's error must never reach a new dictation.");
+    }
+
+    [TestMethod]
+    public void FailedPresentationSubscriberCannotHideTerminalInsertionFailure()
+    {
+        var target = new Target();
+        using var output = Create(target, []);
+        var failures = 0;
+        output.InsertionFailed += _ => failures++;
+        output.CaptureTarget();
+        output.PresentationChanged += () => throw new InvalidOperationException("presentation failed");
+        target.Conflict = true;
+        output.UpdatePreview("words");
+        output.Pump();
+        Assert.AreEqual(1, failures);
+    }
+
+    [TestMethod]
     public async Task RevisedPreviewAndFinalReplaceOneOwnedRangeWithoutDuplicatePaste()
     {
         var target = new Target();

@@ -107,6 +107,7 @@ public sealed class LiveDictationWorkflowTests
 
     private sealed class CapturingLiveOutput : ILiveClipboardPaster
     {
+        public event Action<Exception>? InsertionFailed { add { } remove { } }
         public string? Preview { get; private set; }
         public string? Final { get; private set; }
         public bool Ended { get; private set; }

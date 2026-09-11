@@ -52,6 +52,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     public bool InlinePreview { get; private set; }
     public string? HoldingReason { get; private set; }
     public event Action? PresentationChanged;
+    public event Action<Exception>? InsertionFailed;
 
     public void CaptureTarget()
     {
@@ -66,10 +67,9 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         catch (Exception ex)
         {
             Trace(session, "inline.identity_capture_failed", error: ex);
-            session.Conflicted = session.Ready = true;
-            session.Failure = ex.Message;
+            session.Ready = true;
             Interlocked.Exchange(ref session.BusySince, 0);
-            _timer?.Start();
+            FailInsertion(session, ex);
             return;
         }
         Dispatch(() =>
@@ -105,6 +105,12 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                     session.Ready = true;
                     Trace(session, "inline.capture_ready", new { session.Conflicted, session.Fallback });
                     Interlocked.Exchange(ref session.BusySince, 0);
+                    if (session.Conflicted)
+                    {
+                        FailInsertion(session, new InvalidOperationException(session.Failure
+                            ?? "The textbox could not be verified for dictation."));
+                        return;
+                    }
                     SetPresentation(!session.Fallback && !session.Conflicted, null);
                 });
             }
@@ -142,14 +148,12 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         var session = Volatile.Read(ref _session);
         if (session is null || !session.Active) return;
         // A timed-out external operation loses permission to write even if it
-        // returns later. Recognition continues independently of this worker.
+        // returns later. Notify the workflow so capture cannot remain running.
         if (Interlocked.Read(ref session.BusySince) is var started && started != 0
             && Environment.TickCount64 - started > 5000)
         {
             Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = Environment.TickCount64 - started });
-            session.Active = false;
-            session.Completion.TrySetException(new InvalidOperationException("The original editor stopped responding."));
-            SetPresentation(false, "Text updates stopped. Your transcript will be kept in Session History.");
+            FailInsertion(session, new InvalidOperationException("The original editor stopped responding."));
             return;
         }
         if (Interlocked.Exchange(ref _queued, 1) != 0) return;
@@ -169,9 +173,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             if (!session.Ready) return;
             if (session.Conflicted)
             {
-                SetPresentation(false, "Text updates paused. Your completed transcript will be kept in Session History.");
-                if (session.Finishing) session.Completion.TrySetException(new InvalidOperationException(session.Failure
-                    ?? "The original textbox changed, so dictation stopped replacing text."));
+                FailInsertion(session, new InvalidOperationException(session.Failure
+                    ?? "The original textbox could no longer be verified for text replacement."));
                 return;
             }
             var target = session.Target!;
@@ -228,7 +231,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                     break;
                 default:
                     Trace(session, "inline.conflict", new { reason = result.ToString() });
-                    session.Conflicted = true;
+                    FailInsertion(session, new InvalidOperationException(
+                        "The original textbox could no longer be verified for text replacement."));
                     break;
             }
         }
@@ -236,9 +240,29 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         {
             Trace(session, "inline.update_failed", error: ex);
             // An ambiguous write can never become a whole-transcript fallback.
-            session.Conflicted = true;
-            session.Failure = ex.Message;
-            if (session.Finishing) session.Completion.TrySetException(ex);
+            FailInsertion(session, ex);
+        }
+    }
+
+    private void FailInsertion(Session session, Exception error)
+    {
+        var failureSubscribers = InsertionFailed;
+        if (!IsCurrent(session) || Interlocked.Exchange(ref session.FailureNotified, 1) != 0) return;
+        session.Conflicted = true;
+        session.Failure = error.Message;
+        session.Active = false;
+        session.Completion.TrySetException(error);
+        // Preview failures may never have a PasteAsync waiter. Observe the task
+        // while preserving the same exception for any existing/future waiter.
+        _ = session.Completion.Task.Exception;
+        Trace(session, "inline.insertion_failed", error: error);
+        try { SetPresentation(false, "Text insertion stopped. Completing your transcript for Session History."); }
+        catch (Exception presentationError) { Trace(session, "inline.failure_presentation_failed", error: presentationError); }
+        if (failureSubscribers is null) return;
+        foreach (Action<Exception> subscriber in failureSubscribers.GetInvocationList())
+        {
+            try { subscriber(error); }
+            catch (Exception subscriberError) { Trace(session, "inline.failure_subscriber_failed", error: subscriberError); }
         }
     }
 
@@ -280,6 +304,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             session.Completion.TrySetCanceled();
         }
         _timer?.Stop();
+        SetPresentation(false, null);
     }
 
     private void SetPresentation(bool inline, string? reason)
@@ -287,7 +312,12 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         if (InlinePreview == inline && HoldingReason == reason) return;
         InlinePreview = inline;
         HoldingReason = reason;
-        PresentationChanged?.Invoke();
+        if (PresentationChanged is not { } subscribers) return;
+        foreach (Action subscriber in subscribers.GetInvocationList())
+        {
+            try { subscriber(); }
+            catch (Exception error) { DiagnosticTrace.Write("inline.presentation_subscriber_failed", error: error); }
+        }
     }
 
     public void Dispose()
@@ -316,6 +346,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         public bool Fallback;
         public string? Failure;
         public long BusySince;
+        public int FailureNotified;
     }
 
     private static void Trace(Session session, string stage, object? data = null, Exception? error = null)

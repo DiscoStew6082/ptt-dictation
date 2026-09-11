@@ -48,6 +48,9 @@ public interface IClipboardPaster
 
 public interface ILiveClipboardPaster : IClipboardPaster
 {
+    /// <summary>A terminal output failure for the currently captured dictation.</summary>
+    event Action<Exception>? InsertionFailed;
+
     void UpdatePreview(string text);
 
     void EndSession();

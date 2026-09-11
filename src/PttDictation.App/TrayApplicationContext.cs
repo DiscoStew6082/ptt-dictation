@@ -52,7 +52,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, _transcriber),
             _livePaster,
             _history,
-            getTranscriptCorrections: () => _settings.TranscriptCorrections);
+            getTranscriptCorrections: () => _settings.TranscriptCorrections,
+            synchronizationContext: _uiContext);
         _dictationWorkflow = workflow;
         _statusSoundPlayer = new StatusSoundPlayer(() => _settings);
 
@@ -267,7 +268,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         PostToUi(() =>
         {
-            if (_exiting)
+            if (_exiting || !ReferenceEquals(state, _dictationWorkflow.CurrentState))
             {
                 return Task.CompletedTask;
             }

@@ -1,3 +1,4 @@
+using System.Windows.Automation;
 using PttDictation.App;
 
 namespace PttDictation.Tests;
@@ -5,6 +6,72 @@ namespace PttDictation.Tests;
 [TestClass]
 public sealed class WindowsTextTargetTests
 {
+    [TestMethod]
+    public void UnavailableAutomationReferenceDoesNotClaimTheVisibleTextboxDisappeared()
+    {
+        var surface = new FakeSurface("before ", "", " after");
+        var target = new WindowsTextTarget(surface);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "first words", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "first words", surface.Paste));
+
+        // The editor and its content remain visible and focused. Only the
+        // previously captured UI Automation reference has become inaccessible.
+        surface.AutomationAvailable = false;
+        var error = Assert.Throws<InvalidOperationException>(
+            () => target.TryReplace("first words", "revised words", surface.Paste));
+
+        StringAssert.Contains(error.Message, "automation reference");
+        StringAssert.Contains(error.Message, "may still be visible");
+        Assert.IsInstanceOfType<ElementNotAvailableException>(error.InnerException);
+        Assert.AreEqual("before first words after", surface.Document);
+        Assert.AreEqual(1, surface.Pastes, "An inaccessible identity must never authorize another paste.");
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void UnavailableTextPatternReportsReferenceLossBeforeAnotherPaste(bool failWhileSelecting)
+    {
+        var surface = new FakeSurface("before ", "", " after");
+        var target = new WindowsTextTarget(surface);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "first words", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "first words", surface.Paste));
+        surface.ReadAvailable = failWhileSelecting;
+        surface.SelectionAvailable = !failWhileSelecting;
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => target.TryReplace("first words", "revised words", surface.Paste));
+
+        StringAssert.Contains(error.Message, "automation reference");
+        StringAssert.Contains(error.Message, "may still be visible");
+        Assert.IsInstanceOfType<ElementNotAvailableException>(error.InnerException);
+        Assert.AreEqual("before first words after", surface.Document);
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void ReferenceLossDuringFinalSelectionCheckPreservesErrorAndDoesNotPaste(bool failFocusRead)
+    {
+        var surface = new FakeSurface("before ", "selected", " after");
+        var target = new WindowsTextTarget(surface);
+
+        var error = Assert.Throws<InvalidOperationException>(() => target.TryReplace("", "speech", text =>
+        {
+            // Clipboard preparation can outlive the provider reference, even
+            // after selecting the right range. The final guard must still fail.
+            surface.AutomationAvailable = !failFocusRead;
+            surface.ReadAvailable = failFocusRead;
+            if (target.IsPreparedSelectionCurrent) surface.Paste(text);
+        }));
+
+        StringAssert.Contains(error.Message, "automation reference");
+        Assert.IsInstanceOfType<ElementNotAvailableException>(error.InnerException);
+        Assert.AreEqual("before selected after", surface.Document);
+        Assert.AreEqual(0, surface.Pastes);
+    }
+
     [TestMethod]
     [DataRow("", "Do anything\n")]
     [DataRow("Do anything", "\n")]
@@ -293,7 +360,15 @@ public sealed class WindowsTextTargetTests
         public string Selection { get; set; } = selection;
         public string Suffix { get; set; } = suffix;
         public string Document => Prefix + Selection + Suffix;
-        public bool IsFocused { get; set; } = true;
+        public bool AutomationAvailable { get; set; } = true;
+        public bool ReadAvailable { get; set; } = true;
+        public bool SelectionAvailable { get; set; } = true;
+        private bool _focused = true;
+        public bool IsFocused
+        {
+            get => AutomationAvailable ? _focused : throw new ElementNotAvailableException();
+            set => _focused = value;
+        }
         public bool SupportsReplacement { get; set; } = true;
         public bool CanPasteFallback { get; set; } = true;
         public bool LoseFocusDuringSelection { get; init; }
@@ -305,9 +380,12 @@ public sealed class WindowsTextTargetTests
         public int SelectCalls { get; private set; }
         private string? _delayed;
         private (string Before, string Owned, string After)? _delayedSelection;
-        public TextTargetSnapshot Read() => new(Document, Prefix, Selection, Suffix);
+        public TextTargetSnapshot Read() => ReadAvailable
+            ? new(Document, Prefix, Selection, Suffix)
+            : throw new ElementNotAvailableException();
         public bool Select(string before, string owned, string after)
         {
+            if (!SelectionAvailable) throw new ElementNotAvailableException();
             SelectCalls++;
             if (Document != before + owned + after) return false;
             if (DelaySelection)

@@ -48,7 +48,7 @@ public sealed class UnavailableTextTargetTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task VanishedTextboxEndsProcessingRetainsTranscriptAndAllowsNextRecording(bool disappearWhileFinishing)
+    public async Task UnavailableAutomationReferenceEndsWorkflowRetainsTranscriptAndAllowsNextRecording(bool unavailableWhileFinishing)
     {
         var surface = new Surface();
         using var output = new LiveClipboardPaster(() => new WindowsTextTarget(surface),
@@ -56,6 +56,12 @@ public sealed class UnavailableTextTargetTests
         var session = new FakeDictationSession("complete final words");
         var history = new SessionHistory();
         var workflow = new DictationWorkflow(new FakeDictationSessionFactory(session), output, history);
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        output.PresentationChanged += () =>
+        {
+            if (workflow.CurrentState.Phase == DictationWorkflowPhase.Failed && output.HoldingReason is null)
+                released.TrySetResult();
+        };
         using var cancellation = new CancellationTokenSource();
         await workflow.HandleAsync(DictationIntent.Toggle, cancellation.Token);
         session.PublishPartial("first words");
@@ -63,23 +69,25 @@ public sealed class UnavailableTextTargetTests
         output.Pump();
         Assert.AreEqual("Existing text first words", surface.Document);
 
-        surface.Focused = false;
-        if (!disappearWhileFinishing)
+        var finish = Task.CompletedTask;
+        if (unavailableWhileFinishing)
         {
-            surface.Available = false;
-            output.Pump();
+            surface.Focused = false;
+            finish = workflow.HandleAsync(DictationIntent.Toggle, cancellation.Token);
         }
-        var finish = workflow.HandleAsync(DictationIntent.Toggle, cancellation.Token);
         surface.Available = false;
         output.Pump();
-        // A lost UIA element must complete the real workflow, not wait forever
-        // as it does for a still-existing field in a background window.
+        // Losing the reference while the editor stays visible must finish the
+        // recording automatically, without requiring a second hotkey gesture.
         try
         {
+            await released.Task.WaitAsync(TimeSpan.FromSeconds(1));
             await finish.WaitAsync(TimeSpan.FromSeconds(1));
             Assert.AreEqual(DictationWorkflowPhase.Failed, workflow.CurrentState.Phase);
+            Assert.AreEqual(1, session.StopCount);
             Assert.AreEqual("Complete final words.", history.Items.Single());
-            StringAssert.Contains(workflow.CurrentState.ErrorMessage!, "no longer available");
+            StringAssert.Contains(workflow.CurrentState.ErrorMessage!, "automation reference");
+            StringAssert.Contains(workflow.CurrentState.ErrorMessage!, "may still be visible");
             Assert.AreEqual("Existing text first words", surface.Document);
             Assert.AreEqual(1, surface.Writes);
             surface.Available = surface.Focused = true;
