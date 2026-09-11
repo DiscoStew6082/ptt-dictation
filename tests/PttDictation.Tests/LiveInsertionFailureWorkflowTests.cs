@@ -8,6 +8,111 @@ namespace PttDictation.Tests;
 public sealed class LiveInsertionFailureWorkflowTests
 {
     [TestMethod]
+    [DataRow(0)]
+    [DataRow(1)]
+    [DataRow(2)]
+    public async Task AlreadyAcknowledgedWordsDoNotBecomeFailureWhenEditorReferenceRetires(int failureStage)
+    {
+        var surface = new VisibleSurface();
+        using var output = new LiveClipboardPaster(() => new WindowsTextTarget(surface),
+            (text, current) => { Assert.IsTrue(current()); surface.Paste(text); });
+        var session = new FinishingSession();
+        var history = new SessionHistory();
+        var workflow = new DictationWorkflow(new SingleDictationSessionFactory(session), output, history);
+        var ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        workflow.StateChanged += state =>
+        {
+            if (state.Phase is DictationWorkflowPhase.Failed or DictationWorkflowPhase.InsertedPreview)
+                ended.TrySetResult();
+        };
+        await workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None);
+        session.Preview("all words already inserted");
+        output.Pump();
+        output.Pump(); // Provider confirms the actual document contains the write.
+        var finish = failureStage > 0 ? workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None) : Task.CompletedTask;
+        surface.Accessible = false;
+        if (failureStage < 2) output.Pump(); // Stage 2 loses access inside the final PasteAsync.
+        await session.StopRequested.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        session.Final.TrySetResult("all words already inserted");
+        await ended.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await finish.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.AreEqual(DictationWorkflowPhase.InsertedPreview, workflow.CurrentState.Phase);
+        Assert.IsNull(workflow.CurrentState.ErrorMessage);
+        Assert.AreEqual("all words already inserted", workflow.CurrentState.Transcript,
+            "Report the text actually delivered; final capitalization and punctuation were not pasted.");
+        Assert.AreEqual("all words already inserted", history.Items.Single());
+        Assert.AreEqual("All words already inserted.", history.Entries.Single().Comparison!.FinalText);
+        Assert.AreEqual("Existing all words already inserted", surface.Document);
+        Assert.AreEqual(1, surface.Writes, "Never send a second paste to a retired or replacement editor.");
+        Assert.IsFalse(session.Recording);
+    }
+
+    [TestMethod]
+    public async Task CancellationDiscardsEligibleDeliveryAndNextCaptureStartsWithoutIt()
+    {
+        var surface = new VisibleSurface();
+        using var output = new LiveClipboardPaster(() => new WindowsTextTarget(surface),
+            (text, current) => { Assert.IsTrue(current()); surface.Paste(text); });
+        var first = new FinishingSession();
+        var next = new FinishingSession();
+        var history = new SessionHistory();
+        var workflow = new DictationWorkflow(new SequenceDictationSessionFactory(first, next), output, history);
+        await workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None);
+        first.Preview("already inserted");
+        output.Pump();
+        output.Pump();
+        var finish = workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None);
+        surface.Accessible = false;
+        output.Pump();
+        Assert.IsTrue(output.FailureDelivery!.CanCompleteFromAcknowledgedText);
+        await workflow.HandleAsync(DictationIntent.Cancel, CancellationToken.None);
+        first.Final.TrySetResult("already inserted");
+        await finish.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.AreEqual(DictationWorkflowPhase.Cancelled, workflow.CurrentState.Phase);
+        Assert.AreEqual(0, history.Items.Count);
+        Assert.IsNull(output.FailureDelivery);
+
+        surface.Accessible = true;
+        await workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None);
+        Assert.IsNull(output.FailureDelivery);
+        Assert.AreEqual(DictationWorkflowPhase.Recording, workflow.CurrentState.Phase);
+        await workflow.HandleAsync(DictationIntent.Cancel, CancellationToken.None);
+        Assert.AreEqual(1, surface.Writes);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task HistoricalAcknowledgementCannotHideAnAmbiguousLaterWriteOrDocumentConflict(bool pendingWrite)
+    {
+        var surface = new VisibleSurface();
+        using var output = new LiveClipboardPaster(() => new WindowsTextTarget(surface),
+            (text, current) => { Assert.IsTrue(current()); surface.Paste(text); });
+        var session = new FinishingSession();
+        var workflow = new DictationWorkflow(new SingleDictationSessionFactory(session), output, new SessionHistory());
+        var ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        workflow.StateChanged += state => { if (state.Phase == DictationWorkflowPhase.Failed) ended.TrySetResult(); };
+        await workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None);
+        session.Preview("old acknowledged words");
+        output.Pump();
+        output.Pump();
+        if (pendingWrite)
+        {
+            surface.DelayNextPaste = true;
+            session.Preview("different words not yet acknowledged");
+            output.Pump();
+            surface.Accessible = false;
+        }
+        else surface.AppendUserEdit();
+        output.Pump();
+        await session.StopRequested.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        session.Final.TrySetResult("old acknowledged words");
+        await ended.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.AreEqual(DictationWorkflowPhase.Failed, workflow.CurrentState.Phase);
+        Assert.AreEqual(pendingWrite ? 2 : 1, surface.Writes);
+    }
+
+    [TestMethod]
     public async Task DelayedFailureCannotStopOrOverwriteTheNextRecording()
     {
         var dispatcher = new QueuedContext();
@@ -201,6 +306,7 @@ public sealed class LiveInsertionFailureWorkflowTests
     private sealed class VisibleSurface : IWindowsTextSurface
     {
         public bool Accessible = true;
+        public bool DelayNextPaste;
         private string _prefix = "Existing ", _selection = "";
         public string Document => _prefix + _selection;
         public int Writes;
@@ -215,7 +321,8 @@ public sealed class LiveInsertionFailureWorkflowTests
             _selection = ownedText;
             return true;
         }
-        public void Paste(string text) { _prefix += text; _selection = ""; Writes++; }
+        public void Paste(string text) { Writes++; if (DelayNextPaste) return; _prefix += text; _selection = ""; }
+        public void AppendUserEdit() => _prefix += " user edit";
         public void RevealCaret() { }
     }
 }

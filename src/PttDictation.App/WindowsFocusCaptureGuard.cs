@@ -21,6 +21,8 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
 
     public WindowsFocusCaptureGuard() : this(new NativeFocusCaptureEvents()) { }
 
+    public long Generation => Interlocked.Read(ref _generation);
+
     internal WindowsFocusCaptureGuard(IFocusCaptureEvents events)
     {
         _events = events;

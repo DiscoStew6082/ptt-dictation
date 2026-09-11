@@ -283,6 +283,8 @@ public sealed class DictationWorkflow
         }
         catch (Exception ex)
         {
+            if (TryCompleteAcknowledgedPreview(comparison, operation,
+                sessionResultCleanupWarningPath ?? session.CleanupWarningPath)) return;
             Trace("workflow.finish_failed", error: ex);
             var retained = comparison?.FinalText;
             if (_clipboardPaster is ILiveClipboardPaster)
@@ -301,6 +303,27 @@ public sealed class DictationWorkflow
         {
             CompleteSession(session, operation);
         }
+    }
+
+    private bool TryCompleteAcknowledgedPreview(TranscriptComparison? comparison,
+        CancellationTokenSource operation, string? cleanupWarningPath)
+    {
+        if (comparison is null || string.IsNullOrWhiteSpace(comparison.FinalText)
+            || _clipboardPaster is not ILiveClipboardPaster live
+            || live.FailureDelivery is not { CanCompleteFromAcknowledgedText: true } delivery
+            || string.IsNullOrWhiteSpace(delivery.AcknowledgedText)
+            || TranscriptNormalizer.Normalize(delivery.AcknowledgedText) != comparison.FinalText)
+            return false;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_operation, operation) || operation.IsCancellationRequested) return false;
+            _history.Add(delivery.AcknowledgedText, comparison);
+        }
+        Trace("workflow.completed_with_inserted_preview", new { acknowledgedLength = delivery.AcknowledgedText.Length });
+        Publish(new DictationWorkflowState(DictationWorkflowPhase.InsertedPreview,
+            Transcript: delivery.AcknowledgedText, CleanupWarningPath: cleanupWarningPath), operation,
+            DictationWorkflowPhase.Processing);
+        return true;
     }
 
     private async Task CancelAsync()
@@ -542,6 +565,7 @@ public enum DictationWorkflowPhase
     Recording,
     Processing,
     Pasted,
+    InsertedPreview,
     Empty,
     Cancelled,
     Failed

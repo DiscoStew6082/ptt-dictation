@@ -43,11 +43,14 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private static readonly TimeSpan AcknowledgementTimeout = TimeSpan.FromSeconds(2);
     private readonly IWindowsTextSurface _surface;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly Func<long>? _readFocusGeneration;
     private readonly TextTargetSnapshot? _initial;
     private readonly TextTargetSnapshot? _capturedSelection;
     private TextTargetSnapshot? _preparedSelection;
     private TextTargetSnapshot? _selectionBeforeRequest;
     private DateTimeOffset _selectionSince;
+    private long _selectionRequestOrdinal;
+    private long? _selectionGenerationAtRequest;
     private TextTargetSnapshot? _unsentRetrySelection;
     private DateTimeOffset _unsentRetrySince;
     private string _ownedText = "";
@@ -62,7 +65,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 
     // Only identity is read synchronously at the hotkey boundary. The returned
     // factory performs all document/provider inspection on the automation worker.
-    public static Func<IWindowsTextTarget> CaptureFocusedIdentity()
+    public static Func<IWindowsTextTarget> CaptureFocusedIdentity(Func<long>? readFocusGeneration = null)
     {
         var recordingId = DiagnosticTrace.CurrentRecordingId;
         AutomationElement? identity;
@@ -72,14 +75,17 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             DiagnosticTrace.Write("target.identity_failed", error: ex, recordingId: recordingId);
             identity = null;
         }
-        return () => new WindowsTextTarget(AutomationTextSurface.Capture(identity), recordingId: recordingId);
+        return () => new WindowsTextTarget(AutomationTextSurface.Capture(identity), recordingId: recordingId,
+            readFocusGeneration: readFocusGeneration);
     }
 
-    internal WindowsTextTarget(IWindowsTextSurface surface, Func<DateTimeOffset>? clock = null, string? recordingId = null)
+    internal WindowsTextTarget(IWindowsTextSurface surface, Func<DateTimeOffset>? clock = null, string? recordingId = null,
+        Func<long>? readFocusGeneration = null)
     {
         _recordingId = recordingId ?? DiagnosticTrace.CurrentRecordingId;
         _surface = surface;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _readFocusGeneration = readFocusGeneration;
         try
         {
             if (surface.IsFocused)
@@ -204,6 +210,9 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             TextTargetSnapshot selected;
             if (_selectionBeforeRequest is null)
             {
+                _selectionRequestOrdinal++;
+                _selectionGenerationAtRequest = ReadFocusGenerationForDiagnostics();
+                TraceSelectionObservation("target.selection_requested", currentOwned, snapshot, snapshot, TimeSpan.Zero);
                 if (!_surface.Select(Prefix, currentOwned, Suffix))
                     return Conflict("select_owned_range_failed");
                 _selectionBeforeRequest = snapshot;
@@ -220,11 +229,13 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 // or paste while the requested range is still unacknowledged.
                 if (selected == _selectionBeforeRequest)
                 {
-                    if (_clock() - _selectionSince < AcknowledgementTimeout)
+                    var elapsed = _clock() - _selectionSince;
+                    if (elapsed < AcknowledgementTimeout)
                     {
                         Trace("target.selection_pending");
                         return TextTargetUpdateResult.Pending;
                     }
+                    TraceSelectionObservation("target.selection_timeout", currentOwned, selected, _selectionBeforeRequest, elapsed);
                     return Conflict("selection_acknowledgement_timeout");
                 }
                 Trace("target.selection_mismatch", new { selected.IsConsistent,
@@ -235,6 +246,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 return Conflict("selected_range_validation_failed");
             }
             if (!IsFocused) return TextTargetUpdateResult.Unfocused;
+            TraceSelectionObservation("target.selection_acknowledged", currentOwned, selected, _selectionBeforeRequest!,
+                _clock() - _selectionSince);
             _selectionBeforeRequest = null;
             _preparedSelection = selected;
             var previouslyAttemptedWrite = HasAttemptedWrite;
@@ -270,6 +283,49 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private string Prefix => _initialDecorationDisappeared ? "" : _initial!.Prefix;
     private string Suffix => _initialDecorationDisappeared ? "" : _initial!.Suffix;
     private string ExpectedDocument(string text) => Prefix + text + Suffix;
+    private void TraceSelectionObservation(string stage, string currentOwned, TextTargetSnapshot snapshot,
+        TextTargetSnapshot beforeRequest, TimeSpan elapsed)
+    {
+        // Diagnose only snapshots already read for the existing safety checks.
+        // No editor text is logged, and no extra provider call can delay failure.
+        var generation = ReadFocusGenerationForDiagnostics();
+        Trace(stage, new
+        {
+            requestOrdinal = _selectionRequestOrdinal,
+            elapsedMilliseconds = elapsed.TotalMilliseconds,
+            focusGenerationAtRequest = _selectionGenerationAtRequest,
+            focusGenerationObserved = generation,
+            focusGenerationDelta = _selectionGenerationAtRequest is { } initial && generation is { } current
+                ? current - initial : (long?)null,
+            expectedDocumentLength = Prefix.Length + currentOwned.Length + Suffix.Length,
+            expectedPrefixLength = Prefix.Length,
+            expectedSelectionLength = currentOwned.Length,
+            expectedSuffixLength = Suffix.Length,
+            documentLength = snapshot.Document.Length,
+            prefixLength = snapshot.Prefix.Length,
+            selectionLength = snapshot.Selection.Length,
+            suffixLength = snapshot.Suffix.Length,
+            snapshot.IsConsistent,
+            documentMatches = snapshot.Document == ExpectedDocument(currentOwned),
+            prefixMatches = snapshot.Prefix == Prefix,
+            selectionMatches = snapshot.Selection == currentOwned,
+            suffixMatches = snapshot.Suffix == Suffix,
+            snapshotMatchesBeforeRequest = snapshot == beforeRequest
+        });
+    }
+
+    private long? ReadFocusGenerationForDiagnostics()
+    {
+        try { return _readFocusGeneration?.Invoke(); }
+        catch (Exception error)
+        {
+            // A diagnostic source must not change selection, paste, or failure
+            // decisions. Exception messages may contain provider/editor text.
+            Trace("target.selection_generation_failed", new { exceptionType = error.GetType().FullName, error.HResult });
+            return null;
+        }
+    }
+
     private TextTargetUnavailableException Unavailable(string operation, ElementNotAvailableException error)
     {
         Trace("target.unavailable", new { operation }, error);

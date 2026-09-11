@@ -118,6 +118,7 @@ internal sealed class DictationPresentation
                 PresentProcessing(state, phaseChanged);
                 break;
             case DictationWorkflowPhase.Pasted:
+            case DictationWorkflowPhase.InsertedPreview:
                 await PresentPastedAsync(phaseChanged);
                 break;
             case DictationWorkflowPhase.Empty:
@@ -186,7 +187,7 @@ internal sealed class DictationPresentation
 
         _environment.PlayStatusSound(StatusSound.Done);
         await _environment.DelayAsync(PostPasteVisibilityDurationForTest);
-        if (_environment.GetCurrentState().Phase == DictationWorkflowPhase.Pasted)
+        if (_environment.GetCurrentState().Phase is DictationWorkflowPhase.Pasted or DictationWorkflowPhase.InsertedPreview)
         {
             _overlay.HideRecording();
         }

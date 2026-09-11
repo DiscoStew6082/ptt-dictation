@@ -51,10 +51,15 @@ public interface ILiveClipboardPaster : IClipboardPaster
     /// <summary>A terminal output failure for the currently captured dictation.</summary>
     event Action<Exception>? InsertionFailed;
 
+    /// <summary>Immutable delivery evidence captured when the current output failed.</summary>
+    LiveInsertionFailureDelivery? FailureDelivery => null;
+
     void UpdatePreview(string text);
 
     void EndSession();
 }
+
+public sealed record LiveInsertionFailureDelivery(string AcknowledgedText, bool CanCompleteFromAcknowledgedText);
 
 public sealed record RecordedAudio(
     string Path,

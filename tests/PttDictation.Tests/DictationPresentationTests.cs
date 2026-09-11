@@ -101,14 +101,16 @@ public sealed class DictationPresentationTests
     }
 
     [TestMethod]
-    public void CompletedPasteRefreshesHistoryAndHidesAfterQuarterSecond()
+    [DataRow(DictationWorkflowPhase.Pasted)]
+    [DataRow(DictationWorkflowPhase.InsertedPreview)]
+    public void CompletedPasteRefreshesHistoryAndHidesAfterQuarterSecond(DictationWorkflowPhase phase)
     {
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancelItem = new ToolStripMenuItem();
             overlay.ShowProcessing();
-            var state = new DictationWorkflowState(DictationWorkflowPhase.Pasted);
+            var state = new DictationWorkflowState(phase);
             var sounds = new List<StatusSound>();
             var delays = new List<TimeSpan>();
             var historyRefreshes = 0;

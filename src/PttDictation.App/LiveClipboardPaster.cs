@@ -35,11 +35,12 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         _canPaste = canPaste ?? (() => true);
         if (startTimer)
         {
-            _focusGuard = new WindowsFocusCaptureGuard();
-            _beginCaptureGuard = _focusGuard.BeginCapture;
+            var focusGuard = new WindowsFocusCaptureGuard();
+            _focusGuard = focusGuard;
+            _beginCaptureGuard = focusGuard.BeginCapture;
             // Resolve only the original focused identity before returning from
             // the hotkey. All document/provider reads then happen on the worker.
-            _prepareCapture = WindowsTextTarget.CaptureFocusedIdentity;
+            _prepareCapture = () => WindowsTextTarget.CaptureFocusedIdentity(() => focusGuard.Generation);
             var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             _confirmCapture = action => ui.Post(_ => action(), null);
             _automation = new ApartmentWorker(ApartmentState.MTA, "Dictation text target");
@@ -53,6 +54,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     public string? HoldingReason { get; private set; }
     public event Action? PresentationChanged;
     public event Action<Exception>? InsertionFailed;
+    public LiveInsertionFailureDelivery? FailureDelivery => Volatile.Read(ref _session)?.FailureDelivery;
 
     public void CaptureTarget()
     {
@@ -204,14 +206,17 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                 return;
             }
             if (desired.Length == 0) return;
-            session.InFlight ??= desired;
+            lock (session) session.InFlight ??= desired;
             var result = target.TryReplace(session.Acknowledged, session.InFlight, text => Paste(session, text));
             Trace(session, "inline.replace_result", new { result = result.ToString(), acknowledgedLength = session.Acknowledged.Length, requestedLength = session.InFlight.Length, finishing });
             switch (result)
             {
                 case TextTargetUpdateResult.Success:
-                    session.Acknowledged = session.InFlight;
-                    session.InFlight = null;
+                    lock (session)
+                    {
+                        session.Acknowledged = session.InFlight;
+                        session.InFlight = null;
+                    }
                     if (finishing && session.Acknowledged == desired)
                     {
                         Trace(session, "inline.final_completed");
@@ -248,6 +253,11 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     {
         var failureSubscribers = InsertionFailed;
         if (!IsCurrent(session) || Interlocked.Exchange(ref session.FailureNotified, 1) != 0) return;
+        lock (session)
+        {
+            session.FailureDelivery = new(session.Acknowledged,
+                error is TextTargetUnavailableException && !session.Conflicted && session.InFlight is null);
+        }
         session.Conflicted = true;
         session.Failure = error.Message;
         session.Active = false;
@@ -347,6 +357,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         public string? Failure;
         public long BusySince;
         public int FailureNotified;
+        public volatile LiveInsertionFailureDelivery? FailureDelivery;
     }
 
     private static void Trace(Session session, string stage, object? data = null, Exception? error = null)
