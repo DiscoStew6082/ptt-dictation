@@ -5,12 +5,17 @@ Installs a tested package at the permanent Start-menu shortcut target.
 .EXAMPLE
 pwsh -File scripts/Update-LocalApp.ps1 -StagedPath publish/next-build
 .EXAMPLE
+pwsh -File scripts/Update-LocalApp.ps1 -StagedPath publish/next-build -SettingsSource settings-snapshot.json
+.EXAMPLE
 pwsh -File scripts/Update-LocalApp.ps1 -VerifyOnly
 #>
 [CmdletBinding(DefaultParameterSetName = 'Install')]
 param(
     [Parameter(Mandatory, ParameterSetName = 'Install')]
     [string]$StagedPath,
+    [Parameter(ParameterSetName = 'Install')]
+    [ValidateNotNullOrEmpty()]
+    [string]$SettingsSource,
     [Parameter(Mandatory, ParameterSetName = 'Verify')]
     [switch]$VerifyOnly
 )
@@ -24,6 +29,8 @@ $liveDirectory = 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-
 $publishDirectory = Split-Path $liveDirectory -Parent
 $liveExe = Join-Path $liveDirectory 'PttDictation.exe'
 $receiptName = 'deployment-receipt.json'
+# A supplied file provides bytes only, never an installation/settings destination.
+$settingsPath = Join-Path $env:LOCALAPPDATA 'PttDictation\settings.json'
 
 function Assert-NoLinks([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force
@@ -136,6 +143,82 @@ function Copy-PublishPackage([string]$Source, [string]$Destination) {
     }
 }
 
+function Assert-SettingsFilePath([string]$Path) {
+    $entry = [IO.Path]::GetFullPath($Path)
+    if (-not [IO.Path]::IsPathFullyQualified($Path) -or
+        $Path.StartsWith('\\') -or $Path.StartsWith('//') -or $entry.StartsWith('\\')) {
+        throw 'Settings must use a fully qualified local file path.'
+    }
+    if (Test-Path -LiteralPath $entry -PathType Container) {
+        throw "Settings path is a directory: $entry"
+    }
+    while (-not [string]::IsNullOrEmpty($entry)) {
+        if (Test-Path -LiteralPath $entry) {
+            $item = Get-Item -LiteralPath $entry -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Refusing linked settings path: $entry"
+            }
+        }
+        $entry = [IO.Path]::GetDirectoryName($entry)
+    }
+}
+
+function Read-RequestedSettings([string]$Path) {
+    # Reject network/provider paths lexically before Resolve-Path or file access.
+    if ($Path.Contains('::') -or [IO.Path]::GetFullPath($Path.Replace('/', '\')).StartsWith('\\')) {
+        throw 'Settings source must be a local JSON file.'
+    }
+    $resolved = Resolve-Path -LiteralPath $Path
+    if ($resolved.Provider.Name -ne 'FileSystem') { throw 'Settings source must be a local JSON file.' }
+    Assert-SettingsFilePath $resolved.ProviderPath
+    [byte[]]$bytes = [IO.File]::ReadAllBytes($resolved.ProviderPath)
+    $stream = [IO.MemoryStream]::new($bytes, $false)
+    $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true), $true)
+    $document = $null
+    try {
+        # Validate the frozen bytes with the same strict JSON syntax as the app.
+        $document = [Text.Json.JsonDocument]::Parse($reader.ReadToEnd())
+        if ($document.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object) {
+            throw 'Settings JSON must contain an object.'
+        }
+    }
+    catch { throw "Invalid settings JSON in '$Path': $_" }
+    finally {
+        if ($null -ne $document) { $document.Dispose() }
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+    return ,$bytes
+}
+
+function Write-PermanentSettings([byte[]]$Bytes) {
+    Assert-SettingsFilePath $settingsPath
+    $directory = [IO.Path]::GetDirectoryName($settingsPath)
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $temporary = Join-Path $directory ('.settings-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllBytes($temporary, $Bytes)
+        if ([IO.File]::Exists($settingsPath)) {
+            [IO.File]::Replace($temporary, $settingsPath, [NullString]::Value)
+        }
+        else {
+            [IO.File]::Move($temporary, $settingsPath)
+        }
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($settingsPath)) -cne [Convert]::ToBase64String($Bytes)) {
+            throw 'Installed settings bytes do not match the requested file.'
+        }
+    }
+    finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+}
+
+function Assert-LiveStopped {
+    if (@(Get-LiveProcesses).Count -ne 0) {
+        throw 'The canonical app is still running; refusing to change its package or settings.'
+    }
+}
+
 # Serialize installs so two sessions cannot replace each other's package.
 $mutex = [Threading.Mutex]::new($false, 'Local\PttDictation-PermanentDeployment')
 $locked = $false
@@ -166,6 +249,13 @@ try {
         return
     }
 
+    $changeSettings = $PSBoundParameters.ContainsKey('SettingsSource')
+    $requestedSettings = $null
+    if ($changeSettings) {
+        $requestedSettings = Read-RequestedSettings $SettingsSource
+        Assert-SettingsFilePath $settingsPath
+    }
+
     $source = (Resolve-Path -LiteralPath $StagedPath).Path
     if ($source -eq $liveDirectory -or
         $source.StartsWith($liveDirectory + '\', [StringComparison]::OrdinalIgnoreCase) -or
@@ -186,12 +276,29 @@ try {
     # Check again immediately before stopping; preflight errors leave the app alone.
     $running = @(Get-LiveProcesses)
     if ($running.Count -gt 1) { throw 'Multiple canonical processes appeared during preparation.' }
+    # Capture the previous existence and exact bytes before shutdown. With no
+    # SettingsSource, settings are neither read nor written by the installer.
+    $previousSettingsExisted = $false
+    $previousSettings = $null
+    if ($changeSettings) {
+        Assert-SettingsFilePath $settingsPath
+        $previousSettingsExisted = [IO.File]::Exists($settingsPath)
+        if ($previousSettingsExisted) { $previousSettings = [IO.File]::ReadAllBytes($settingsPath) }
+    }
     $stopped = $false
     $installStarted = $false
+    $settingsAttempted = $false
     try {
         foreach ($process in $running) {
             $stopped = $true
             Stop-LiveProcess $process
+        }
+        Assert-LiveStopped
+        if ($changeSettings) {
+            # Mark the attempt before the atomic operation, so a verification
+            # failure after replacement also restores the old bytes.
+            $settingsAttempted = $true
+            Write-PermanentSettings $requestedSettings
         }
         $installStarted = $true
         Copy-PublishPackage $prepared $liveDirectory
@@ -211,14 +318,28 @@ try {
     catch {
         $installError = $_
         try {
-            if ($installStarted) {
+            if ($installStarted -or $settingsAttempted) {
                 foreach ($process in @(Get-LiveProcesses)) {
                     Stop-LiveProcess $process
                 }
+                Assert-LiveStopped
+            }
+            # Restore settings before package recovery and before any restart.
+            # If this fails, leave the app stopped and report recovery failure.
+            if ($settingsAttempted) {
+                if ($previousSettingsExisted) {
+                    Write-PermanentSettings $previousSettings
+                }
+                else {
+                    Assert-SettingsFilePath $settingsPath
+                    [IO.File]::Delete($settingsPath)
+                }
+            }
+            if ($installStarted) {
                 Copy-PublishPackage $backup $liveDirectory
                 Assert-PackageHashes $liveDirectory $oldHashes
             }
-            if (($stopped -or $installStarted) -and @(Get-LiveProcesses).Count -eq 0) {
+            if (($stopped -or $installStarted -or $settingsAttempted) -and @(Get-LiveProcesses).Count -eq 0) {
                 $null = Start-AndVerifyLive
                 Write-Warning 'Update failed; the previous package was restored and restarted at the permanent path.'
             }

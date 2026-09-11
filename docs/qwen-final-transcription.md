@@ -46,3 +46,17 @@ dotnet run --project tools/PttDictation.Replay -c Release -- --qwen-probe C:\Pro
 ```
 
 The configuration contains `pythonPath`, `qwenModelPath`, `workerPath`, `parakeetRuntimePath`, `parakeetModelPath`, and `samples` (each with `id`, `path`, and optional `expectedFragment`). It opens no microphone or textbox, changes no app settings, and starts its own recognizer workers. It verifies actual Parakeet previews followed by Qwen finals, near-silence, cancelling real inference, and recovery after cancellation and malformed audio. Output includes private transcripts: keep it in an ignored local directory. This is production code-path evidence, not proof of the user's exact native hotkey/textbox interaction.
+
+## Roll back this local Qwen trial
+
+For the prepared local trial, double-click `Rollback-Qwen.cmd` in this worktree. It validates `publish/rollback-before-qwen` against its saved hashes, restores the previous app and exact saved settings through `Update-LocalApp.ps1`, and restarts the app at the permanent pinned executable path. Finish or cancel any active dictation before running it. Keep this worktree and its ignored snapshot directory until the trial is accepted.
+
+The launcher restores the pre-trial settings, so settings edits made during the trial are replaced. The downloaded Qwen environment and model remain on disk for reuse, but the restored app does not use them. Selecting Parakeet in Settings is the smaller engine-only rollback if the new app itself works.
+
+The snapshot can be checked without stopping the app:
+
+```powershell
+pwsh -File scripts/Restore-LocalAppSnapshot.ps1 -SnapshotPath publish/rollback-before-qwen -VerifyOnly
+```
+
+`Update-LocalApp.ps1 -SettingsSource <file>` installs a package and settings together. It validates the settings before stopping the app and restores the previous package and settings if installation or startup fails. The destination remains the permanent installation; the supplied settings file cannot redirect it.
