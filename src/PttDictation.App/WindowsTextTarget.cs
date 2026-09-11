@@ -36,6 +36,8 @@ internal interface IWindowsTextSurface
     TextTargetSnapshot Read();
     bool Select(string prefix, string ownedText, string suffix);
     void RevealCaret();
+    // Refresh only the original provider reference; never adopt another editor.
+    bool TryRefreshOriginalReference() => false;
 }
 
 internal sealed class WindowsTextTarget : IWindowsTextTarget
@@ -59,6 +61,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private bool _conflicted;
     private bool _hasAcknowledgedWrite;
     private bool _initialDecorationDisappeared;
+    private bool _originalReferenceRefreshAttempted;
     private readonly string? _recordingId;
 
     public static IWindowsTextTarget Capture() => new WindowsTextTarget(AutomationTextSurface.Capture());
@@ -107,7 +110,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     {
         get
         {
-            try { return _surface.IsFocused; }
+            try { return ReadOriginalSurface(() => _surface.IsFocused); }
             catch (ElementNotAvailableException ex)
             {
                 // The captured automation reference cannot verify the original
@@ -133,7 +136,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 // Some unsupported editors expose no readable selection at all;
                 // their fallback still requires the exact captured field.
                 if (expected is null) return CanPasteFallback && IsFocused;
-                var current = _surface.Read();
+                var current = ReadOriginalSurface(_surface.Read);
                 var valid = current.IsConsistent && current == expected && IsFocused;
                 if (!valid) Trace("target.prepared_invalid", new { reason = "snapshot_or_focus_changed", current.IsConsistent, snapshotMatches = current == expected });
                 return valid;
@@ -154,7 +157,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         if (_conflicted) { Trace("target.conflict", new { reason = "previous_conflict" }); return TextTargetUpdateResult.Conflict; }
         try
         {
-            var snapshot = _surface.Read();
+            var snapshot = ReadOriginalSurface(_surface.Read);
             if (_unsentRetrySelection is { } retrySelection)
             {
                 if (snapshot != retrySelection) return Conflict("unsent_retry_selection_changed");
@@ -217,7 +220,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     return Conflict("select_owned_range_failed");
                 _selectionBeforeRequest = snapshot;
                 _selectionSince = _clock();
-                selected = _surface.Read();
+                selected = ReadOriginalSurface(_surface.Read);
             }
             else selected = snapshot;
             if (!IsFocused) return TextTargetUpdateResult.Unfocused;
@@ -277,6 +280,35 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         catch (Exception ex) when (ex is not TextTargetUnavailableException && IsProviderFailure(ex))
         {
             return Conflict("provider_failure", ex);
+        }
+    }
+
+    private T ReadOriginalSurface<T>(Func<T> read)
+    {
+        try { return read(); }
+        catch (ElementNotAvailableException) when (!_originalReferenceRefreshAttempted)
+        {
+            // Retry a read once, never selection or clipboard input. Do not
+            // acquire a new focused element: even UIA runtime IDs can be reused.
+            _originalReferenceRefreshAttempted = true;
+            Trace("target.original_reference_refresh_requested");
+            try
+            {
+                if (_surface.TryRefreshOriginalReference())
+                {
+                    var result = read();
+                    Trace("target.original_reference_refreshed");
+                    return result;
+                }
+            }
+            catch (Exception error) when (IsProviderFailure(error))
+            {
+                Trace("target.original_reference_refresh_failed",
+                    new { exceptionType = error.GetType().FullName, error.HResult });
+            }
+            // Preserve the original unavailable-reference error if refresh or
+            // its read fails. A secondary provider error must not mask it.
+            throw;
         }
     }
 
@@ -349,7 +381,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 internal sealed class AutomationTextSurface : IWindowsTextSurface
 {
     private readonly AutomationElement? _element;
-    private readonly TextPattern? _pattern;
+    private TextPattern? _pattern;
     private readonly IntPtr _foregroundWindow;
     private readonly bool _supportsReplacement;
 
@@ -419,6 +451,19 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
                 && hasKeyboardFocus && Automation.Compare(_element, AutomationElement.FocusedElement);
         }
     }
+    public bool TryRefreshOriginalReference()
+    {
+        // Capture queries the SAME AutomationElement and refreshes its pattern.
+        // A permanently unavailable element cannot pass these current-property
+        // reads; no new element is adopted from focus, position, text, or IDs.
+        if (_element is null || !IsFocused || !_supportsReplacement) return false;
+        var refreshed = Capture(_element);
+        if (!refreshed.SupportsReplacement || !refreshed.CanPasteFallback || !refreshed.IsFocused)
+            return false;
+        _pattern = refreshed._pattern;
+        return true;
+    }
+
     public bool SupportsReplacement => _supportsReplacement;
     public bool CanPasteFallback { get; }
 

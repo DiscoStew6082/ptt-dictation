@@ -8,7 +8,9 @@ internal sealed class LazyAssetTranscriber(
     Func<AppSettings> getSettings,
     Action<AppSettings> updateSettings,
     Action<string> reportStatus,
-    TranscriptionMode? modeOverride = null) : ITranscriber, IWarmableTranscriber, IDisposable
+    TranscriptionMode? modeOverride = null,
+    Func<RuntimeAssetInfo, CancellationToken, Task<string>>? resolveRuntime = null,
+    Func<CliTranscriberOptions, TranscriberKind, ITranscriber>? createTranscriber = null) : ITranscriber, IWarmableTranscriber, IDisposable
 {
     private readonly SemaphoreSlim _setupLock = new(1, 1);
     private ITranscriber? _inner;
@@ -28,30 +30,26 @@ internal sealed class LazyAssetTranscriber(
         var recordingId = DiagnosticTrace.CurrentRecordingId;
         DiagnosticTrace.Write("runtime.transcribe_requested", new { modeOverride = modeOverride?.ToString() }, recordingId: recordingId);
         var inner = await EnsureInnerAsync(cancellationToken);
+        var usedCuda = _cacheKey?.DevicePreference == DevicePreference.Cuda;
         try
         {
             return await inner.TranscribeAsync(wavPath, cancellationToken);
         }
-        catch (Exception ex) when (getSettings().DevicePreference == DevicePreference.Cuda)
+        catch (Exception ex) when (ex is not OperationCanceledException
+            && !cancellationToken.IsCancellationRequested && usedCuda)
         {
-            DiagnosticTrace.Write("runtime.cuda_retry", new { cancellationRequested = cancellationToken.IsCancellationRequested }, ex, recordingId);
-            reportStatus("CUDA transcription failed; retrying with CPU runtime.");
-            var settings = getSettings() with
-            {
-                DevicePreference = DevicePreference.Cpu,
-                RuntimePath = null
-            };
-            updateSettings(settings);
-            await settingsStore.SaveAsync(settings, cancellationToken);
+            DiagnosticTrace.Write("runtime.cuda_retry", new { cancellationRequested = false }, ex, recordingId);
+            reportStatus("CUDA transcription failed; retrying this request on CPU. The saved device choice is unchanged.");
             ClearInner();
-            inner = await EnsureInnerAsync(cancellationToken);
+            inner = await EnsureInnerAsync(cancellationToken, useCpuFallback: true);
             return await inner.TranscribeAsync(wavPath, cancellationToken);
         }
     }
 
-    private async Task<ITranscriber> EnsureInnerAsync(CancellationToken cancellationToken)
+    private async Task<ITranscriber> EnsureInnerAsync(CancellationToken cancellationToken, bool useCpuFallback = false)
     {
-        var startingSettings = EffectiveSettings(getSettings());
+        cancellationToken.ThrowIfCancellationRequested();
+        var startingSettings = SettingsForRuntime(getSettings(), useCpuFallback);
         if (_inner is not null && _cacheKey?.Matches(startingSettings) == true)
         {
             return _inner;
@@ -60,13 +58,14 @@ internal sealed class LazyAssetTranscriber(
         await _setupLock.WaitAsync(cancellationToken);
         try
         {
-            if (_inner is not null && _cacheKey?.Matches(EffectiveSettings(getSettings())) == true)
+            if (_inner is not null && _cacheKey?.Matches(SettingsForRuntime(getSettings(), useCpuFallback)) == true)
             {
                 return _inner;
             }
 
             Directory.CreateDirectory(appData);
             var settings = getSettings();
+            if (useCpuFallback) settings = settings with { DevicePreference = DevicePreference.Cpu, RuntimePath = null };
             var manager = new AssetManager(
                 appData,
                 new HttpFileDownloader(progress => reportStatus(FormatDownloadProgress(progress))));
@@ -75,7 +74,7 @@ internal sealed class LazyAssetTranscriber(
             {
                 var runtime = RuntimeAssetRegistry.CreateDefault().For(settings.DevicePreference);
                 reportStatus($"Downloading/verifying {runtime.Id} runtime.");
-                runtimePath = await manager.EnsureRuntimeAsync(runtime, cancellationToken);
+                runtimePath = resolveRuntime is null ? await manager.EnsureRuntimeAsync(runtime, cancellationToken) : await resolveRuntime(runtime, cancellationToken);
             }
 
             var registry = ModelRegistry.CreateDefault();
@@ -87,10 +86,16 @@ internal sealed class LazyAssetTranscriber(
                 modelPath = await manager.EnsureModelAsync(model, cancellationToken);
             }
 
+            var requestedSettings = settings;
             settings = settings with { RuntimePath = runtimePath, ModelPath = modelPath };
-            updateSettings(settings);
-            await settingsStore.SaveAsync(settings, cancellationToken);
-
+            if (!useCpuFallback && (requestedSettings.RuntimePath != runtimePath || requestedSettings.ModelPath != modelPath))
+            {
+                await settingsStore.TryUpdateAsync(current =>
+                    SameAssetSelection(requestedSettings, current)
+                        ? current with { RuntimePath = runtimePath, ModelPath = modelPath }
+                        : null,
+                    updateSettings, cancellationToken);
+            }
             var effectiveSettings = EffectiveSettings(settings);
             var options = new CliTranscriberOptions(runtimePath, modelPath, TimeSpan.FromMinutes(5));
             var runtimeDirectory = Path.GetDirectoryName(runtimePath);
@@ -98,7 +103,11 @@ internal sealed class LazyAssetTranscriber(
                 ? null
                 : Path.Combine(runtimeDirectory, "parakeet-server.exe");
             ClearInner();
-            if (serverPath is not null && File.Exists(serverPath))
+            if (createTranscriber is not null)
+            {
+                _inner = createTranscriber(options, TranscriberSelection.Resolve(effectiveSettings, model));
+            }
+            else if (serverPath is not null && File.Exists(serverPath))
             {
                 _inner = new PersistentParakeetServerTranscriber(options, serverPath);
             }
@@ -138,6 +147,18 @@ internal sealed class LazyAssetTranscriber(
 
         _inner = null;
         _cacheKey = null;
+    }
+
+    private static bool SameAssetSelection(AppSettings requested, AppSettings current) =>
+        requested.DevicePreference == current.DevicePreference
+        && string.Equals(requested.SelectedModelId, current.SelectedModelId, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(requested.RuntimePath, current.RuntimePath, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(requested.ModelPath, current.ModelPath, StringComparison.OrdinalIgnoreCase);
+
+    private AppSettings SettingsForRuntime(AppSettings settings, bool useCpuFallback)
+    {
+        var effective = EffectiveSettings(settings);
+        return useCpuFallback ? effective with { DevicePreference = DevicePreference.Cpu, RuntimePath = null } : effective;
     }
 
     private AppSettings EffectiveSettings(AppSettings settings)

@@ -12,6 +12,14 @@ internal sealed class SettingsForm : Form
     private readonly ModelRegistry _modelRegistry;
     private readonly Func<ModelInfo, CancellationToken, Task<string>> _downloadModelAsync;
     private readonly Func<ModelInfo, bool> _isModelDownloaded;
+    private readonly IQwenInstaller _qwenInstaller;
+    private readonly Button _installQwen = DarkTheme.Button("Download Qwen");
+    private readonly Button _cancelQwenSetup = DarkTheme.Button("Cancel setup");
+    private readonly ProgressBar _qwenSetupProgress = new();
+    private readonly Label _qwenSetupStatus = DarkTheme.HelpText(string.Empty);
+    private CancellationTokenSource? _qwenSetupCancellation;
+    private Task? _qwenSetupTask;
+    private bool _applyingSettings;
     private readonly ComboBox _model = new();
     private readonly Button _downloadModel = DarkTheme.Button("Download");
     private readonly Label _summary = new();
@@ -66,11 +74,22 @@ internal sealed class SettingsForm : Form
         ModelRegistry modelRegistry,
         Func<ModelInfo, CancellationToken, Task<string>> downloadModelAsync,
         Func<ModelInfo, bool> isModelDownloaded)
+        : this(settingsStore, modelRegistry, downloadModelAsync, isModelDownloaded, new QwenInstaller(AppPaths.RootDirectory))
+    {
+    }
+
+    internal SettingsForm(
+        AppSettingsStore settingsStore,
+        ModelRegistry modelRegistry,
+        Func<ModelInfo, CancellationToken, Task<string>> downloadModelAsync,
+        Func<ModelInfo, bool> isModelDownloaded,
+        IQwenInstaller qwenInstaller)
     {
         _settingsStore = settingsStore;
         _modelRegistry = modelRegistry;
         _downloadModelAsync = downloadModelAsync;
         _isModelDownloaded = isModelDownloaded;
+        _qwenInstaller = qwenInstaller;
 
         Text = "PTT Dictation - Settings";
         MinimumSize = new Size(800, 700);
@@ -97,7 +116,9 @@ internal sealed class SettingsForm : Form
     public void UseSettings(AppSettings settings)
     {
         _settings = settings;
-        ApplySettings(settings);
+        _applyingSettings = true;
+        try { ApplySettings(settings); }
+        finally { _applyingSettings = false; }
     }
 
     private void BuildLayout()
@@ -194,6 +215,7 @@ internal sealed class SettingsForm : Form
         AddField(transcription, "Final recognition", _finalEngine);
         _finalEngineStatus.SizeChanged += (_, _) => FitFinalEngineStatus();
         transcription.Controls.Add(_finalEngineStatus);
+        AddQwenSetupControls(transcription);
 
         _primarySections = new TableLayoutPanel
         {
@@ -250,7 +272,11 @@ internal sealed class SettingsForm : Form
             new FinalEngineOption(FinalTranscriptionEngine.Parakeet, "Parakeet"),
             new FinalEngineOption(FinalTranscriptionEngine.Qwen, "Qwen3-ASR 1.7B (NVIDIA GPU)")
         });
-        _finalEngine.SelectedIndexChanged += (_, _) => RefreshFinalEngineStatus();
+        _finalEngine.SelectedIndexChanged += (_, _) =>
+        {
+            RefreshFinalEngineStatus();
+            MarkChoiceUnsaved("Final recognition changed");
+        };
         SelectFinalEngine(FinalTranscriptionEngine.Parakeet);
 
         StyleSelector(_mode);
@@ -259,6 +285,7 @@ internal sealed class SettingsForm : Form
         StyleSelector(_device);
         _device.Dock = DockStyle.Top;
         _device.Items.AddRange(Enum.GetValues<DevicePreference>().Cast<object>().ToArray());
+        _device.SelectedIndexChanged += (_, _) => MarkChoiceUnsaved("Parakeet preview device changed");
 
         ConfigureCheckBox(_notifications, "Show tray notifications", 30, new Padding(0, 10, 0, 0));
         ConfigureCheckBox(
@@ -450,7 +477,7 @@ internal sealed class SettingsForm : Form
 
         var modeLabel = DarkTheme.Label("Mode");
         modeLabel.Margin = new Padding(0, 0, 6, 3);
-        var deviceLabel = DarkTheme.Label("Device");
+        var deviceLabel = DarkTheme.Label("Parakeet preview device");
         deviceLabel.Margin = new Padding(6, 0, 0, 3);
         _mode.Margin = new Padding(0, 0, 6, 0);
         _device.Margin = new Padding(6, 0, 0, 0);
@@ -831,6 +858,7 @@ internal sealed class SettingsForm : Form
             ? settings.TranscriptionMode
             : TranscriptionMode.Auto;
         RefreshModelDownloadState(selected);
+        RefreshQwenSetupState();
         RefreshCorrectionsList();
         StartNewCorrection();
         RefreshCorrectionPreview();
@@ -852,9 +880,10 @@ internal sealed class SettingsForm : Form
             StartNewCorrection();
         }
 
+        AppSettings requested;
         try
         {
-            _settings = BuildSettingsFromControls();
+            requested = BuildSettingsFromControls();
         }
         catch (InvalidOperationException ex)
         {
@@ -862,9 +891,25 @@ internal sealed class SettingsForm : Form
             return;
         }
 
-        await _settingsStore.SaveAsync(_settings, CancellationToken.None);
-        SettingsSaved?.Invoke(this, _settings);
-        _saveStatus.Text = "Saved. New dictations use these settings.";
+        _save.Enabled = false;
+        try
+        {
+            await _settingsStore.SaveAndPublishAsync(requested, PublishSavedSettings, CancellationToken.None);
+            _saveStatus.Text = "Saved. New dictations use these settings.";
+        }
+        catch (Exception error)
+        {
+            _saveStatus.Text = "Settings were not saved: " + error.Message;
+        }
+        finally { _save.Enabled = true; }
+    }
+
+    private void PublishSavedSettings(AppSettings settings)
+    {
+        _settings = settings;
+        _runtimePathOverride = settings.RuntimePath;
+        _modelPathOverride = settings.ModelPath;
+        SettingsSaved?.Invoke(this, settings);
     }
 
     private AppSettings BuildSettingsFromControls()
@@ -889,6 +934,7 @@ internal sealed class SettingsForm : Form
             throw new InvalidOperationException("Choose different keys for hold-to-talk and toggle-to-talk.");
         }
 
+        var selectedDevice = _device.SelectedItem is DevicePreference preference ? preference : DevicePreference.Cuda;
         return _settings with
         {
             HoldHotkey = holdHotkey,
@@ -896,9 +942,9 @@ internal sealed class SettingsForm : Form
             SelectedModelId = selectedModelId,
             TranscriptionMode = selectedMode,
             FinalTranscriptionEngine = SelectedFinalEngine(),
-            RuntimePath = EmptyToNull(_runtimePathOverride),
+            RuntimePath = selectedDevice == _settings.DevicePreference ? EmptyToNull(_runtimePathOverride) : null,
             ModelPath = modelPath,
-            DevicePreference = _device.SelectedItem is DevicePreference preference ? preference : DevicePreference.Cuda,
+            DevicePreference = selectedDevice,
             NotificationsEnabled = _notifications.Checked,
             AudibleStatusEnabled = _sounds.Checked,
             TranscriptCorrections = _correctionEditor.Rules.ToList()
@@ -920,19 +966,125 @@ internal sealed class SettingsForm : Form
     private void RefreshFinalEngineStatus()
     {
         _finalEngineStatus.Text = SelectedFinalEngine() == FinalTranscriptionEngine.Qwen
-            ? "Qwen replaces the live Parakeet text after you stop. " + QwenInstallation.Describe(AppPaths.RootDirectory)
+            ? "Qwen replaces the live Parakeet text after you stop, using the NVIDIA GPU. The preview device above controls Parakeet only."
             : "Parakeet provides live text and the final transcript. Mode and device apply to Parakeet.";
         FitFinalEngineStatus();
     }
 
-    private void FitFinalEngineStatus()
+    private void MarkChoiceUnsaved(string description)
     {
-        if (_finalEngineStatus.ClientSize.Width <= 0) return;
-        var requiredHeight = TextRenderer.MeasureText(_finalEngineStatus.Text, _finalEngineStatus.Font,
-            new Size(_finalEngineStatus.ClientSize.Width, int.MaxValue), TextFormatFlags.WordBreak).Height + 4;
-        if (_finalEngineStatus.Height != requiredHeight) _finalEngineStatus.Height = requiredHeight;
+        if (!_applyingSettings) _saveStatus.Text = description + ". Click Save to keep this choice.";
     }
 
+    private void FitFinalEngineStatus() => FitWrappedStatus(_finalEngineStatus);
+
+    private static void FitWrappedStatus(Label status)
+    {
+        if (status.ClientSize.Width <= 0) return;
+        var requiredHeight = TextRenderer.MeasureText(status.Text, status.Font,
+            new Size(status.ClientSize.Width, int.MaxValue), TextFormatFlags.WordBreak).Height + 4;
+        if (status.Height != requiredHeight) status.Height = requiredHeight;
+    }
+
+    private void AddQwenSetupControls(TableLayoutPanel fields)
+    {
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top, AutoSize = true, WrapContents = true,
+            BackColor = DarkTheme.Surface, Margin = new Padding(0, 4, 0, 4)
+        };
+        _installQwen.AutoSize = true;
+        _installQwen.MinimumSize = new Size(140, 36);
+        _installQwen.Click += async (_, _) => await InstallQwenAsync();
+        _cancelQwenSetup.AutoSize = true;
+        _cancelQwenSetup.MinimumSize = new Size(110, 36);
+        _cancelQwenSetup.Enabled = false;
+        _cancelQwenSetup.Click += (_, _) => CancelQwenSetup();
+        buttons.Controls.Add(_installQwen);
+        buttons.Controls.Add(_cancelQwenSetup);
+        fields.Controls.Add(buttons);
+        _qwenSetupProgress.Dock = DockStyle.Top;
+        _qwenSetupProgress.Height = 14;
+        _qwenSetupProgress.Visible = false;
+        fields.Controls.Add(_qwenSetupProgress);
+        _qwenSetupStatus.SizeChanged += (_, _) => FitWrappedStatus(_qwenSetupStatus);
+        fields.Controls.Add(_qwenSetupStatus);
+        RefreshQwenSetupState();
+    }
+
+    private void RefreshQwenSetupState()
+    {
+        if (_qwenSetupCancellation is not null) return;
+        var status = _qwenInstaller.GetStatus();
+        _installQwen.Text = status.IsReady ? "Check Qwen setup" : "Download Qwen";
+        _installQwen.Enabled = true;
+        SetQwenSetupStatus(status.Message);
+    }
+
+    private void SetQwenSetupStatus(string message)
+    {
+        _qwenSetupStatus.Text = message;
+        FitWrappedStatus(_qwenSetupStatus);
+    }
+
+    private Task InstallQwenAsync()
+    {
+        if (_qwenSetupTask is { IsCompleted: false }) return _qwenSetupTask;
+        _qwenSetupTask = RunQwenSetupAsync();
+        return _qwenSetupTask;
+    }
+
+    private async Task RunQwenSetupAsync()
+    {
+        using var cancellation = new CancellationTokenSource();
+        _qwenSetupCancellation = cancellation;
+        _installQwen.Enabled = false;
+        _installQwen.Text = "Setting up Qwen";
+        _cancelQwenSetup.Enabled = true;
+        _qwenSetupProgress.Visible = true;
+        _qwenSetupProgress.Style = ProgressBarStyle.Marquee;
+        SetQwenSetupStatus("Preparing Qwen setup...");
+        var progress = new Progress<QwenSetupProgress>(value =>
+        {
+            if (IsDisposed || cancellation.IsCancellationRequested || !ReferenceEquals(_qwenSetupCancellation, cancellation)) return;
+            SetQwenSetupStatus(value.Message);
+            _qwenSetupProgress.Style = value.Percent is null ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
+            if (value.Percent is { } percent) _qwenSetupProgress.Value = Math.Clamp(percent, 0, 100);
+        });
+        try
+        {
+            var status = await _qwenInstaller.InstallAsync(progress, cancellation.Token);
+            if (!IsDisposed) SetQwenSetupStatus(status.Message);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (!IsDisposed) SetQwenSetupStatus("Qwen setup cancelled. You can retry when ready.");
+        }
+        catch (Exception error)
+        {
+            if (!IsDisposed) SetQwenSetupStatus("Qwen setup failed: " + error.Message);
+        }
+        finally
+        {
+            _qwenSetupCancellation = null;
+            if (!IsDisposed)
+            {
+                _cancelQwenSetup.Enabled = false;
+                _qwenSetupProgress.Visible = false;
+                var ready = _qwenInstaller.GetStatus().IsReady;
+                _installQwen.Text = ready ? "Check Qwen setup" : "Download Qwen";
+                _installQwen.Enabled = true;
+            }
+        }
+    }
+
+    private void CancelQwenSetup()
+    {
+        if (_qwenSetupCancellation is null) return;
+        _cancelQwenSetup.Enabled = false;
+        SetQwenSetupStatus("Cancelling Qwen setup...");
+        _qwenSetupCancellation.Cancel();
+    }
     private void RefreshHotkeySummary()
     {
         var hold = SelectedHotkeyFromControl(_holdHotkey, AppSettings.Default.HoldHotkey);
@@ -1000,9 +1152,8 @@ internal sealed class SettingsForm : Form
         try
         {
             _modelPathOverride = await _downloadModelAsync(model, CancellationToken.None);
-            _settings = BuildSettingsFromControls();
-            await _settingsStore.SaveAsync(_settings, CancellationToken.None);
-            SettingsSaved?.Invoke(this, _settings);
+            var requested = BuildSettingsFromControls();
+            await _settingsStore.SaveAndPublishAsync(requested, PublishSavedSettings, CancellationToken.None);
             _modelStatus.Text = $"{model.DisplayName} is ready locally.";
             RefreshModelDownloadState(model);
         }
@@ -1247,6 +1398,12 @@ internal sealed class SettingsForm : Form
     }
 
     internal string FinalEngineStatusForTest => _finalEngineStatus.Text;
+    internal Button QwenInstallButtonForTest => _installQwen;
+    internal bool QwenCancelEnabledForTest => _cancelQwenSetup.Enabled;
+    internal string QwenSetupStatusForTest => _qwenSetupStatus.Text;
+    internal int QwenSetupPercentForTest => _qwenSetupProgress.Value;
+    internal Task InstallQwenForTest() => InstallQwenAsync();
+    internal void CancelQwenSetupForTest() => CancelQwenSetup();
 
     internal string SummaryTextForTest => _summary.Text;
 
@@ -1457,6 +1614,12 @@ internal sealed class SettingsForm : Form
         }
 
         return true;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _qwenSetupCancellation?.Cancel();
+        base.Dispose(disposing);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

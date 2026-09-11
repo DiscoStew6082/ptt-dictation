@@ -6,11 +6,22 @@ internal static class QwenInstallation
 {
     public static string ManifestPath(string appData) => Path.Combine(appData, "qwen-installation.json");
 
+    internal static (string Python, string Model) ReadRegisteredPaths(string appData)
+    {
+        var path = ManifestPath(appData);
+        if (!File.Exists(path)) throw new InvalidOperationException("Qwen is not installed. Open Settings and choose Download Qwen.");
+        using var manifest = JsonDocument.Parse(File.ReadAllText(path));
+        if (manifest.RootElement.GetProperty("schema").GetInt32() != 1)
+            throw new InvalidOperationException("This Qwen installation manifest version is not supported.");
+        return (LocalPath(manifest.RootElement.GetProperty("pythonPath").GetString()),
+            LocalPath(manifest.RootElement.GetProperty("modelPath").GetString()));
+    }
+
     public static QwenTranscriberOptions Load(string appData)
     {
         var path = ManifestPath(appData);
         if (!File.Exists(path))
-            throw new InvalidOperationException("Qwen is not set up. Run scripts/Register-QwenInstallation.ps1 with your local Qwen installation, or select Parakeet in Settings.");
+            throw new InvalidOperationException("Qwen is not installed. Open Settings and choose Download Qwen, or select Parakeet.");
         using var manifest = JsonDocument.Parse(File.ReadAllText(path));
         var entry = manifest.RootElement;
         if (entry.GetProperty("schema").GetInt32() != 1)
@@ -18,7 +29,7 @@ internal static class QwenInstallation
         var python = LocalPath(entry.GetProperty("pythonPath").GetString());
         var model = LocalPath(entry.GetProperty("modelPath").GetString());
         if (!File.Exists(python) || !Directory.Exists(model))
-            throw new InvalidOperationException("The configured Qwen runtime or model is missing. Register the local installation again.");
+            throw new InvalidOperationException("The configured Qwen runtime or model is missing. Open Settings and choose Download Qwen to repair it.");
         using var config = JsonDocument.Parse(File.ReadAllText(Path.Combine(model, "config.json")));
         if (config.RootElement.GetProperty("model_type").GetString() != "qwen3_asr"
             || config.RootElement.GetProperty("text_config").GetProperty("hidden_size").GetInt32() != 2048)
@@ -36,7 +47,10 @@ internal static class QwenInstallation
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)
             || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
             throw new InvalidOperationException("Qwen runtime and model paths must be absolute local paths.");
-        return Path.GetFullPath(path);
+        var full = Path.GetFullPath(path);
+        if (full.StartsWith(@"\\", StringComparison.Ordinal))
+            throw new InvalidOperationException("Qwen runtime and model paths must be absolute local paths.");
+        return full;
     }
 
     public static bool IsAvailable(string appData)

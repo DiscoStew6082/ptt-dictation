@@ -79,6 +79,7 @@ public enum DevicePreference
 
 public sealed class AppSettingsStore(string path)
 {
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -93,7 +94,7 @@ public sealed class AppSettingsStore(string path)
         }
 
         await using var stream = File.OpenRead(path);
-        return await JsonSerializer.DeserializeAsync<AppSettings>(stream, JsonOptions, cancellationToken)
+        return await JsonSerializer.DeserializeAsync<AppSettings>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
             ?? AppSettings.Default;
     }
 
@@ -110,13 +111,65 @@ public sealed class AppSettingsStore(string path)
 
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken)
     {
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { await WriteAsync(settings, cancellationToken).ConfigureAwait(false); }
+        finally { _writeGate.Release(); }
+    }
 
-        await using var stream = File.Create(path);
-        await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, cancellationToken);
+    // UI callers publish their committed choice on their own context before a derived
+    // settings update can acquire the gate. SaveAsync remains context-independent.
+    public async Task SaveAndPublishAsync(
+        AppSettings settings,
+        Action<AppSettings> onCommitted,
+        CancellationToken cancellationToken)
+    {
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await WriteAsync(settings, cancellationToken);
+            onCommitted(settings);
+        }
+        finally { _writeGate.Release(); }
+    }
+    // Derived values share the explicit-save gate and merge with the latest saved choices.
+    public async Task TryUpdateAsync(
+        Func<AppSettings, AppSettings?> update,
+        Action<AppSettings> onCommitted,
+        CancellationToken cancellationToken)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var updated = update(Load());
+            if (updated is null) return;
+            await WriteAsync(updated, cancellationToken).ConfigureAwait(false);
+            onCommitted(updated);
+        }
+        finally { _writeGate.Release(); }
+    }
+
+    private async Task WriteAsync(AppSettings settings, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var destination = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(destination)!;
+        Directory.CreateDirectory(directory);
+        var temporary = destination + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                bufferSize: 4096, FileOptions.Asynchronous))
+            {
+                await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, destination, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
     }
 }

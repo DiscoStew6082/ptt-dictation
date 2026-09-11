@@ -10,15 +10,23 @@ Keep the destination textbox available until final recognition finishes. A submi
 
 ## Local setup
 
-The app package includes the worker, but does not include Python, PyTorch, or model weights. Reuse a trusted, already provisioned local environment or provision one using the versions and model revision recorded in [the isolated comparison guide](../tools/asr-benchmark/README.md). The validated environment uses Python 3.12, PyTorch 2.11.0 with CUDA 12.8, Transformers 5.13.0, and the native `Qwen/Qwen3-ASR-1.7B-hf` checkpoint at revision `bcd2b5b7f32b480ab5790554cfa8347f246a14f3`. The original `qwen-asr` wrapper has a different dependency route and is not used here.
+Open **Settings**, select Qwen under **Final recognition**, and choose **Download Qwen**. Setup reports progress and supports **Cancel**. Once ready, save Settings to use Qwen for final recognition; installation does not change the selected engine by itself. **Check Qwen setup** validates a registered installation and repairs a missing/broken runtime without modifying that existing Python environment.
 
-Register absolute local paths with PowerShell 7:
+Setup first checks the registered model against the pinned file sizes and SHA-256 hashes. A healthy local model is reused directly, including the model downloaded for the isolated comparison. A healthy runtime is also reused after checking Python, Torch, Transformers, CUDA/BF16 support, and the offline model processor. This check does not load the full model into GPU memory.
+
+For a new installation, setup uses a private directory under `%LOCALAPPDATA%\PttDictation\qwen`. It downloads [Astral's portable Python 3.12.14 Windows runtime](https://github.com/astral-sh/python-build-standalone/releases/tag/20260901), checks the published SHA-256, and extracts only ordinary files/directories inside that private location. It does not install global Python or change PATH. The first setup needs several GB of disk space and downloads: the model alone is approximately 4.1 GB, plus the CUDA runtime and Python dependencies.
+
+The packaged setup resources pin all 58 dependency wheels to exact trusted URLs and SHA-256 hashes. Pip installs binary wheels with hash checking and no unpinned dependency resolution, following its [secure-install guidance](https://pip.pypa.io/en/stable/topics/secure-installs/). The selected versions are Python 3.12.14, [PyTorch 2.11.0 with CUDA 12.8](https://pytorch.org/get-started/previous-versions/), Transformers 5.13.0, and `Qwen/Qwen3-ASR-1.7B-hf` at revision `bcd2b5b7f32b480ab5790554cfa8347f246a14f3`. The original `qwen-asr` wrapper is not used.
+
+Completed model/runtime downloads are reused on retry; partial model downloads resume when the server supports ranges. Cancelling stops only setup's owned child processes. A failed or cancelled setup leaves the existing registration unchanged. The new `%LOCALAPPDATA%\PttDictation\qwen-installation.json` is replaced atomically only after validation succeeds. Setup has a two-hour overall deadline, a 45-minute package-install deadline, and a 90-second runtime-validation deadline. Downloads fail after 60 seconds without a response/data rather than hanging indefinitely.
+
+Manual registration remains available for an already provisioned trusted local environment:
 
 ```powershell
 pwsh -File scripts/Register-QwenInstallation.ps1 -PythonPath 'C:\Qwen\runtime\Scripts\python.exe' -ModelPath 'C:\Qwen\models\qwen3-asr-1.7b-hf'
 ```
 
-This verifies the installed interpreter's Transformers and CUDA support, checks the model family/size, and writes `%LOCALAPPDATA%\PttDictation\qwen-installation.json`. It downloads nothing, moves no model files, and does not change the active engine. `-ValidateOnly` performs validation without registration. Then choose Qwen under **Final recognition** and save Settings. The status label checks registered files; actual model loading checks runtime viability.
+This advanced route downloads nothing and does not change the active engine. `-ValidateOnly` checks the supplied installation without registering it.
 
 Both transcription engines operate locally. The Qwen worker forces offline model loading and does not bind a network port. Its owned Windows job releases the worker even if the app exits abruptly. Worker failure, malformed responses, wrong response IDs, startup timeout, and request timeout do not yield a fabricated successful transcript. Startup has a 90-second deadline and each final request a 120-second deadline. A later request can start a fresh worker.
 
@@ -60,3 +68,23 @@ pwsh -File scripts/Restore-LocalAppSnapshot.ps1 -SnapshotPath publish/rollback-b
 ```
 
 `Update-LocalApp.ps1 -SettingsSource <file>` installs a package and settings together. It validates the settings before stopping the app and restores the previous package and settings if installation or startup fails. The destination remains the permanent installation; the supplied settings file cannot redirect it.
+
+## September 11 settings and setup repair
+
+The Parakeet preview device preference is retained across cancellation, temporary GPU failure, asynchronous asset provisioning, and relaunch. A temporary CPU retry no longer saves CPU over a chosen CUDA preference. Changing the device clears the previous runtime override so the new choice resolves the matching runtime. Settings writes use an atomic replacement; explicit and derived writes publish in the same order.
+
+The Qwen setup button remains available for a registered installation as **Check Qwen setup**. A missing installation shows **Download Qwen**. Both states are independent of the Parakeet model download button.
+
+A final insertion can refresh the text pattern on its original accessibility element once after a transient read failure. This never adopts a newly focused editor and never retries selection or paste dispatch. A permanently unavailable editor still ends safely with the final transcript retained in History; the recorded native editor-loss incident has not been proven to be transient.
+
+Validation on September 11, 2026:
+
+- Full Release suite: 358 passed, zero failures/skips; separate Settings layout capture passed.
+- Settings regressions cover cancellation, atomic save failure, device changes, concurrent provisioning, UI publication ordering, and caller-thread publication.
+- Installer regressions cover integrity checks, cancellation, bounded processes/downloads, registration preservation, repair, and retry.
+- Real existing-model/runtime validation passed with all HTTP requests blocked and registration redirected to a scratch location.
+- Real portable Python download, hash verification, extraction, and one pinned wheel installation passed. A complete fresh 58-wheel installation was not repeated.
+- The cached CUDA runtime transcribed a saved 7.758-second recording successfully; its server log confirmed CUDA0 on the RTX 3060. This does not establish transcription accuracy.
+- Exact native tray-menu and hotkey/textbox acceptance remains unverified. Available automation cannot right-click the notification-area icon; isolated form tests and layout images are supporting evidence only.
+
+For rollback of this repair, double-click Rollback-Settings-Changes.cmd. It restores the verified app and settings from immediately before these changes (commit 49008e2), using the snapshot at C:\Users\stewa\projects\par-win-ptt\publish\rollback-before-settings-recovery. Finish or cancel dictation first. Settings edits made after that snapshot are replaced. The earlier pre-Qwen snapshot and Rollback-Qwen.cmd remain available in the original trial worktree.

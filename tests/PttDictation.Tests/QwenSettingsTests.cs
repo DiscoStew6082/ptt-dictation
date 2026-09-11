@@ -181,6 +181,136 @@ public sealed class QwenSettingsTests
         }
     }
 
+    [TestMethod]
+    public void QwenSetupShowsProgressAndReadyStateWithoutChangingFinalEngine()
+    {
+        RunOnSta(() =>
+        {
+            IProgress<QwenSetupProgress>? progress = null;
+            var finish = new TaskCompletionSource<QwenSetupStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var installer = new SetupInstaller((report, _) => { progress = report; return finish.Task; });
+            using var form = SetupForm(installer);
+            Assert.IsTrue(form.QwenInstallButtonForTest.Enabled);
+            Assert.AreEqual("Download Qwen", form.QwenInstallButtonForTest.Text);
+            var operation = form.InstallQwenForTest();
+            Assert.IsFalse(form.QwenInstallButtonForTest.Enabled);
+            Assert.IsTrue(form.QwenCancelEnabledForTest);
+            progress!.Report(new QwenSetupProgress("Downloading model", 42));
+            PumpUntil(() => form.QwenSetupPercentForTest == 42);
+            StringAssert.Contains(form.QwenSetupStatusForTest, "Downloading model");
+            finish.SetResult(new QwenSetupStatus(true, "Qwen is ready locally."));
+            PumpUntil(() => operation.IsCompleted);
+            operation.GetAwaiter().GetResult();
+            Assert.AreEqual("Check Qwen setup", form.QwenInstallButtonForTest.Text);
+            Assert.IsTrue(form.QwenInstallButtonForTest.Enabled);
+            Assert.IsFalse(form.QwenCancelEnabledForTest);
+            Assert.AreEqual(FinalTranscriptionEngine.Parakeet, form.SelectedFinalEngineForTest);
+        });
+    }
+
+    [TestMethod]
+    public void QwenSetupCanCancelAndRetryWithoutPrompting()
+    {
+        RunOnSta(() =>
+        {
+            var calls = 0;
+            var installer = new SetupInstaller(async (_, token) =>
+            {
+                if (++calls == 1) await Task.Delay(Timeout.Infinite, token);
+                return new QwenSetupStatus(true, "Ready after retry.");
+            });
+            using var form = SetupForm(installer);
+            var operation = form.InstallQwenForTest();
+            form.CancelQwenSetupForTest();
+            PumpUntil(() => operation.IsCompleted);
+            operation.GetAwaiter().GetResult();
+            StringAssert.Contains(form.QwenSetupStatusForTest, "cancelled");
+            Assert.IsTrue(form.QwenInstallButtonForTest.Enabled);
+            var retry = form.InstallQwenForTest();
+            PumpUntil(() => retry.IsCompleted);
+            retry.GetAwaiter().GetResult();
+            Assert.AreEqual("Check Qwen setup", form.QwenInstallButtonForTest.Text);
+            Assert.AreEqual(2, calls);
+        });
+    }
+
+    [TestMethod]
+    public void FailedQwenSetupRemainsActionableAndDisposalCancelsOwnedSetup()
+    {
+        RunOnSta(() =>
+        {
+            var calls = 0;
+            CancellationToken setupToken = default;
+            var installer = new SetupInstaller(async (_, token) =>
+            {
+                if (++calls == 1) throw new IOException("Insufficient disk space.");
+                setupToken = token;
+                await Task.Delay(Timeout.Infinite, token);
+                return new QwenSetupStatus(true, "Ready");
+            });
+            var form = SetupForm(installer);
+            try
+            {
+                var failed = form.InstallQwenForTest();
+                PumpUntil(() => failed.IsCompleted);
+                failed.GetAwaiter().GetResult();
+                StringAssert.Contains(form.QwenSetupStatusForTest, "Insufficient disk space");
+                Assert.IsTrue(form.QwenInstallButtonForTest.Enabled);
+                var retry = form.InstallQwenForTest();
+                form.Dispose();
+                Assert.IsTrue(setupToken.IsCancellationRequested);
+                PumpUntil(() => retry.IsCompleted);
+                retry.GetAwaiter().GetResult();
+            }
+            finally { form.Dispose(); }
+        });
+    }
+
+    [TestMethod]
+    public void AlreadyInstalledQwenHasVisibleReadyButtonWithoutStartingDownloads()
+    {
+        RunOnSta(() =>
+        {
+            var installer = new SetupInstaller((_, _) => throw new AssertFailedException("No download should start."))
+            { Status = new QwenSetupStatus(true, "Qwen is installed locally.") };
+            using var form = SetupForm(installer);
+            Assert.AreEqual("Check Qwen setup", form.QwenInstallButtonForTest.Text);
+            Assert.IsTrue(form.QwenInstallButtonForTest.Enabled);
+            StringAssert.Contains(form.QwenSetupStatusForTest, "installed locally");
+        });
+    }
+
+    private static SettingsForm SetupForm(IQwenInstaller installer)
+    {
+        var form = new SettingsForm(new AppSettingsStore(Path.Combine(Path.GetTempPath(), $"qwen-setup-{Guid.NewGuid():N}.json")),
+            ModelRegistry.CreateDefault(), (_, _) => throw new AssertFailedException("Parakeet download not requested."),
+            _ => true, installer);
+        form.UseSettings(AppSettings.Default);
+        return form;
+    }
+
+    private sealed class SetupInstaller(Func<IProgress<QwenSetupProgress>?, CancellationToken, Task<QwenSetupStatus>> install) : IQwenInstaller
+    {
+        public QwenSetupStatus Status { get; set; } = new(false, "Qwen has not been installed.");
+        public QwenSetupStatus GetStatus() => Status;
+        public async Task<QwenSetupStatus> InstallAsync(IProgress<QwenSetupProgress>? progress, CancellationToken token)
+        {
+            Status = await install(progress, token);
+            return Status;
+        }
+    }
+
+    private static void PumpUntil(Func<bool> completed)
+    {
+        var deadline = Environment.TickCount64 + 5000;
+        while (!completed())
+        {
+            if (Environment.TickCount64 >= deadline) Assert.Fail("Settings operation did not finish.");
+            Application.DoEvents();
+            Thread.Sleep(1);
+        }
+    }
+
     private sealed class Recorder : IChunkedAudioRecorder
     {
         public event Action<RecordedAudio>? AudioChunkReady;

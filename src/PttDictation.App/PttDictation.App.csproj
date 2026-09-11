@@ -16,6 +16,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\..\tools\qwen-installer\assets.json" LogicalName="PttDictation.QwenSetup.assets.json" />
+    <EmbeddedResource Include="..\..\tools\qwen-installer\requirements-win-cu128.txt" LogicalName="PttDictation.QwenSetup.requirements-win-cu128.txt" />
     <Content Include="..\..\tools\qwen-worker\qwen_worker.py" Link="qwen-worker\qwen_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 

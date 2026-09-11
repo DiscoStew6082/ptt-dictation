@@ -354,12 +354,142 @@ public sealed class WindowsTextTargetTests
         Assert.AreEqual("before selected after", surface.Document);
     }
 
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void TransientOriginalReferenceReadRecoversFinalWithoutDuplicatingPreview(bool focusRead)
+    {
+        var surface = new FakeSurface("prefix ", "", " suffix") { RefreshOriginalReference = true };
+        var target = new WindowsTextTarget(surface);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "preview", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "preview", surface.Paste));
+        surface.AutomationAvailable = !focusRead;
+        surface.ReadAvailable = focusRead;
+
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("preview", "corrected final", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("preview", "corrected final", surface.Paste));
+        Assert.AreEqual("prefix corrected final suffix", surface.Document);
+        Assert.AreEqual(2, surface.Pastes);
+        Assert.AreEqual(1, surface.RefreshCalls);
+    }
+
+    [TestMethod]
+    public void OriginalReferenceRefreshStillRejectsChangedDocument()
+    {
+        var surface = new FakeSurface("prefix ", "", " suffix") { RefreshOriginalReference = true };
+        var target = new WindowsTextTarget(surface);
+        target.TryReplace("", "preview", surface.Paste);
+        target.TryReplace("", "preview", surface.Paste);
+        surface.Prefix = "edited preview";
+        surface.AutomationAvailable = false;
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("preview", "final", surface.Paste));
+        Assert.AreEqual("edited preview suffix", surface.Document);
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void OriginalReferenceRefreshDoesNotDuplicatePendingWrite()
+    {
+        var surface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var target = new WindowsTextTarget(surface);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "final", surface.Paste));
+        surface.ReadAvailable = false;
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "final", surface.Paste));
+        Assert.AreEqual(1, surface.Pastes);
+        Assert.AreEqual(1, surface.RefreshCalls);
+    }
+
+    [TestMethod]
+    public void OriginalReferenceReadRecoveryIsLimitedToOneAttemptPerRecording()
+    {
+        var surface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var target = new WindowsTextTarget(surface);
+        surface.AutomationAvailable = false;
+        Assert.IsTrue(target.IsFocused);
+        surface.AutomationAvailable = false;
+        Assert.Throws<TextTargetUnavailableException>(() => _ = target.IsFocused);
+        Assert.AreEqual(1, surface.RefreshCalls);
+        Assert.AreEqual(0, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void OriginalReferenceRecoveryNeverRetriesSelectionOrPaste()
+    {
+        var surface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var target = new WindowsTextTarget(surface);
+        surface.SelectionAvailable = false;
+        Assert.Throws<TextTargetUnavailableException>(() => target.TryReplace("", "final", surface.Paste));
+        Assert.AreEqual(0, surface.RefreshCalls);
+        Assert.AreEqual(0, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void OriginalReferenceRecoveryNeverRepeatsThrowingPasteCallback()
+    {
+        var surface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var target = new WindowsTextTarget(surface);
+        var callbacks = 0;
+        Assert.Throws<TextTargetUnavailableException>(() => target.TryReplace("", "final", _ =>
+        {
+            callbacks++;
+            throw new ElementNotAvailableException();
+        }));
+        Assert.AreEqual(1, callbacks);
+        Assert.AreEqual(0, surface.RefreshCalls);
+    }
+
+    [TestMethod]
+    public void FailedOriginalReferenceRefreshPreservesUnavailableContext()
+    {
+        var surface = new FakeSurface("", "", "")
+        {
+            RefreshException = new System.Runtime.InteropServices.COMException("secondary provider failure")
+        };
+        var target = new WindowsTextTarget(surface);
+        surface.AutomationAvailable = false;
+        var error = Assert.Throws<TextTargetUnavailableException>(() => _ = target.IsFocused);
+        Assert.IsInstanceOfType<ElementNotAvailableException>(error.InnerException);
+        Assert.AreEqual(1, surface.RefreshCalls);
+        Assert.AreEqual(0, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void OriginalReferenceRefreshPreservesPendingSelectionDeadline()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var surface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var target = new WindowsTextTarget(surface, () => now);
+        target.TryReplace("", "preview", surface.Paste);
+        target.TryReplace("", "preview", surface.Paste);
+        surface.DelaySelection = true;
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("preview", "final", surface.Paste));
+        now += TimeSpan.FromMilliseconds(1900);
+        surface.ReadAvailable = false;
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("preview", "final", surface.Paste));
+        now += TimeSpan.FromMilliseconds(101);
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("preview", "final", surface.Paste));
+        Assert.AreEqual(2, surface.SelectCalls);
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
     private sealed class FakeSurface(string prefix, string selection, string suffix) : IWindowsTextSurface
     {
         public string Prefix { get; set; } = prefix;
         public string Selection { get; set; } = selection;
         public string Suffix { get; set; } = suffix;
         public string Document => Prefix + Selection + Suffix;
+        public bool RefreshOriginalReference { get; init; }
+        public int RefreshCalls { get; private set; }
+        public Exception? RefreshException { get; init; }
+        public bool TryRefreshOriginalReference()
+        {
+            RefreshCalls++;
+            if (RefreshException is not null) throw RefreshException;
+            if (!RefreshOriginalReference) return false;
+            AutomationAvailable = true;
+            ReadAvailable = true;
+            return true;
+        }
         public bool AutomationAvailable { get; set; } = true;
         public bool ReadAvailable { get; set; } = true;
         public bool SelectionAvailable { get; set; } = true;
@@ -374,7 +504,7 @@ public sealed class WindowsTextTargetTests
         public bool LoseFocusDuringSelection { get; init; }
         public bool SelectWrongRange { get; init; }
         public bool DelayPaste { get; init; }
-        public bool DelaySelection { get; init; }
+        public bool DelaySelection { get; set; }
         public bool DiscardSurroundingsOnFirstPaste { get; init; }
         public int Pastes { get; private set; }
         public int SelectCalls { get; private set; }
