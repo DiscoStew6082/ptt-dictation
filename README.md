@@ -4,7 +4,7 @@
 
 PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold your selected hold-to-talk key, speak, and release: the app records a temporary 16 kHz mono WAV and inserts live transcription into the original textbox when its editor supports safe text replacement. The final recognition result replaces that recording's text in place. Other supported editable fields receive one final paste. The defaults are Right Ctrl for hold-to-talk and Right Shift for toggle-to-talk.
 
-It is named for the workflow rather than a particular AI vendor or model. The built-in transcription engine currently uses Parakeet models through `parakeet.cpp`, while the application core talks to a replaceable transcription interface.
+It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. An optional local Qwen3-ASR 1.7B GPU worker can provide the final transcript after Stop. Existing installations continue using Parakeet until Qwen is selected in Settings. See [Qwen final transcription](docs/qwen-final-transcription.md) for setup and behavior.
 
 ## Overview
 
@@ -23,7 +23,7 @@ It is named for the workflow rather than a particular AI vendor or model. The bu
 - If text insertion fails or Windows loses access to the captured editor reference, PTT automatically stops recording, finishes recognition, and keeps the transcript in Session History. The textbox may still be visible when its automation reference fails. Final recognition remains cancellable; after completion, another dictation can start normally.
 - If Windows loses that reference after every final word was confirmed inserted, PTT completes with the inserted preview instead of reporting failure for unapplied capitalization or final punctuation. History preserves the actual inserted text and the separately formatted final recognition. Missing words, an unconfirmed write, or a changed document still produce a failure with the transcript retained.
 - Cancellable finalization and first-use runtime/model downloads.
-- Local transcription with downloadable Parakeet runtime/model assets.
+- Local transcription with downloadable Parakeet runtime/model assets. Optional Qwen final recognition keeps the existing live preview and hotkeys, then revises the completed transcript after Stop. Each recording keeps the final-engine choice it started with.
 - Session-only transcript history with raw preview, corrected preview, final recognition, phrase replacements, and final formatting comparisons. Failed insertion preserves the completed transcript here for copying.
 - Runtime/model path overrides for local experimentation.
 - Dark-mode-first Windows Forms UI.

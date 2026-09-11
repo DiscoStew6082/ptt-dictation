@@ -15,6 +15,10 @@
     <EmbeddedResource Include="Assets\TrayActive.ico" LogicalName="PttDictation.TrayActive.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\..\tools\qwen-worker\qwen_worker.py" Link="qwen-worker\qwen_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <AssemblyName>PttDictation</AssemblyName>

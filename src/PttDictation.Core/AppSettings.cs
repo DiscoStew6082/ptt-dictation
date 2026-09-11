@@ -9,6 +9,7 @@ public sealed record AppSettings
     public DictationHotkey ToggleHotkey { get; init; } = DictationHotkey.RightShift;
     public string SelectedModelId { get; init; } = ModelRegistry.DefaultModelId;
     public TranscriptionMode TranscriptionMode { get; init; } = TranscriptionMode.Auto;
+    public FinalTranscriptionEngine FinalTranscriptionEngine { get; init; } = FinalTranscriptionEngine.Parakeet;
     public string? RuntimePath { get; init; }
     public string? ModelPath { get; init; }
     public DevicePreference DevicePreference { get; init; } = DevicePreference.Cuda;
@@ -60,6 +61,13 @@ public enum TranscriptionMode
     Auto,
     Batch,
     Streaming
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<FinalTranscriptionEngine>))]
+public enum FinalTranscriptionEngine
+{
+    Parakeet,
+    Qwen
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DevicePreference>))]

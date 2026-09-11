@@ -4,6 +4,9 @@ using NAudio.Wave;
 using PttDictation.App;
 using PttDictation.Core;
 
+if (args.Length == 3 && args[0] == "--qwen-probe")
+    return await QwenIntegrationProbe.RunAsync(args[1], args[2]);
+
 if (args.Length == 2 && args[0] == "--notepad-probe")
     return NativeInsertionProbe.Run(args[1]);
 if (args.Length == 3 && args[0] == "--saved-notepad-recovery-probe")
@@ -123,6 +126,7 @@ finally
 
 sealed class ReplayTextOutput : ILiveClipboardPaster
 {
+    public event Action<Exception>? InsertionFailed { add { } remove { } }
     public List<string> Previews { get; } = [];
     public string? FinalText { get; private set; }
     public void CaptureTarget() => DiagnosticTrace.Write("replay.output_captured");

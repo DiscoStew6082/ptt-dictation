@@ -9,6 +9,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AppSettingsStore _settingsStore = new(AppPaths.SettingsPath);
     private readonly WasapiAudioRecorder _recorder;
     private readonly LazyAssetTranscriber _transcriber;
+    private readonly ConfiguredFinalTranscriber _finalTranscriber;
     private readonly DictationWorkflow _dictationWorkflow;
     private readonly LiveClipboardPaster _livePaster;
     private readonly DictationPresentation _dictationPresentation;
@@ -47,9 +48,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             () => _settings,
             settings => _settings = settings,
             message => workflow?.ReportProcessingDetail(message));
+        _finalTranscriber = new ConfiguredFinalTranscriber(_transcriber, () => _settings,
+            AppPaths.RootDirectory, message => workflow?.ReportProcessingDetail(message));
         _livePaster = new LiveClipboardPaster();
         workflow = new DictationWorkflow(
-            new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, _transcriber),
+            new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, () => _finalTranscriber.CreateSessionTranscriber()),
             _livePaster,
             _history,
             getTranscriptCorrections: () => _settings.TranscriptCorrections,
@@ -369,6 +372,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _statusOverlay.Dispose();
         _settingsForm?.Dispose();
         _historyForm?.Dispose();
+        _finalTranscriber.Dispose();
         _transcriber.Dispose();
         _ = Task.Run(_recorder.Dispose);
         _lifetime.Dispose();

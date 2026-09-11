@@ -19,6 +19,8 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _holdHotkey = new();
     private readonly ComboBox _toggleHotkey = new();
     private readonly ComboBox _mode = new();
+    private readonly ComboBox _finalEngine = new();
+    private readonly Label _finalEngineStatus = DarkTheme.HelpText(string.Empty);
     private readonly ComboBox _device = new();
     private readonly CheckBox _notifications = new();
     private readonly CheckBox _sounds = new();
@@ -189,6 +191,9 @@ internal sealed class SettingsForm : Form
         var transcription = CreateStack(DarkTheme.Surface);
         AddModelField(transcription);
         AddTranscriptionOptions(transcription);
+        AddField(transcription, "Final recognition", _finalEngine);
+        _finalEngineStatus.SizeChanged += (_, _) => FitFinalEngineStatus();
+        transcription.Controls.Add(_finalEngineStatus);
 
         _primarySections = new TableLayoutPanel
         {
@@ -236,6 +241,17 @@ internal sealed class SettingsForm : Form
             RefreshModeOptions(selectedModel);
             RefreshModelDownloadState(selectedModel);
         };
+
+        StyleSelector(_finalEngine);
+        _finalEngine.Dock = DockStyle.Top;
+        _finalEngine.DisplayMember = nameof(FinalEngineOption.Label);
+        _finalEngine.Items.AddRange(new object[]
+        {
+            new FinalEngineOption(FinalTranscriptionEngine.Parakeet, "Parakeet"),
+            new FinalEngineOption(FinalTranscriptionEngine.Qwen, "Qwen3-ASR 1.7B (NVIDIA GPU)")
+        });
+        _finalEngine.SelectedIndexChanged += (_, _) => RefreshFinalEngineStatus();
+        SelectFinalEngine(FinalTranscriptionEngine.Parakeet);
 
         StyleSelector(_mode);
         _mode.Dock = DockStyle.Top;
@@ -386,7 +402,7 @@ internal sealed class SettingsForm : Form
 
     private void AddModelField(TableLayoutPanel fields)
     {
-        fields.Controls.Add(DarkTheme.Label("Model"));
+        fields.Controls.Add(DarkTheme.Label("Parakeet model"));
 
         var row = new WidthConstrainedTableLayoutPanel
         {
@@ -804,6 +820,7 @@ internal sealed class SettingsForm : Form
         _correctionEditor = new TranscriptCorrectionEditor(settings.TranscriptCorrections);
         _device.SelectedItem = settings.DevicePreference;
         _mode.SelectedItem = settings.TranscriptionMode;
+        SelectFinalEngine(settings.FinalTranscriptionEngine);
         _notifications.Checked = settings.NotificationsEnabled;
         _sounds.Checked = settings.AudibleStatusEnabled;
 
@@ -847,7 +864,7 @@ internal sealed class SettingsForm : Form
 
         await _settingsStore.SaveAsync(_settings, CancellationToken.None);
         SettingsSaved?.Invoke(this, _settings);
-        _saveStatus.Text = "Saved. New dictations use these rules.";
+        _saveStatus.Text = "Saved. New dictations use these settings.";
     }
 
     private AppSettings BuildSettingsFromControls()
@@ -878,6 +895,7 @@ internal sealed class SettingsForm : Form
             ToggleHotkey = toggleHotkey,
             SelectedModelId = selectedModelId,
             TranscriptionMode = selectedMode,
+            FinalTranscriptionEngine = SelectedFinalEngine(),
             RuntimePath = EmptyToNull(_runtimePathOverride),
             ModelPath = modelPath,
             DevicePreference = _device.SelectedItem is DevicePreference preference ? preference : DevicePreference.Cuda,
@@ -885,6 +903,34 @@ internal sealed class SettingsForm : Form
             AudibleStatusEnabled = _sounds.Checked,
             TranscriptCorrections = _correctionEditor.Rules.ToList()
         };
+    }
+
+    private sealed record FinalEngineOption(FinalTranscriptionEngine Value, string Label);
+
+    private FinalTranscriptionEngine SelectedFinalEngine() =>
+        _finalEngine.SelectedItem is FinalEngineOption option ? option.Value : FinalTranscriptionEngine.Parakeet;
+
+    private void SelectFinalEngine(FinalTranscriptionEngine engine)
+    {
+        _finalEngine.SelectedItem = _finalEngine.Items.Cast<FinalEngineOption>()
+            .FirstOrDefault(option => option.Value == engine) ?? _finalEngine.Items[0];
+        RefreshFinalEngineStatus();
+    }
+
+    private void RefreshFinalEngineStatus()
+    {
+        _finalEngineStatus.Text = SelectedFinalEngine() == FinalTranscriptionEngine.Qwen
+            ? "Qwen replaces the live Parakeet text after you stop. " + QwenInstallation.Describe(AppPaths.RootDirectory)
+            : "Parakeet provides live text and the final transcript. Mode and device apply to Parakeet.";
+        FitFinalEngineStatus();
+    }
+
+    private void FitFinalEngineStatus()
+    {
+        if (_finalEngineStatus.ClientSize.Width <= 0) return;
+        var requiredHeight = TextRenderer.MeasureText(_finalEngineStatus.Text, _finalEngineStatus.Font,
+            new Size(_finalEngineStatus.ClientSize.Width, int.MaxValue), TextFormatFlags.WordBreak).Height + 4;
+        if (_finalEngineStatus.Height != requiredHeight) _finalEngineStatus.Height = requiredHeight;
     }
 
     private void RefreshHotkeySummary()
@@ -1192,6 +1238,16 @@ internal sealed class SettingsForm : Form
         }
     }
 
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal FinalTranscriptionEngine SelectedFinalEngineForTest
+    {
+        get => SelectedFinalEngine();
+        set => SelectFinalEngine(value);
+    }
+
+    internal string FinalEngineStatusForTest => _finalEngineStatus.Text;
+
     internal string SummaryTextForTest => _summary.Text;
 
     [Browsable(false)]
@@ -1217,7 +1273,7 @@ internal sealed class SettingsForm : Form
     internal string[] SectionTitlesForTest => [.. _sectionTitles];
 
     internal bool SelectorsUseDarkFlatStyleForTest =>
-        new[] { _holdHotkey, _toggleHotkey, _model, _mode, _device }.All(selector =>
+        new[] { _holdHotkey, _toggleHotkey, _model, _mode, _device, _finalEngine }.All(selector =>
             selector.FlatStyle == FlatStyle.Flat
             && selector.BackColor == DarkTheme.SurfaceRaised
             && selector.ForeColor == DarkTheme.Text);

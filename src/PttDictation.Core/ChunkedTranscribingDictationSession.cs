@@ -4,7 +4,7 @@ public sealed class ChunkedTranscribingDictationSessionFactory : IDictationSessi
 {
     private readonly IChunkedAudioRecorder _recorder;
     private readonly ITranscriber _previewTranscriber;
-    private readonly ITranscriber _finalTranscriber;
+    private readonly Func<ITranscriber> _finalTranscriberFactory;
 
     public ChunkedTranscribingDictationSessionFactory(IChunkedAudioRecorder recorder, ITranscriber transcriber)
         : this(recorder, transcriber, transcriber)
@@ -15,15 +15,23 @@ public sealed class ChunkedTranscribingDictationSessionFactory : IDictationSessi
         IChunkedAudioRecorder recorder,
         ITranscriber previewTranscriber,
         ITranscriber finalTranscriber)
+        : this(recorder, previewTranscriber, () => finalTranscriber)
+    {
+    }
+
+    public ChunkedTranscribingDictationSessionFactory(
+        IChunkedAudioRecorder recorder,
+        ITranscriber previewTranscriber,
+        Func<ITranscriber> finalTranscriberFactory)
     {
         _recorder = recorder;
         _previewTranscriber = previewTranscriber;
-        _finalTranscriber = finalTranscriber;
+        _finalTranscriberFactory = finalTranscriberFactory;
     }
 
     public IDictationSession CreateSession()
     {
-        return new ChunkedTranscribingDictationSession(_recorder, _previewTranscriber, _finalTranscriber);
+        return new ChunkedTranscribingDictationSession(_recorder, _previewTranscriber, _finalTranscriberFactory());
     }
 }
 
@@ -90,7 +98,7 @@ public sealed class ChunkedTranscribingDictationSession(
         {
             await recorder.StartAsync(cancellationToken);
             Trace("chunk_session.started");
-            BeginPreviewWarmUp();
+            BeginTranscriberWarmUp(cancellationToken);
         }
         catch (Exception ex)
         {
@@ -108,26 +116,35 @@ public sealed class ChunkedTranscribingDictationSession(
         }
     }
 
-    private void BeginPreviewWarmUp()
+    private void BeginTranscriberWarmUp(CancellationToken operationToken)
     {
-        if (previewTranscriber is IWarmableTranscriber warmable)
+        if (previewTranscriber is IWarmableTranscriber preview)
         {
-            _ = WarmUpWithoutBlockingRecordingAsync(warmable);
+            _ = Task.Run(() => WarmUpWithoutBlockingRecordingAsync(preview, "preview", operationToken));
+        }
+
+        if (!ReferenceEquals(previewTranscriber, finalTranscriber)
+            && finalTranscriber is IWarmableTranscriber final)
+        {
+            // The operation survives StopAsync cancelling obsolete preview chunks.
+            _ = Task.Run(() => WarmUpWithoutBlockingRecordingAsync(final, "final", operationToken));
         }
     }
 
-    private async Task WarmUpWithoutBlockingRecordingAsync(IWarmableTranscriber warmable)
+    private async Task WarmUpWithoutBlockingRecordingAsync(
+        IWarmableTranscriber warmable, string role, CancellationToken operationToken)
     {
         using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
         try
         {
-            Trace("preview.warmup_started");
-            await warmable.WarmUpAsync(CancellationToken.None);
-            Trace("preview.warmup_completed");
+            operationToken.ThrowIfCancellationRequested();
+            Trace($"{role}.warmup_started");
+            await warmable.WarmUpAsync(operationToken);
+            Trace($"{role}.warmup_completed");
         }
         catch (Exception ex)
         {
-            Trace(ex is OperationCanceledException ? "preview.warmup_cancelled" : "preview.warmup_failed", error: ex);
+            Trace(ex is OperationCanceledException ? $"{role}.warmup_cancelled" : $"{role}.warmup_failed", error: ex);
         }
     }
 
