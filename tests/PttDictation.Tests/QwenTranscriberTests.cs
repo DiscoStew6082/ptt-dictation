@@ -117,11 +117,18 @@ public sealed class QwenTranscriberTests
     public async Task RequestTimeoutIsExplicitAndAllowsANewWorker()
     {
         using var fixture = new WorkerFixture("hang", "normal");
-        using var adapter = fixture.CreateAdapter(requestTimeout: TimeSpan.FromMilliseconds(250));
+        // This exercises timeout recovery, not PowerShell's subsecond throughput under CI load.
+        using var adapter = fixture.CreateAdapter(requestTimeout: TimeSpan.FromSeconds(3));
         await adapter.WarmUpAsync(CancellationToken.None);
-        await Assert.ThrowsExactlyAsync<TimeoutException>(() => adapter.TranscribeAsync(fixture.Audio(), CancellationToken.None));
+        var timedOut = adapter.TranscribeAsync(fixture.Audio(), CancellationToken.None);
+        await fixture.WaitForRequestsAsync(1);
+        await Assert.ThrowsExactlyAsync<TimeoutException>(() => timedOut);
+        Assert.AreEqual(1, fixture.FactoryCalls, "The timed-out request must not silently replay.");
         await fixture.AssertOwnedProcessesExitedAsync();
-        Assert.IsTrue((await adapter.TranscribeAsync(fixture.Audio("retry.wav"), CancellationToken.None)).Text.StartsWith("heard:"));
+        var retry = fixture.Audio("retry.wav");
+        Assert.AreEqual("heard:" + retry, (await adapter.TranscribeAsync(retry, CancellationToken.None)).Text);
+        Assert.AreEqual(2, fixture.FactoryCalls);
+        Assert.AreEqual(2, fixture.RequestIds.Length);
     }
 
     [TestMethod]
@@ -242,6 +249,9 @@ public sealed class QwenTranscriberTests
                 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
                 [System.IO.File]::AppendAllText($ProcessLog, $PID.ToString() + [Environment]::NewLine)
                 if ($Mode -eq 'hang-start') { while ($true) { Start-Sleep -Seconds 1 } }
+                # Readiness includes loading the JSON protocol cmdlets, as it does for the real worker.
+                $null = '{"warmup":true}' | ConvertFrom-Json
+                $null = @{ warmup = $true } | ConvertTo-Json -Compress
                 if ($Mode -eq 'bad-ready') { [Console]::WriteLine('{"type":"ready","protocol":2}') }
                 else { [Console]::WriteLine('{"type":"ready","protocol":1}') }
                 while ($null -ne ($line = [Console]::ReadLine())) {

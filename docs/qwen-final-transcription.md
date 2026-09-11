@@ -57,7 +57,7 @@ The configuration contains `pythonPath`, `qwenModelPath`, `workerPath`, `parakee
 
 ## Roll back this local Qwen trial
 
-For the prepared local trial, double-click `Rollback-Qwen.cmd` in this worktree. It validates `publish/rollback-before-qwen` against its saved hashes, restores the previous app and exact saved settings through `Update-LocalApp.ps1`, and restarts the app at the permanent pinned executable path. Finish or cancel any active dictation before running it. Keep this worktree and its ignored snapshot directory until the trial is accepted.
+For the prepared local trial, double-click `Rollback-Qwen.cmd` in the main checkout. It validates `publish/rollback-before-qwen` against its saved hashes, restores the previous app and exact saved settings through `Update-LocalApp.ps1`, and restarts the app at the permanent pinned executable path. Finish or cancel any active dictation before running it. The ignored snapshot is stored under the main checkout.
 
 The launcher restores the pre-trial settings, so settings edits made during the trial are replaced. The downloaded Qwen environment and model remain on disk for reuse, but the restored app does not use them. Selecting Parakeet in Settings is the smaller engine-only rollback if the new app itself works.
 
@@ -87,4 +87,4 @@ Validation on September 11, 2026:
 - The cached CUDA runtime transcribed a saved 7.758-second recording successfully; its server log confirmed CUDA0 on the RTX 3060. This does not establish transcription accuracy.
 - Exact native tray-menu and hotkey/textbox acceptance remains unverified. Available automation cannot right-click the notification-area icon; isolated form tests and layout images are supporting evidence only.
 
-For rollback of this repair, double-click Rollback-Settings-Changes.cmd. It restores the verified app and settings from immediately before these changes (commit 49008e2), using the snapshot at C:\Users\stewa\projects\par-win-ptt\publish\rollback-before-settings-recovery. Finish or cancel dictation first. Settings edits made after that snapshot are replaced. The earlier pre-Qwen snapshot and Rollback-Qwen.cmd remain available in the original trial worktree.
+For rollback of this repair, double-click Rollback-Settings-Changes.cmd. It restores the verified app and settings from immediately before these changes (commit 49008e2), using the snapshot at C:\Users\stewa\projects\par-win-ptt\publish\rollback-before-settings-recovery. Finish or cancel dictation first. Settings edits made after that snapshot are replaced. The earlier pre-Qwen snapshot and Rollback-Qwen.cmd are also available in the main checkout.
