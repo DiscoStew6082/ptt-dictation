@@ -38,7 +38,7 @@ public sealed class PasteInputTests
         Assert.IsFalse(HookEvent(source, 0xA3, false, WindowsPasteInput.InputMarker));
         Assert.IsFalse(HookEvent(source, 0xA3, true, WindowsPasteInput.InputMarker));
         Assert.AreEqual(0, toggles);
-        Assert.IsTrue(HookEvent(source, 0xA2, true, 0));
+        Assert.IsFalse(HookEvent(source, 0xA2, true, 0), "Physical modifier releases must reach Windows.");
         Assert.AreEqual(1, presses);
         Assert.AreEqual(1, releases);
         Assert.IsTrue(HookEvent(source, 0xA3, false, 12345));

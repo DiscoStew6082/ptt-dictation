@@ -112,13 +112,13 @@ internal sealed class GlobalHotkeySource : IDisposable
         {
             _holdPressed = false;
             Released?.Invoke();
-            return true;
+            return !IsModifierKey(virtualKey);
         }
 
         if (isKeyUp && _togglePressed && virtualKey == _activeToggleVirtualKey)
         {
             _togglePressed = false;
-            return true;
+            return !IsModifierKey(virtualKey);
         }
 
         if (isKeyDown && virtualKey == _holdVirtualKey)
@@ -135,7 +135,7 @@ internal sealed class GlobalHotkeySource : IDisposable
 
         if (isKeyUp && virtualKey == _holdVirtualKey)
         {
-            return true;
+            return !IsModifierKey(virtualKey);
         }
 
         if (isKeyDown && virtualKey == _toggleVirtualKey)
@@ -152,11 +152,13 @@ internal sealed class GlobalHotkeySource : IDisposable
 
         if (isKeyUp && virtualKey == _toggleVirtualKey)
         {
-            return true;
+            return !IsModifierKey(virtualKey);
         }
 
         return false;
     }
+
+    private static bool IsModifierKey(int virtualKey) => virtualKey is >= 0xA0 and <= 0xA5;
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 

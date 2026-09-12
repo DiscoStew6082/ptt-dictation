@@ -42,6 +42,27 @@ public sealed class HotkeySourceTests
     }
 
     [TestMethod]
+    public void ModifierHotkeyReleasesPassThroughToClearWindowsModifierState()
+    {
+        using var hotkeySource = new GlobalHotkeySource(DictationHotkey.RightControl, DictationHotkey.RightShift);
+        var releases = 0;
+        var toggles = 0;
+        hotkeySource.Released += () => releases++;
+        hotkeySource.ToggleRequested += () => toggles++;
+
+        var control = GlobalHotkeySource.VirtualKeyForTest(DictationHotkey.RightControl);
+        Assert.IsTrue(hotkeySource.ProcessKeyEventForTest(control, GlobalHotkeySource.KeyDownMessageForTest));
+        Assert.IsFalse(hotkeySource.ProcessKeyEventForTest(control, GlobalHotkeySource.KeyUpMessageForTest));
+
+        var shift = GlobalHotkeySource.VirtualKeyForTest(DictationHotkey.RightShift);
+        Assert.IsTrue(hotkeySource.ProcessKeyEventForTest(shift, GlobalHotkeySource.KeyDownMessageForTest));
+        Assert.IsFalse(hotkeySource.ProcessKeyEventForTest(shift, GlobalHotkeySource.KeyUpMessageForTest));
+
+        Assert.AreEqual(1, releases);
+        Assert.AreEqual(1, toggles);
+    }
+
+    [TestMethod]
     public void ReconfiguredKeysTakeEffectWithoutReinstallingHook()
     {
         using var hotkeySource = new GlobalHotkeySource(DictationHotkey.RightControl, DictationHotkey.RightShift);
