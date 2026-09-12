@@ -166,6 +166,27 @@ public sealed class LiveInsertionFailureWorkflowTests
     }
 
     [TestMethod]
+    public async Task InsertionFailureRemainsPrimaryWhenStoppingRecorderAlsoFails()
+    {
+        var session = new FinishingSession
+        {
+            StopError = new InvalidOperationException("Windows could not record from the microphone.")
+        };
+        var output = new SignallingOutput();
+        var workflow = new DictationWorkflow(new SingleDictationSessionFactory(session), output, new SessionHistory());
+        var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        workflow.StateChanged += state => { if (state.Phase == DictationWorkflowPhase.Failed) failed.TrySetResult(); };
+        await workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None);
+
+        output.Fail();
+        await failed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.AreEqual(1, session.StopCount);
+        StringAssert.Contains(workflow.CurrentState.ErrorMessage!, "Automation reference is unavailable.");
+        Assert.IsFalse(workflow.CurrentState.ErrorMessage!.Contains("microphone", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
     public async Task UserStopAndQueuedFailureShareOneStopAndRemainCancellable()
     {
         var dispatcher = new QueuedContext();
@@ -262,6 +283,7 @@ public sealed class LiveInsertionFailureWorkflowTests
         public int StopCount { get; private set; }
         public int CancelCount { get; private set; }
         public TaskCompletionSource? StartRelease { get; init; }
+        public Exception? StopError { get; init; }
         public async Task StartAsync(CancellationToken cancellationToken)
         {
             if (StartRelease is not null) await StartRelease.Task.WaitAsync(cancellationToken);
@@ -272,6 +294,7 @@ public sealed class LiveInsertionFailureWorkflowTests
             Recording = false;
             StopCount++;
             StopRequested.TrySetResult();
+            if (StopError is not null) throw StopError;
             return new(new TranscriptResult(await Final.Task.WaitAsync(cancellationToken), null, null));
         }
         public Task CancelAsync(CancellationToken cancellationToken) { Recording = false; CancelCount++; return Task.CompletedTask; }

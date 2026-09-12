@@ -286,6 +286,13 @@ public sealed class DictationWorkflow
             if (TryCompleteAcknowledgedPreview(comparison, operation,
                 sessionResultCleanupWarningPath ?? session.CleanupWarningPath)) return;
             Trace("workflow.finish_failed", error: ex);
+            Exception? insertionFailure;
+            lock (_gate) insertionFailure = _insertionFailure;
+            // An output failure can stop a newly started recorder almost
+            // immediately. If recorder shutdown then fails too, keep the
+            // original output error user-facing instead of misreporting the
+            // secondary shutdown problem as a microphone capture failure.
+            var reportedError = insertionFailure ?? ex;
             var retained = comparison?.FinalText;
             if (_clipboardPaster is ILiveClipboardPaster)
             {
@@ -295,7 +302,7 @@ public sealed class DictationWorkflow
             Publish(new DictationWorkflowState(
                 DictationWorkflowPhase.Failed,
                 Transcript: retained ?? string.Empty,
-                ErrorMessage: ex.Message + (_clipboardPaster is ILiveClipboardPaster && !string.IsNullOrWhiteSpace(retained)
+                ErrorMessage: reportedError.Message + (_clipboardPaster is ILiveClipboardPaster && !string.IsNullOrWhiteSpace(retained)
                     ? " Your transcript is available in Session History." : string.Empty),
                 CleanupWarningPath: sessionResultCleanupWarningPath ?? session.CleanupWarningPath));
         }
