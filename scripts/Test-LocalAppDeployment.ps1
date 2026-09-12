@@ -6,7 +6,7 @@ Set-StrictMode -Version Latest
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ptt-deployment-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $installer = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Update-LocalApp.ps1') -Raw
-$fixedPath = 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64'
+$fixedPath = 'C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64'
 $fixedSettingsInitialization = '$settingsPath = Join-Path $env:LOCALAPPDATA ''PttDictation\settings.json'''
 if ([regex]::Matches($installer, [regex]::Escape($fixedPath)).Count -ne 1 -or
     [regex]::Matches($installer, [regex]::Escape($fixedSettingsInitialization)).Count -ne 1) {

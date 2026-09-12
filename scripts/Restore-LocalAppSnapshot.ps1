@@ -17,7 +17,7 @@ foreach ($entry in Get-ChildItem -LiteralPath $snapshotRoot -Recurse -Force) {
     if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Rollback snapshot contains a linked entry.' }
 }
 $manifest = Get-Content -LiteralPath (Join-Path $snapshotRoot 'snapshot.json') -Raw | ConvertFrom-Json -AsHashtable
-$permanentExe = 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe'
+$permanentExe = 'C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe'
 if ($manifest.Schema -ne 1 -or $manifest.ExecutablePath -ne $permanentExe) {
     throw 'Snapshot is not for this permanent PTT installation.'
 }

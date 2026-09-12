@@ -138,7 +138,7 @@ dotnet test PttDictation.sln
 dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\next-build
 ```
 
-The build is staged in `publish\next-build`. To update this machine's existing installation, run `pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build`. The permanent executable remains `C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`; pin that executable to Start. The installer verifies the files and running process at that exact path and attempts rollback if installation fails. See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and the complete development and release workflow.
+The build is staged in `publish\next-build`. To update this machine's existing installation, run `pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build`. The permanent executable remains `C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`; pin that executable to Start. The installer verifies the files and running process at that exact path and attempts rollback if installation fails. See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and the complete development and release workflow.
 
 ## Validation
 

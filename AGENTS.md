@@ -6,7 +6,7 @@
 
 ## Permanent local installation and pinned shortcuts
 
-- The user's permanent executable is `C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`. Start-menu pins must continue to target this exact path across updates.
+- The user's permanent executable is `C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`. Start-menu pins must continue to target this exact path across updates.
 - For every authorized local app update, validate the intended source/package, publish to a separate staging directory, then run `pwsh -File scripts\Update-LocalApp.ps1 -StagedPath <staging-directory>`. This script is required for local deployment; never leave the user running a staging, experimental, versioned, or worktree executable.
 - Do not publish directly over the live directory, relocate or delete it, or change the script's fixed destination without explicit user approval to relocate the installation and migrate shortcuts. A successful source build alone is not an installed update.
 - The script checks the package, installs at the fixed path, verifies all package hashes and one normally launched process with no arguments, and attempts to restore/restart the previous package if installation fails. Report any failed recovery explicitly. It retains a backup and a deployment receipt; these are not alternative launch locations.

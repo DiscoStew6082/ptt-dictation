@@ -27,7 +27,7 @@ dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x6
 pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build
 ```
 
-The deployment script deliberately fixes the destination to `C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`, independent of the current directory or worktree. Keep Start-menu pins pointed there. It requires an existing installation, rejects incomplete or linked packages, checks every installed file's SHA-256, and verifies exactly one normally launched process at that path with no arguments. An installation failure triggers restoration and restart of the previous package; recovery failures are reported explicitly. The previous package is retained in a `.backup-*` directory for recovery, and the installed package receives `deployment-receipt.json` with hashes and the fixed executable path.
+The deployment script deliberately fixes the destination to `C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`, independent of the current directory or worktree. Keep Start-menu pins pointed there. It requires an existing installation, rejects incomplete or linked packages, checks every installed file's SHA-256, and verifies exactly one normally launched process at that path with no arguments. An installation failure triggers restoration and restart of the previous package; recovery failures are reported explicitly. The previous package is retained in a `.backup-*` directory for recovery, and the installed package receives `deployment-receipt.json` with hashes and the fixed executable path.
 
 To inspect the installation without replacing files or restarting the app:
 

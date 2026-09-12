@@ -25,7 +25,7 @@ Set-StrictMode -Version Latest
 
 # This is deliberately independent of cwd and worktrees. Do not add a destination
 # override: an intentional relocation also requires migrating the user's shortcuts.
-$liveDirectory = 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64'
+$liveDirectory = 'C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64'
 $publishDirectory = Split-Path $liveDirectory -Parent
 $liveExe = Join-Path $liveDirectory 'PttDictation.exe'
 $receiptName = 'deployment-receipt.json'

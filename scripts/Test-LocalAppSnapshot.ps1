@@ -12,7 +12,7 @@ try {
     foreach ($file in Get-ChildItem -LiteralPath $fixtureRoot -Recurse -File) {
         $hashes[[IO.Path]::GetRelativePath($fixtureRoot, $file.FullName)] = (Get-FileHash -LiteralPath $file.FullName).Hash
     }
-    $manifest = @{ Schema = 1; SourceCommit = 'fixture'; ExecutablePath = 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe'; Files = $hashes }
+    $manifest = @{ Schema = 1; SourceCommit = 'fixture'; ExecutablePath = 'C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe'; Files = $hashes }
     $manifestPath = Join-Path $fixtureRoot 'snapshot.json'
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath
     $result = & $restore -SnapshotPath $fixtureRoot -VerifyOnly
