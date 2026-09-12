@@ -15,8 +15,9 @@ Security fixes are intended for the latest release only. Supported builds target
 - Runtime and model path overrides trust the selected local files. Do not point the app at untrusted executables or models.
 - The low-level keyboard hook is used to detect the push-to-talk hotkey while the app is running.
 - Runtime/model downloads contact upstream hosts on first use unless local paths are configured.
+- The release installer contacts the GitHub API and this repository's GitHub Releases. It accepts only the exact Windows package and checksum asset names, verifies the package SHA-256 before extraction, rejects linked or non-local installation paths, and does not modify transcript settings.
 
-Release artifacts should publish SHA-256 checksums at minimum. The repository release workflow also produces a CycloneDX SBOM, and public tag builds produce GitHub artifact attestations. Code signing is recommended for broad public distribution.
+Release artifacts should publish SHA-256 checksums at minimum. The repository release workflow also produces a CycloneDX SBOM, public tag builds produce GitHub artifact attestations, and tagged releases include the PowerShell installer. The installer and application are not yet code-signed, so users should obtain them only from this repository's release page. Code signing is recommended for broad public distribution.
 
 ## Reporting a Vulnerability
 

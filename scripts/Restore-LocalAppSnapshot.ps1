@@ -3,7 +3,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$SnapshotPath,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [ValidateNotNullOrEmpty()]
+    [string]$InstallDirectory = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\PttDictation')
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -17,7 +19,7 @@ foreach ($entry in Get-ChildItem -LiteralPath $snapshotRoot -Recurse -Force) {
     if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Rollback snapshot contains a linked entry.' }
 }
 $manifest = Get-Content -LiteralPath (Join-Path $snapshotRoot 'snapshot.json') -Raw | ConvertFrom-Json -AsHashtable
-$permanentExe = 'C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe'
+$permanentExe = Join-Path ([IO.Path]::GetFullPath($InstallDirectory)) 'PttDictation.exe'
 if ($manifest.Schema -ne 1 -or $manifest.ExecutablePath -ne $permanentExe) {
     throw 'Snapshot is not for this permanent PTT installation.'
 }
@@ -41,8 +43,8 @@ if ($VerifyOnly) {
     return
 }
 $updater = Join-Path $PSScriptRoot 'Update-LocalApp.ps1'
-& $updater -StagedPath (Join-Path $snapshotRoot 'app') -SettingsSource $settingsSource
-& $updater -VerifyOnly
+& $updater -StagedPath (Join-Path $snapshotRoot 'app') -SettingsSource $settingsSource -InstallDirectory $InstallDirectory
+& $updater -VerifyOnly -InstallDirectory $InstallDirectory
 $settingsTarget = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PttDictation\settings.json'
 if ((Get-FileHash -LiteralPath $settingsTarget).Hash -ne $hashes['settings.json']) { throw 'Restored settings did not match the saved snapshot.' }
 Write-Host 'Previous PTT Dictation app and settings restored. The app is running at its permanent shortcut path.'

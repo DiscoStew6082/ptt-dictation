@@ -17,15 +17,22 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$SettingsSource,
     [Parameter(Mandatory, ParameterSetName = 'Verify')]
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [ValidateNotNullOrEmpty()]
+    [string]$InstallDirectory = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\PttDictation')
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# This is deliberately independent of cwd and worktrees. Do not add a destination
-# override: an intentional relocation also requires migrating the user's shortcuts.
-$liveDirectory = 'C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64'
+# The default is stable per user and independent of cwd and worktrees. An explicit
+# directory supports portable and secondary-machine installations.
+$liveDirectory = [IO.Path]::GetFullPath($InstallDirectory)
+if (-not [IO.Path]::IsPathFullyQualified($InstallDirectory) -or
+    $InstallDirectory.StartsWith('\\') -or $InstallDirectory.StartsWith('//') -or
+    $liveDirectory -eq [IO.Path]::GetPathRoot($liveDirectory)) {
+    throw 'InstallDirectory must be a fully qualified local directory below a drive root.'
+}
 $publishDirectory = Split-Path $liveDirectory -Parent
 $liveExe = Join-Path $liveDirectory 'PttDictation.exe'
 $receiptName = 'deployment-receipt.json'
@@ -72,16 +79,24 @@ function Assert-PackageHashes([string]$Directory, $Expected) {
 }
 
 function Get-LiveProcesses {
-    $all = @(Get-CimInstance Win32_Process -Filter "Name = 'PttDictation.exe'")
-    foreach ($process in $all) {
-        if ($process.ExecutablePath -ne $liveExe) {
-            throw "Another PTT executable is running (PID $($process.ProcessId)); close it before updating."
+    $result = @()
+    foreach ($nativeProcess in @(Get-Process -Name PttDictation -ErrorAction SilentlyContinue)) {
+        if ($nativeProcess.Path -ne $liveExe) {
+            throw "Another PTT executable is running (PID $($nativeProcess.Id)); close it before updating."
         }
-        if ($process.CommandLine.Trim() -notin @($liveExe, ('"' + $liveExe + '"'))) {
-            throw "Unexpected arguments on PTT process $($process.ProcessId)."
+        $details = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($nativeProcess.Id)")
+        if ($details.Count -ne 1) { throw "Could not verify PTT process $($nativeProcess.Id)." }
+        if ($details[0].CommandLine.Trim() -notin @($liveExe, ('"' + $liveExe + '"'))) {
+            throw "Unexpected arguments on PTT process $($nativeProcess.Id)."
+        }
+        $result += [pscustomobject]@{
+            ProcessId = $nativeProcess.Id
+            ExecutablePath = $nativeProcess.Path
+            CommandLine = $details[0].CommandLine
+            CreationDate = $details[0].CreationDate
         }
     }
-    return $all
+    return $result
 }
 
 function Start-AndVerifyLive {

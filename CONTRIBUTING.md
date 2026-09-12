@@ -27,12 +27,12 @@ dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x6
 pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build
 ```
 
-The deployment script deliberately fixes the destination to `C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`, independent of the current directory or worktree. Keep Start-menu pins pointed there. It requires an existing installation, rejects incomplete or linked packages, checks every installed file's SHA-256, and verifies exactly one normally launched process at that path with no arguments. An installation failure triggers restoration and restart of the previous package; recovery failures are reported explicitly. The previous package is retained in a `.backup-*` directory for recovery, and the installed package receives `deployment-receipt.json` with hashes and the fixed executable path.
+The deployment script defaults to `%LOCALAPPDATA%\Programs\PttDictation`, independent of the current directory or worktree. Pass `-InstallDirectory` to update an installation created elsewhere, and keep shortcuts pointed at that selected path. It requires an existing installation, rejects incomplete or linked packages, checks every installed file's SHA-256, and verifies exactly one normally launched process at that path with no arguments. An installation failure triggers restoration and restart of the previous package; recovery failures are reported explicitly. The previous package is retained in a `.backup-*` directory for recovery, and the installed package receives `deployment-receipt.json` with hashes and the selected executable path.
 
 To inspect the installation without replacing files or restarting the app:
 
 ```powershell
-pwsh -File scripts\Update-LocalApp.ps1 -VerifyOnly
+pwsh -File scripts\Update-LocalApp.ps1 -VerifyOnly [-InstallDirectory <existing-install-directory>]
 ```
 
 This reports process IDs (empty if stopped) and checks receipt hashes when a receipt exists. A package installed before this workflow has no receipt; its path and current hashes can be inspected, but are not proof of a verified deployment. Process and file checks do not replace tray/hotkey acceptance. For builds on other machines or CI packaging, publish into a separate artifact folder without using this machine-specific installer.

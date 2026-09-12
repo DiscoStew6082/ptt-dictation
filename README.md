@@ -75,10 +75,27 @@ Supported releases target Windows 10/11 on x64. An NVIDIA GPU is optional; the a
 
 ## Install
 
-1. Open the [GitHub Releases page](https://github.com/DiscoStew6082/ptt-dictation/releases).
-2. Download `PttDictation-win-x64.zip` and its `.sha256` checksum from the latest release.
-3. Optionally verify the download using the command in [Release Verification](#release-verification).
-4. Extract the zip to a folder you control and run `PttDictation.exe`.
+The release installer uses Windows PowerShell 5.1 or newer, verifies the published package checksum, installs for the current user, creates a Start-menu shortcut, and starts the app:
+
+```powershell
+$installer = Join-Path $env:TEMP 'Install-PttDictation.ps1'
+Invoke-WebRequest https://github.com/DiscoStew6082/ptt-dictation/releases/latest/download/Install-PttDictation.ps1 -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+The default destination is `%LOCALAPPDATA%\Programs\PttDictation`. To install anywhere else on a local drive:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer -InstallDirectory 'D:\Apps\PttDictation'
+```
+
+For an offline or manually downloaded install, download `PttDictation-win-x64.zip`, its `.sha256` file, and `Install-PttDictation.ps1` from the [latest GitHub release](https://github.com/DiscoStew6082/ptt-dictation/releases/latest), then run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-PttDictation.ps1 `
+  -PackagePath .\PttDictation-win-x64.zip `
+  -ChecksumPath .\PttDictation-win-x64.zip.sha256
+```
 
 Release builds are self-contained, so users do not need to install the .NET SDK or runtime. The app is not code-signed yet, so Windows SmartScreen may display a warning.
 
@@ -120,7 +137,7 @@ Every published release should include a SHA-256 checksum for the downloadable z
 Get-FileHash .\PttDictation-win-x64.zip -Algorithm SHA256
 ```
 
-Release builds from this repository publish the zip, checksum, and CycloneDX SBOM. Public tag builds also create a GitHub artifact attestation. Tag builds create a draft GitHub Release so maintainers can review assets before publishing. Recommended additional hardening for broad public distribution includes code signing.
+Release builds from this repository publish the installer, zip, checksum, and CycloneDX SBOM. Public tag builds also create a GitHub artifact attestation and publish the GitHub Release so the latest-release installer works without a manual release step. Recommended additional hardening for broad public distribution includes code signing.
 
 ## Current limitations
 
@@ -138,7 +155,7 @@ dotnet test PttDictation.sln
 dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true -o publish\next-build
 ```
 
-The build is staged in `publish\next-build`. To update this machine's existing installation, run `pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build`. The permanent executable remains `C:\Users\stewart\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe`; pin that executable to Start. The installer verifies the files and running process at that exact path and attempts rollback if installation fails. See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and the complete development and release workflow.
+The build is staged in `publish\next-build`. To update the default per-user installation, run `pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build`. For a custom installation, also pass its existing `-InstallDirectory`. The updater verifies the files and running process at that stable path and attempts rollback if installation fails. See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and the complete development and release workflow.
 
 ## Validation
 
