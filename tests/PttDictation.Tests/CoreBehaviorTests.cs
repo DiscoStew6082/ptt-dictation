@@ -7,6 +7,37 @@ namespace PttDictation.Tests;
 public sealed class CoreBehaviorTests
 {
     [TestMethod]
+    public async Task NewSettingsProfileDefaultsToCpu()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"parakeet-new-settings-{Guid.NewGuid():N}.json");
+        var store = new AppSettingsStore(path);
+
+        Assert.IsFalse(File.Exists(path));
+        Assert.AreEqual(DevicePreference.Cpu, AppSettings.Default.DevicePreference);
+        Assert.AreEqual(DevicePreference.Cpu, store.Load().DevicePreference);
+        Assert.AreEqual(DevicePreference.Cpu, (await store.LoadAsync(CancellationToken.None)).DevicePreference);
+    }
+
+    [TestMethod]
+    public async Task SavedCudaPreferenceSurvivesStoreRecreation()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"parakeet-saved-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            var selected = AppSettings.Default with { DevicePreference = DevicePreference.Cuda };
+            await new AppSettingsStore(path).SaveAsync(selected, CancellationToken.None);
+
+            var reopened = new AppSettingsStore(path);
+            Assert.AreEqual(DevicePreference.Cuda, reopened.Load().DevicePreference);
+            Assert.AreEqual(DevicePreference.Cuda, (await reopened.LoadAsync(CancellationToken.None)).DevicePreference);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public void TranscriptCorrectionsApplyPhrasesAndWholeWords()
     {
         var corrections = new TranscriptCorrectionDictionary(

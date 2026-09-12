@@ -13,6 +13,7 @@ internal sealed class SettingsForm : Form
     private readonly Func<ModelInfo, CancellationToken, Task<string>> _downloadModelAsync;
     private readonly Func<ModelInfo, bool> _isModelDownloaded;
     private readonly IQwenInstaller _qwenInstaller;
+    private readonly bool _hasNvidiaGpu;
     private readonly Button _installQwen = DarkTheme.Button("Download Qwen");
     private readonly Button _cancelQwenSetup = DarkTheme.Button("Cancel setup");
     private readonly ProgressBar _qwenSetupProgress = new();
@@ -65,7 +66,14 @@ internal sealed class SettingsForm : Form
     public event EventHandler? QuitRequested;
 
     public SettingsForm(AppSettingsStore settingsStore, ModelRegistry modelRegistry)
-        : this(settingsStore, modelRegistry, DownloadModelWithDefaultManagerAsync, DefaultModelIsDownloaded)
+        : this(settingsStore, modelRegistry, DownloadModelWithDefaultManagerAsync, DefaultModelIsDownloaded,
+            new QwenInstaller(AppPaths.RootDirectory), GraphicsHardware.HasNvidiaAdapter())
+    {
+    }
+
+    internal SettingsForm(AppSettingsStore settingsStore, ModelRegistry modelRegistry, bool hasNvidiaGpu)
+        : this(settingsStore, modelRegistry, DownloadModelWithDefaultManagerAsync, DefaultModelIsDownloaded,
+            new QwenInstaller(AppPaths.RootDirectory), hasNvidiaGpu)
     {
     }
 
@@ -74,7 +82,8 @@ internal sealed class SettingsForm : Form
         ModelRegistry modelRegistry,
         Func<ModelInfo, CancellationToken, Task<string>> downloadModelAsync,
         Func<ModelInfo, bool> isModelDownloaded)
-        : this(settingsStore, modelRegistry, downloadModelAsync, isModelDownloaded, new QwenInstaller(AppPaths.RootDirectory))
+        : this(settingsStore, modelRegistry, downloadModelAsync, isModelDownloaded,
+            new QwenInstaller(AppPaths.RootDirectory), true)
     {
     }
 
@@ -84,12 +93,24 @@ internal sealed class SettingsForm : Form
         Func<ModelInfo, CancellationToken, Task<string>> downloadModelAsync,
         Func<ModelInfo, bool> isModelDownloaded,
         IQwenInstaller qwenInstaller)
+        : this(settingsStore, modelRegistry, downloadModelAsync, isModelDownloaded, qwenInstaller, true)
+    {
+    }
+
+    internal SettingsForm(
+        AppSettingsStore settingsStore,
+        ModelRegistry modelRegistry,
+        Func<ModelInfo, CancellationToken, Task<string>> downloadModelAsync,
+        Func<ModelInfo, bool> isModelDownloaded,
+        IQwenInstaller qwenInstaller,
+        bool hasNvidiaGpu)
     {
         _settingsStore = settingsStore;
         _modelRegistry = modelRegistry;
         _downloadModelAsync = downloadModelAsync;
         _isModelDownloaded = isModelDownloaded;
         _qwenInstaller = qwenInstaller;
+        _hasNvidiaGpu = hasNvidiaGpu;
 
         Text = "PTT Dictation - Settings";
         MinimumSize = new Size(800, 700);
@@ -215,7 +236,7 @@ internal sealed class SettingsForm : Form
         AddField(transcription, "Final recognition", _finalEngine);
         _finalEngineStatus.SizeChanged += (_, _) => FitFinalEngineStatus();
         transcription.Controls.Add(_finalEngineStatus);
-        AddQwenSetupControls(transcription);
+        if (_hasNvidiaGpu) AddQwenSetupControls(transcription);
 
         _primarySections = new TableLayoutPanel
         {
@@ -267,11 +288,11 @@ internal sealed class SettingsForm : Form
         StyleSelector(_finalEngine);
         _finalEngine.Dock = DockStyle.Top;
         _finalEngine.DisplayMember = nameof(FinalEngineOption.Label);
-        _finalEngine.Items.AddRange(new object[]
+        _finalEngine.Items.Add(new FinalEngineOption(FinalTranscriptionEngine.Parakeet, "Parakeet"));
+        if (_hasNvidiaGpu)
         {
-            new FinalEngineOption(FinalTranscriptionEngine.Parakeet, "Parakeet"),
-            new FinalEngineOption(FinalTranscriptionEngine.Qwen, "Qwen3-ASR 1.7B (NVIDIA GPU)")
-        });
+            _finalEngine.Items.Add(new FinalEngineOption(FinalTranscriptionEngine.Qwen, "Qwen3-ASR 1.7B (NVIDIA GPU)"));
+        }
         _finalEngine.SelectedIndexChanged += (_, _) =>
         {
             RefreshFinalEngineStatus();
@@ -284,7 +305,8 @@ internal sealed class SettingsForm : Form
 
         StyleSelector(_device);
         _device.Dock = DockStyle.Top;
-        _device.Items.AddRange(Enum.GetValues<DevicePreference>().Cast<object>().ToArray());
+        _device.Items.Add(DevicePreference.Cpu);
+        if (_hasNvidiaGpu) _device.Items.Add(DevicePreference.Cuda);
         _device.SelectedIndexChanged += (_, _) => MarkChoiceUnsaved("Parakeet preview device changed");
 
         ConfigureCheckBox(_notifications, "Show tray notifications", 30, new Padding(0, 10, 0, 0));
@@ -845,7 +867,9 @@ internal sealed class SettingsForm : Form
         _runtimePathOverride = settings.RuntimePath;
         _modelPathOverride = settings.ModelPath;
         _correctionEditor = new TranscriptCorrectionEditor(settings.TranscriptCorrections);
-        _device.SelectedItem = settings.DevicePreference;
+        _device.SelectedItem = settings.DevicePreference == DevicePreference.Cuda && !_hasNvidiaGpu
+            ? DevicePreference.Cpu
+            : settings.DevicePreference;
         _mode.SelectedItem = settings.TranscriptionMode;
         SelectFinalEngine(settings.FinalTranscriptionEngine);
         _notifications.Checked = settings.NotificationsEnabled;
@@ -934,7 +958,7 @@ internal sealed class SettingsForm : Form
             throw new InvalidOperationException("Choose different keys for hold-to-talk and toggle-to-talk.");
         }
 
-        var selectedDevice = _device.SelectedItem is DevicePreference preference ? preference : DevicePreference.Cuda;
+        var selectedDevice = _device.SelectedItem is DevicePreference preference ? preference : DevicePreference.Cpu;
         return _settings with
         {
             HoldHotkey = holdHotkey,
@@ -1014,6 +1038,7 @@ internal sealed class SettingsForm : Form
 
     private void RefreshQwenSetupState()
     {
+        if (!_hasNvidiaGpu) return;
         if (_qwenSetupCancellation is not null) return;
         var status = _qwenInstaller.GetStatus();
         _installQwen.Text = status.IsReady ? "Check Qwen setup" : "Download Qwen";
@@ -1029,6 +1054,10 @@ internal sealed class SettingsForm : Form
 
     private Task InstallQwenAsync()
     {
+        if (!_hasNvidiaGpu)
+        {
+            return Task.FromException(new InvalidOperationException("Qwen setup requires an NVIDIA CUDA GPU."));
+        }
         if (_qwenSetupTask is { IsCompleted: false }) return _qwenSetupTask;
         _qwenSetupTask = RunQwenSetupAsync();
         return _qwenSetupTask;
@@ -1398,6 +1427,11 @@ internal sealed class SettingsForm : Form
     }
 
     internal string FinalEngineStatusForTest => _finalEngineStatus.Text;
+    internal bool HasNvidiaGpuForTest => _hasNvidiaGpu;
+    internal FinalTranscriptionEngine[] FinalEngineOptionsForTest =>
+        [.. _finalEngine.Items.Cast<FinalEngineOption>().Select(option => option.Value)];
+    internal DevicePreference[] DeviceOptionsForTest => [.. _device.Items.Cast<DevicePreference>()];
+    internal bool HasQwenSetupControlsForTest => _installQwen.Parent is not null;
     internal Button QwenInstallButtonForTest => _installQwen;
     internal bool QwenCancelEnabledForTest => _cancelQwenSetup.Enabled;
     internal string QwenSetupStatusForTest => _qwenSetupStatus.Text;

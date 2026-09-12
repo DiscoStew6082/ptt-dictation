@@ -12,7 +12,7 @@ public sealed record AppSettings
     public FinalTranscriptionEngine FinalTranscriptionEngine { get; init; } = FinalTranscriptionEngine.Parakeet;
     public string? RuntimePath { get; init; }
     public string? ModelPath { get; init; }
-    public DevicePreference DevicePreference { get; init; } = DevicePreference.Cuda;
+    public DevicePreference DevicePreference { get; init; } = DevicePreference.Cpu;
     public bool NotificationsEnabled { get; init; } = true;
     public bool AudibleStatusEnabled { get; init; } = true;
     public List<TranscriptCorrection> TranscriptCorrections { get; init; } = [];

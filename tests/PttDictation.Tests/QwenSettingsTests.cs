@@ -8,6 +8,72 @@ namespace PttDictation.Tests;
 public sealed class QwenSettingsTests
 {
     [TestMethod]
+    [DataRow("PCI\\VEN_10DE&DEV_2504", "NVIDIA GeForce RTX", true)]
+    [DataRow("PCI\\VEN_1002&DEV_73BF", "AMD Radeon RX", false)]
+    [DataRow("PCI\\VEN_8086&DEV_9A49", "Intel Graphics", false)]
+    [DataRow(null, "NVIDIA virtual adapter", true)]
+    public void NvidiaDetectionUsesPciVendorIdentityOrAdapterName(string? deviceId, string description, bool expected)
+    {
+        Assert.AreEqual(expected, GraphicsHardware.IsNvidiaAdapter(deviceId, description));
+    }
+
+    [TestMethod]
+    public void NonNvidiaRuntimeUsesCpuAndParakeetWithoutMutatingSavedSnapshot()
+    {
+        var saved = AppSettings.Default with
+        {
+            DevicePreference = DevicePreference.Cuda,
+            RuntimePath = @"C:\runtime\cuda\parakeet.exe",
+            FinalTranscriptionEngine = FinalTranscriptionEngine.Qwen
+        };
+
+        var effective = GraphicsHardware.UseSupportedSettings(saved, hasNvidiaGpu: false);
+
+        Assert.AreEqual(DevicePreference.Cpu, effective.DevicePreference);
+        Assert.IsNull(effective.RuntimePath);
+        Assert.AreEqual(FinalTranscriptionEngine.Parakeet, effective.FinalTranscriptionEngine);
+        Assert.AreEqual(DevicePreference.Cuda, saved.DevicePreference);
+        Assert.AreEqual(FinalTranscriptionEngine.Qwen, saved.FinalTranscriptionEngine);
+        Assert.AreSame(saved, GraphicsHardware.UseSupportedSettings(saved, hasNvidiaGpu: true));
+    }
+
+    [TestMethod]
+    public void NonNvidiaMachineHidesCudaAndQwenWithoutRewritingSavedPreferences()
+    {
+        RunOnSta(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"non-nvidia-settings-{Guid.NewGuid():N}.json");
+            var installer = new SetupInstaller((_, _) => throw new AssertFailedException("Qwen setup must remain unreachable."));
+            try
+            {
+                var store = new AppSettingsStore(path);
+                var saved = AppSettings.Default with
+                {
+                    DevicePreference = DevicePreference.Cuda,
+                    FinalTranscriptionEngine = FinalTranscriptionEngine.Qwen
+                };
+                store.SaveAsync(saved, CancellationToken.None).GetAwaiter().GetResult();
+                var before = File.ReadAllBytes(path);
+                using var form = new SettingsForm(store, ModelRegistry.CreateDefault(),
+                    (_, _) => throw new AssertFailedException("Parakeet download not requested."),
+                    _ => true, installer, hasNvidiaGpu: false);
+                form.UseSettings(store.Load());
+
+                Assert.IsFalse(form.HasNvidiaGpuForTest);
+                CollectionAssert.AreEqual(new[] { DevicePreference.Cpu }, form.DeviceOptionsForTest);
+                CollectionAssert.AreEqual(new[] { FinalTranscriptionEngine.Parakeet }, form.FinalEngineOptionsForTest);
+                Assert.IsFalse(form.HasQwenSetupControlsForTest);
+                Assert.AreEqual(DevicePreference.Cpu, form.BuildSettingsForTest().DevicePreference);
+                Assert.AreEqual(FinalTranscriptionEngine.Parakeet, form.SelectedFinalEngineForTest);
+                Assert.AreEqual(0, installer.GetStatusCalls);
+                CollectionAssert.AreEqual(before, File.ReadAllBytes(path),
+                    "Opening Settings must not migrate or rewrite the saved preference.");
+            }
+            finally { File.Delete(path); }
+        });
+    }
+
+    [TestMethod]
     public async Task ExistingSettingsRemainParakeetAndQwenRoundTripsAsAString()
     {
         var path = Path.Combine(Path.GetTempPath(), $"qwen-settings-{Guid.NewGuid():N}.json");
@@ -36,7 +102,7 @@ public sealed class QwenSettingsTests
             try
             {
                 var store = new AppSettingsStore(path);
-                using var form = new SettingsForm(store, ModelRegistry.CreateDefault());
+                using var form = new SettingsForm(store, ModelRegistry.CreateDefault(), hasNvidiaGpu: true);
                 var original = AppSettings.Default with
                 {
                     SelectedModelId = "realtime-eou-120m-v1-f16",
@@ -292,7 +358,12 @@ public sealed class QwenSettingsTests
     private sealed class SetupInstaller(Func<IProgress<QwenSetupProgress>?, CancellationToken, Task<QwenSetupStatus>> install) : IQwenInstaller
     {
         public QwenSetupStatus Status { get; set; } = new(false, "Qwen has not been installed.");
-        public QwenSetupStatus GetStatus() => Status;
+        public int GetStatusCalls { get; private set; }
+        public QwenSetupStatus GetStatus()
+        {
+            GetStatusCalls++;
+            return Status;
+        }
         public async Task<QwenSetupStatus> InstallAsync(IProgress<QwenSetupProgress>? progress, CancellationToken token)
         {
             Status = await install(progress, token);

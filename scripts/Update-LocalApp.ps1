@@ -81,17 +81,26 @@ function Assert-PackageHashes([string]$Directory, $Expected) {
 function Get-LiveProcesses {
     $result = @()
     foreach ($nativeProcess in @(Get-Process -Name PttDictation -ErrorAction SilentlyContinue)) {
-        if ($nativeProcess.Path -ne $liveExe) {
+        try {
+            if ($nativeProcess.HasExited) { continue }
+            $nativePath = $nativeProcess.Path
+        }
+        catch { continue }
+        if ($nativePath -ne $liveExe) {
             throw "Another PTT executable is running (PID $($nativeProcess.Id)); close it before updating."
         }
         $details = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($nativeProcess.Id)")
+        if ($details.Count -eq 0) {
+            try { if ($nativeProcess.HasExited) { continue } }
+            catch { continue }
+        }
         if ($details.Count -ne 1) { throw "Could not verify PTT process $($nativeProcess.Id)." }
         if ($details[0].CommandLine.Trim() -notin @($liveExe, ('"' + $liveExe + '"'))) {
             throw "Unexpected arguments on PTT process $($nativeProcess.Id)."
         }
         $result += [pscustomobject]@{
             ProcessId = $nativeProcess.Id
-            ExecutablePath = $nativeProcess.Path
+            ExecutablePath = $nativePath
             CommandLine = $details[0].CommandLine
             CreationDate = $details[0].CreationDate
         }

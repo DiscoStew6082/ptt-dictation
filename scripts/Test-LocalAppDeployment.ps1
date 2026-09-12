@@ -34,9 +34,9 @@ function Invoke-Fixture([string]$Scenario) {
     $global:pttTestSettingsPath = Join-Path $caseRoot 'appdata\PttDictation\settings.json'
     $global:pttTestSettingsSource = Join-Path $caseRoot 'requested-settings.json'
     $oldSettingsBytes = [Text.Encoding]::Unicode.GetPreamble() + [Text.Encoding]::Unicode.GetBytes(
-        "{  ""FinalTranscriptionBackend"": ""Parakeet"", ""note"": ""café old"" }" + [char]13 + [char]10)
+        "{  ""devicePreference"": ""Cuda"", ""FinalTranscriptionBackend"": ""Parakeet"", ""note"": ""café old"" }" + [char]13 + [char]10)
     $newSettingsBytes = [Text.Encoding]::UTF8.GetPreamble() + [Text.Encoding]::UTF8.GetBytes(
-        "{ ""FinalTranscriptionBackend"": ""Qwen"", ""note"": ""café new"" }" + [char]10)
+        "{ ""devicePreference"": ""Cpu"", ""FinalTranscriptionBackend"": ""Qwen"", ""note"": ""café new"" }" + [char]10)
     $hadSettings = $Scenario -notin @('settings-first-install', 'settings-missing-rollback')
     if ($hadSettings) {
         [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($global:pttTestSettingsPath)) | Out-Null
@@ -71,6 +71,7 @@ function Invoke-Fixture([string]$Scenario) {
     $global:pttTestStopCount = 0
     $global:pttTestLaunches = @()
     $global:pttTestSettingsAtStops = @()
+    $global:pttTestExitedPids = @()
     $global:pttTestFailure = $Scenario
     $oldHash = (Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash
     $newHash = (Get-FileHash -LiteralPath (Join-Path $stage 'PttDictation.dll')).Hash
@@ -83,7 +84,11 @@ function Invoke-Fixture([string]$Scenario) {
         param($Name, $ErrorAction)
         Assert ($Name -eq 'PttDictation') 'Unexpected process-name query.'
         return @($global:pttTestRunning | ForEach-Object {
-            [pscustomobject]@{ Id = $_.ProcessId; Path = $_.ExecutablePath }
+            $view = [pscustomobject]@{ Id = $_.ProcessId; Path = $_.ExecutablePath }
+            $view | Add-Member -MemberType ScriptProperty -Name HasExited -Value {
+                return $this.Id -in $global:pttTestExitedPids
+            }
+            $view
         })
     }
     function Get-CimInstance {
@@ -95,6 +100,12 @@ function Invoke-Fixture([string]$Scenario) {
         }
         if ($Filter -match '^ProcessId = (\d+)$') {
             $processId = [int]$Matches[1]
+            if ($global:pttTestFailure -eq 'vanished-process' -and $processId -eq 101 -and
+                $processId -notin $global:pttTestExitedPids) {
+                $global:pttTestExitedPids += $processId
+                $global:pttTestRunning = @($global:pttTestRunning | Where-Object ProcessId -ne $processId)
+                return @()
+            }
             return @(@($global:pttTestRunning) + @($global:pttTestWorkers) | Where-Object ProcessId -eq $processId)
         }
         throw "Unexpected process query: $Filter"
@@ -167,11 +178,11 @@ function Invoke-Fixture([string]$Scenario) {
     try { $result = & $testScript @arguments }
     catch { $caught = $_ }
 
-    $successScenarios = @('success', 'owned-worker', 'settings-success', 'settings-first-install', 'settings-frozen-source')
+    $successScenarios = @('success', 'owned-worker', 'vanished-process', 'settings-success', 'settings-first-install', 'settings-frozen-source')
     $rollbackScenarios = @('startup-failure', 'corrupt-install', 'settings-startup-failure', 'settings-copy-failure', 'settings-missing-rollback')
     if ($Scenario -in $successScenarios) {
         Assert ($null -eq $caught) "Install failed: $caught"
-        $expectedStops = if ($Scenario -eq 'owned-worker') { 2 } else { 1 }
+        $expectedStops = if ($Scenario -eq 'owned-worker') { 2 } elseif ($Scenario -eq 'vanished-process') { 0 } else { 1 }
         Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'Expected the app and its owned worker to stop, followed by one normal start.'
         if ($Scenario -eq 'owned-worker') {
             Assert ($global:pttTestWorkers.Count -eq 2 -and
@@ -254,7 +265,7 @@ function Invoke-Fixture([string]$Scenario) {
 }
 
 try {
-    $scenarios = @('owned-worker', 'success', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
+    $scenarios = @('owned-worker', 'success', 'vanished-process', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
         'ancestor-as-source', 'unexpected-arguments', 'other-location', 'verify-existing',
         'settings-success', 'settings-first-install', 'settings-startup-failure', 'settings-copy-failure',
         'settings-missing-rollback', 'settings-malformed-json', 'settings-invalid-root', 'settings-missing-source',
@@ -271,5 +282,5 @@ finally {
     }
     Remove-Item -LiteralPath $resolved -Recurse -Force
     Remove-Variable -Scope Global -Name pttTestExpectedExe,pttTestRunning,pttTestWorkers,pttTestStartCount,pttTestStopCount,pttTestFailure,
-        pttTestSettingsPath,pttTestSettingsSource,pttTestLaunches,pttTestSettingsAtStops -ErrorAction SilentlyContinue
+        pttTestSettingsPath,pttTestSettingsSource,pttTestLaunches,pttTestSettingsAtStops,pttTestExitedPids -ErrorAction SilentlyContinue
 }

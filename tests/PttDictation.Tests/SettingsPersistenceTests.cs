@@ -15,7 +15,7 @@ public sealed class SettingsPersistenceTests
             using var fixture = new Fixture();
             fixture.Settings = fixture.Settings with { DevicePreference = DevicePreference.Cpu };
             fixture.Store.SaveAsync(fixture.Settings, CancellationToken.None).GetAwaiter().GetResult();
-            using (var first = new SettingsForm(fixture.Store, ModelRegistry.CreateDefault()))
+            using (var first = new SettingsForm(fixture.Store, ModelRegistry.CreateDefault(), hasNvidiaGpu: true))
             {
                 first.UseSettings(fixture.Store.Load());
                 var selector = Descendants(first).OfType<ComboBox>()
@@ -23,7 +23,7 @@ public sealed class SettingsPersistenceTests
                 selector.SelectedItem = DevicePreference.Cuda;
                 first.SaveForTest();
             }
-            using var reopened = new SettingsForm(new AppSettingsStore(fixture.SettingsPath), ModelRegistry.CreateDefault());
+            using var reopened = new SettingsForm(new AppSettingsStore(fixture.SettingsPath), ModelRegistry.CreateDefault(), hasNvidiaGpu: true);
             reopened.UseSettings(new AppSettingsStore(fixture.SettingsPath).Load());
             Assert.AreEqual(DevicePreference.Cuda, reopened.BuildSettingsForTest().DevicePreference);
         });
@@ -85,7 +85,7 @@ public sealed class SettingsPersistenceTests
         RunOnSta(() =>
         {
             using var fixture = new Fixture();
-            using var form = new SettingsForm(fixture.Store, ModelRegistry.CreateDefault());
+            using var form = new SettingsForm(fixture.Store, ModelRegistry.CreateDefault(), hasNvidiaGpu: true);
             form.UseSettings(fixture.Settings with { DevicePreference = DevicePreference.Cpu, RuntimePath = fixture.CpuPath });
             Descendants(form).OfType<ComboBox>().Single(control => control.Items.Contains(DevicePreference.Cuda))
                 .SelectedItem = DevicePreference.Cuda;
@@ -120,7 +120,7 @@ public sealed class SettingsPersistenceTests
             try
             {
                 var store = new AppSettingsStore(directory);
-                using var form = new SettingsForm(store, ModelRegistry.CreateDefault());
+                using var form = new SettingsForm(store, ModelRegistry.CreateDefault(), hasNvidiaGpu: true);
                 form.UseSettings(AppSettings.Default with { DevicePreference = DevicePreference.Cpu });
                 Descendants(form).OfType<ComboBox>().Single(control => control.Items.Contains(DevicePreference.Cuda))
                     .SelectedItem = DevicePreference.Cuda;

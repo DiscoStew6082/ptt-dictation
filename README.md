@@ -4,7 +4,7 @@
 
 PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold your selected hold-to-talk key, speak, and release: the app records a temporary 16 kHz mono WAV and inserts live transcription into the original textbox when its editor supports safe text replacement. The final recognition result replaces that recording's text in place. Other supported editable fields receive one final paste. The defaults are Right Ctrl for hold-to-talk and Right Shift for toggle-to-talk.
 
-It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. An optional local Qwen3-ASR 1.7B GPU worker can provide the final transcript after Stop. Existing installations continue using Parakeet until Qwen is selected in Settings. See [Qwen final transcription](docs/qwen-final-transcription.md) for setup and behavior.
+It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. On computers with an NVIDIA CUDA GPU, an optional local Qwen3-ASR 1.7B worker can provide the final transcript after Stop. Qwen controls are hidden on AMD-, Intel-, and CPU-only systems. Existing installations continue using Parakeet until Qwen is selected in Settings. See [Qwen final transcription](docs/qwen-final-transcription.md) for setup and behavior.
 
 ## Overview
 
@@ -36,7 +36,7 @@ Implementation highlights:
 
 - **Native shell UX:** `NotifyIcon` tray app, dark Windows Forms settings/history windows, non-activating topmost status overlay, and audible state feedback.
 - **Audio path:** WASAPI shared-mode capture writes 16-bit, 16 kHz, mono PCM WAV files for `parakeet-cli`.
-- **Runtime management:** CUDA is preferred by default, with an automatic CPU retry path if CUDA transcription fails.
+- **Runtime management:** CPU is the safe first-run default. A saved CUDA choice remains authoritative across app updates, with an automatic CPU retry path if CUDA transcription fails.
 - **Asset integrity:** Runtime zip files and built-in GGUF models use pinned SHA-256 checks; extracted runtime files are revalidated through a manifest.
 - **Archive hardening:** Runtime zip entries are checked before extraction so archive paths cannot escape the runtime directory.
 - **Operational polish:** Process timeout/cancellation handling, single-instance guard, local transcript corrections with preview, best-effort clipboard restoration, session-only transcript history, and cleanup warnings if a temporary WAV cannot be deleted.
@@ -71,7 +71,7 @@ Trust-boundary notes:
 - A working audio input device.
 - An internet connection for the first runtime/model download.
 
-Supported releases target Windows 10/11 on x64. An NVIDIA GPU is optional; the app can fall back to the CPU runtime.
+Supported releases target Windows 10/11 on x64. An NVIDIA GPU is optional. Without one, Settings offers CPU Parakeet transcription and hides CUDA/Qwen choices that the machine cannot use.
 
 ## Install
 
@@ -99,14 +99,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-PttDictation.ps1 `
 
 Release builds are self-contained, so users do not need to install the .NET SDK or runtime. The app is not code-signed yet, so Windows SmartScreen may display a warning.
 
+The runtime preference and other user settings are stored separately in `%LOCALAPPDATA%\PttDictation\settings.json`. A new profile starts on CPU. Reinstalling or updating the program files does not rewrite that file, so a later CPU or CUDA choice remains selected. The development updater changes settings only when `-SettingsSource` is explicitly supplied.
+
 ## First Run
 
 Launch `PttDictation.exe` and leave it running in the system tray. By default, hold Right Ctrl while speaking and release it to transcribe and paste; Right Shift starts or stops toggle dictation mode. Open Settings to choose separate keys for both actions.
 
 On first use the app downloads assets under `%LOCALAPPDATA%\PttDictation`:
 
-- `parakeet.cpp` `v0.4.0` Windows CUDA runtime plus the matching CUDA runtime dependency archive.
-- CPU fallback runtime.
+- `parakeet.cpp` `v0.4.0` Windows CPU runtime by default.
+- The CUDA runtime plus its matching dependency archive only after CUDA is selected in Settings.
 - Default `tdt_ctc-110m-f16.gguf` model from `mudler/parakeet-cpp-gguf`.
 
 Expect first-run downloads to be hundreds of MB for the default model and runtime assets. The optional larger multilingual model is about 1.4 GB.

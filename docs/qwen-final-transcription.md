@@ -2,6 +2,8 @@
 
 Select **Qwen3-ASR 1.7B (NVIDIA GPU)** under **Final recognition** in Settings to retain Parakeet live preview and use Qwen after stopping. The existing hold/toggle keys, corrections, cancellation, textbox protections, and Session History remain in use. Settings changes apply to the next recording.
 
+Qwen setup requires an NVIDIA CUDA GPU and is not shown when Windows reports only AMD, Intel, virtual, or CPU display adapters. On those systems the effective runtime remains CPU Parakeet. Hardware filtering does not rewrite the settings file, so a saved NVIDIA-machine preference remains available if the profile is later used on supported hardware.
+
 Qwen loads in a resident local Python worker when the first dictation starts. Later dictations reuse it. The first load is slower than subsequent recognition. The app remains cancellable during loading and final recognition; cancelling retires the worker, so the next Qwen dictation loads a fresh one. A Qwen error is reported and the existing preview is retained in History rather than silently substituted as a successful Qwen transcript.
 
 Selecting Parakeet restores Parakeet final recognition on the next recording. An already loaded Qwen worker releases its GPU memory when that Parakeet recording requests final recognition, or when the app exits. The Parakeet device selector controls the preview/Parakeet engine; Qwen requires a CUDA GPU with BF16 support regardless of that selector.
