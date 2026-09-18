@@ -188,14 +188,131 @@ class WorkerTests(unittest.TestCase):
             worker.run_worker(str(self.model), io.StringIO(""), destination, factory)
         self.assertEqual(destination.getvalue(), "")
 
-    def test_cuda_and_bf16_are_required_before_transformers_loading(self):
-        for available, bf16, expected in ((False, False, "no CUDA device"), (True, False, "BF16")):
-            with self.subTest(available=available, bf16=bf16):
-                torch = SimpleNamespace(cuda=SimpleNamespace(
-                    is_available=lambda: available, is_bf16_supported=lambda: bf16,
-                ))
-                with patch.dict(sys.modules, {"torch": torch}), self.assertRaisesRegex(worker.WorkerError, expected):
-                    worker.QwenBackend(self.model)
+    def test_backend_falls_back_to_cpu_bfloat16_without_cuda(self):
+        calls = {}
+
+        class Model:
+            device = "cpu"
+            dtype = "bfloat16"
+
+            def eval(self):
+                calls["evaluated"] = True
+                return self
+
+        class AutoModel:
+            @staticmethod
+            def from_pretrained(path, **options):
+                calls["model"] = (path, options)
+                return Model()
+
+        class AutoProcessor:
+            @staticmethod
+            def from_pretrained(path, **options):
+                calls["processor"] = (path, options)
+                return object()
+
+        torch = SimpleNamespace(
+            bfloat16="bfloat16",
+            cuda=SimpleNamespace(is_available=lambda: False),
+            set_num_threads=lambda count: calls.setdefault("threads", count),
+            set_num_interop_threads=lambda count: calls.setdefault("interop_threads", count),
+            manual_seed=lambda seed: calls.setdefault("seed", seed),
+        )
+        transformers = SimpleNamespace(
+            AutoModelForMultimodalLM=AutoModel,
+            AutoProcessor=AutoProcessor,
+        )
+        with patch.dict(sys.modules, {"torch": torch, "transformers": transformers}), \
+                patch("qwen_worker.os.cpu_count", return_value=12):
+            backend = worker.QwenBackend(self.model)
+
+        self.assertEqual(backend.model.device, "cpu")
+        self.assertEqual(calls["threads"], 8)
+        self.assertEqual(calls["interop_threads"], 1)
+        self.assertEqual(calls["model"], (self.model, {
+            "local_files_only": True,
+            "trust_remote_code": False,
+            "dtype": "bfloat16",
+            "device_map": {"": "cpu"},
+            "attn_implementation": "sdpa",
+        }))
+        self.assertTrue(calls["evaluated"])
+
+    def test_backend_preserves_cuda_bfloat16_fast_path(self):
+        calls = {}
+
+        class Model:
+            device = "cuda:0"
+            dtype = "bfloat16"
+            def eval(self): return self
+
+        class AutoModel:
+            @staticmethod
+            def from_pretrained(path, **options):
+                calls["options"] = options
+                return Model()
+
+        class AutoProcessor:
+            @staticmethod
+            def from_pretrained(path, **options): return object()
+
+        cuda = SimpleNamespace(
+            is_available=lambda: True,
+            is_bf16_supported=lambda: True,
+            synchronize=lambda: calls.setdefault("synchronized", True),
+        )
+        torch = SimpleNamespace(
+            bfloat16="bfloat16", cuda=cuda,
+            set_num_threads=lambda count: None,
+            set_num_interop_threads=lambda count: None,
+            manual_seed=lambda seed: None,
+        )
+        transformers = SimpleNamespace(
+            AutoModelForMultimodalLM=AutoModel,
+            AutoProcessor=AutoProcessor,
+        )
+        with patch.dict(sys.modules, {"torch": torch, "transformers": transformers}):
+            worker.QwenBackend(self.model)
+
+        self.assertEqual(calls["options"]["device_map"], {"": "cuda:0"})
+        self.assertTrue(calls["synchronized"])
+
+    def test_backend_uses_cpu_when_cuda_lacks_bfloat16_support(self):
+        calls = {}
+
+        class Model:
+            def eval(self): return self
+
+        class AutoModel:
+            @staticmethod
+            def from_pretrained(path, **options):
+                calls["options"] = options
+                return Model()
+
+        class AutoProcessor:
+            @staticmethod
+            def from_pretrained(path, **options): return object()
+
+        cuda = SimpleNamespace(
+            is_available=lambda: True,
+            is_bf16_supported=lambda: False,
+            synchronize=lambda: calls.setdefault("synchronized", True),
+        )
+        torch = SimpleNamespace(
+            bfloat16="bfloat16", cuda=cuda,
+            set_num_threads=lambda count: None,
+            set_num_interop_threads=lambda count: None,
+            manual_seed=lambda seed: None,
+        )
+        transformers = SimpleNamespace(
+            AutoModelForMultimodalLM=AutoModel,
+            AutoProcessor=AutoProcessor,
+        )
+        with patch.dict(sys.modules, {"torch": torch, "transformers": transformers}):
+            worker.QwenBackend(self.model)
+
+        self.assertEqual(calls["options"]["device_map"], {"": "cpu"})
+        self.assertNotIn("synchronized", calls)
 
     def test_cli_protocol_is_utf8_and_isolates_python_crt_and_windows_output(self):
         # An actual child process exercises the same stdout isolation as the app.

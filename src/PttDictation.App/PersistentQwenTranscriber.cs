@@ -13,8 +13,8 @@ internal sealed record QwenTranscriberOptions(string PythonPath, string ModelPat
 /// <summary>Owns one offline, resident Qwen worker and serializes its JSON-lines protocol.</summary>
 internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscriber, IDisposable
 {
-    private static readonly TimeSpan DefaultStartupTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan DefaultStartupTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromMinutes(10);
     private readonly QwenTranscriberOptions _options;
     private readonly Func<ProcessStartInfo, Process> _processFactory;
     private readonly TimeSpan _startupTimeout;

@@ -97,21 +97,21 @@ class QwenBackend:
     def __init__(self, model_path: Path):
         import torch
 
-        if not torch.cuda.is_available():
-            raise WorkerError("Qwen final transcription requires CUDA; no CUDA device is available.")
-        if not torch.cuda.is_bf16_supported():
-            raise WorkerError("The CUDA device does not support the required BF16 model configuration.")
         from transformers import AutoModelForMultimodalLM, AutoProcessor
 
-        torch.set_num_threads(4)
+        use_cuda = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        device = "cuda:0" if use_cuda else "cpu"
+        torch.set_num_threads(max(1, min(8, os.cpu_count() or 4)))
+        torch.set_num_interop_threads(1)
         torch.manual_seed(0)
         self.torch = torch
         self.processor = AutoProcessor.from_pretrained(model_path, local_files_only=True, trust_remote_code=False)
         self.model = AutoModelForMultimodalLM.from_pretrained(
             model_path, local_files_only=True, trust_remote_code=False,
-            dtype=torch.bfloat16, device_map={"": "cuda:0"}, attn_implementation="sdpa",
+            dtype=torch.bfloat16, device_map={"": device}, attn_implementation="sdpa",
         ).eval()
-        torch.cuda.synchronize()
+        if use_cuda:
+            torch.cuda.synchronize()
 
     def transcribe(self, recording: Recording) -> GeneratedTranscript:
         import numpy as np

@@ -4,7 +4,7 @@
 
 PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold your selected hold-to-talk key, speak, and release: the app records a temporary 16 kHz mono WAV and inserts live transcription into the original textbox when its editor supports safe text replacement. The final recognition result replaces that recording's text in place. Other supported editable fields receive one final paste. The defaults are Right Ctrl for hold-to-talk and Right Shift for toggle-to-talk.
 
-It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. An optional local Qwen3-ASR 1.7B GPU worker can provide the final transcript after Stop. Existing installations continue using Parakeet until Qwen is selected in Settings. See [Qwen final transcription](docs/qwen-final-transcription.md) for setup and behavior.
+It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. An optional local Qwen3-ASR 1.7B worker can provide the final transcript after Stop, using CUDA when available and CPU otherwise. Existing installations continue using Parakeet until Qwen is selected in Settings. See [Qwen final transcription](docs/qwen-final-transcription.md) for setup and behavior.
 
 ## Overview
 

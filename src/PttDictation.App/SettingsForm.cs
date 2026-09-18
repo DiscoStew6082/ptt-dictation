@@ -270,7 +270,7 @@ internal sealed class SettingsForm : Form
         _finalEngine.Items.AddRange(new object[]
         {
             new FinalEngineOption(FinalTranscriptionEngine.Parakeet, "Parakeet"),
-            new FinalEngineOption(FinalTranscriptionEngine.Qwen, "Qwen3-ASR 1.7B (NVIDIA GPU)")
+            new FinalEngineOption(FinalTranscriptionEngine.Qwen, "Qwen3-ASR 1.7B (CPU or CUDA)")
         });
         _finalEngine.SelectedIndexChanged += (_, _) =>
         {
@@ -966,7 +966,7 @@ internal sealed class SettingsForm : Form
     private void RefreshFinalEngineStatus()
     {
         _finalEngineStatus.Text = SelectedFinalEngine() == FinalTranscriptionEngine.Qwen
-            ? "Qwen replaces the live Parakeet text after you stop, using the NVIDIA GPU. The preview device above controls Parakeet only."
+            ? "Qwen replaces the live Parakeet text after you stop. It uses CUDA when available and CPU otherwise. The preview device above controls Parakeet only."
             : "Parakeet provides live text and the final transcript. Mode and device apply to Parakeet.";
         FitFinalEngineStatus();
     }

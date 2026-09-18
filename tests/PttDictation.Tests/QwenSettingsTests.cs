@@ -48,6 +48,9 @@ public sealed class QwenSettingsTests
                 Assert.IsTrue(form.SelectorsUseDarkFlatStyleForTest);
                 StringAssert.Contains(form.FinalEngineStatusForTest, "after you stop");
                 StringAssert.Contains(form.FinalEngineStatusForTest, "live Parakeet");
+                StringAssert.Contains(form.FinalEngineStatusForTest, "CPU");
+                StringAssert.Contains(form.FinalEngineStatusForTest, "CUDA");
+                Assert.IsFalse(form.FinalEngineStatusForTest.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase));
                 form.SaveForTest();
                 var saved = store.Load();
                 Assert.AreEqual(FinalTranscriptionEngine.Qwen, saved.FinalTranscriptionEngine);

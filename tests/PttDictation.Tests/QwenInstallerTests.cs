@@ -14,6 +14,15 @@ namespace PttDictation.Tests;
 public sealed class QwenInstallerTests
 {
     [TestMethod]
+    public void PackagedSetupUsesPinnedCpuOnlyPyTorch()
+    {
+        var requirements = QwenInstallerPlan.Load().Requirements;
+        StringAssert.Contains(requirements, "torch-2.11.0%2Bcpu-cp312-cp312-win_amd64.whl");
+        StringAssert.Contains(requirements, "sha256:1abeaa46fa7532ed35ed79146f4de5d7a9d4b30462c98052ea4ddfe781ea3eca");
+        Assert.IsFalse(requirements.Contains("cu128", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
     public async Task HealthyExistingInstallationIsValidatedWithoutDownloadsOrPackageChanges()
     {
         using var fixture = new Fixture();
@@ -41,6 +50,14 @@ public sealed class QwenInstallerTests
             {
                 Assert.IsTrue(arguments.Contains("--no-index") && arguments.Contains("--no-deps")
                     && arguments.Contains("--require-hashes") && arguments.Contains("--only-binary=:all:"));
+                Assert.AreEqual("requirements-win-cpu.txt", Path.GetFileName(arguments[^1]));
+            }
+            if (arguments.Contains("-c"))
+            {
+                var validation = arguments[Array.IndexOf(arguments.ToArray(), "-c") + 1];
+                StringAssert.Contains(validation, "2.11.0+cpu");
+                StringAssert.Contains(validation, "2.11.0+cu128");
+                Assert.IsFalse(validation.Contains("assert torch.cuda", StringComparison.Ordinal));
             }
             return Task.CompletedTask;
         };

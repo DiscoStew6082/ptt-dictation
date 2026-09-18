@@ -55,3 +55,7 @@ jobs:
       - name: Test permanent local deployment workflow
         shell: pwsh
         run: ./scripts/Test-LocalAppDeployment.ps1
+
+      - name: Test Qwen registration workflow
+        shell: pwsh
+        run: ./scripts/Test-QwenInstallation.ps1

@@ -32,7 +32,7 @@ internal sealed record QwenInstallerPlan(string RuntimeUrl, string RuntimeSha256
         }
         return (JsonSerializer.Deserialize<QwenInstallerPlan>(Read("assets.json"),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Missing Qwen setup plan."))
-            with { Requirements = Read("requirements-win-cu128.txt") };
+            with { Requirements = Read("requirements-win-cpu.txt") };
     }
 }
 
@@ -112,16 +112,13 @@ internal sealed class QwenInstaller : IQwenInstaller
         {
             try
             {
-                progress?.Report(new("Checking the existing Qwen runtime and NVIDIA GPU…"));
+                progress?.Report(new("Checking the existing Qwen runtime…"));
                 await ValidateRuntimeAsync(registeredPython, model, progress, token).ConfigureAwait(false);
                 return await RegisterAsync(registeredPython, model, progress, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception error)
             {
-                if (error.Message.Contains("No NVIDIA CUDA device", StringComparison.Ordinal)
-                    || error.Message.Contains("does not support Qwen", StringComparison.Ordinal))
-                    throw; // Downloading the same packages cannot repair missing/unsupported hardware.
                 progress?.Report(new("Existing runtime needs repair. Preparing an isolated Qwen runtime. " + error.Message));
             }
         }
@@ -139,14 +136,14 @@ internal sealed class QwenInstaller : IQwenInstaller
             await ExtractRuntimeAsync(archive, runtime, token).ConfigureAwait(false);
             var python = RequireLocalPath(Path.Combine(runtime, "python", "python.exe"));
             if (!File.Exists(python)) throw new InvalidDataException("The downloaded Python runtime is incomplete.");
-            var requirements = Path.Combine(runtime, "requirements-win-cu128.txt");
+            var requirements = Path.Combine(runtime, "requirements-win-cpu.txt");
             await File.WriteAllTextAsync(requirements, _plan.Requirements, new UTF8Encoding(false), token).ConfigureAwait(false);
             progress?.Report(new("Installing the verified Qwen packages. The first download can take several minutes."));
             await _run(python, new[] { "-I", "-B", "-m", "pip", "--isolated", "--disable-pip-version-check",
                 "install", "--no-input", "--no-index", "--no-deps", "--only-binary=:all:", "--require-hashes",
                 "--cache-dir", Path.Combine(setup, "wheel-cache"), "-r", requirements }, progress, token).ConfigureAwait(false);
             await _run(python, new[] { "-I", "-B", "-m", "pip", "--isolated", "check" }, progress, token).ConfigureAwait(false);
-            progress?.Report(new("Checking Qwen packages, model processor, and NVIDIA GPU…"));
+            progress?.Report(new("Checking Qwen packages and the offline model processor…"));
             await ValidateRuntimeAsync(python, model, progress, token).ConfigureAwait(false);
             var result = await RegisterAsync(python, model, progress, token).ConfigureAwait(false);
             registered = true;
@@ -368,11 +365,10 @@ internal sealed class QwenInstaller : IQwenInstaller
         import torch, transformers
         from transformers import AutoModelForMultimodalLM, AutoProcessor
         assert sys.version_info[:2] == (3, 12), "Qwen setup requires Python 3.12."
-        assert torch.__version__ == "2.11.0+cu128", "Qwen setup requires PyTorch 2.11.0 with CUDA 12.8."
+        assert torch.__version__ in ("2.11.0+cpu", "2.11.0+cu128"), "Qwen setup requires validated PyTorch 2.11.0 CPU or CUDA 12.8."
         assert transformers.__version__ == "5.13.0", "Qwen setup requires Transformers 5.13.0."
-        assert torch.cuda.is_available(), "No NVIDIA CUDA device is available. Update the NVIDIA driver or use Parakeet."
-        assert torch.cuda.is_bf16_supported(), "This NVIDIA GPU does not support Qwen's BF16 configuration. Use Parakeet."
         AutoProcessor.from_pretrained(sys.argv[1], local_files_only=True, trust_remote_code=False)
-        print("Validated Qwen runtime on " + torch.cuda.get_device_name(0), flush=True)
+        backend = "CUDA" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "CPU"
+        print("Validated Qwen runtime; inference backend: " + backend, flush=True)
         """;
 }

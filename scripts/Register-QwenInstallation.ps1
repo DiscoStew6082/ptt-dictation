@@ -32,8 +32,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $modelDirectory 'model.safetensors')
     -not (Test-Path -LiteralPath (Join-Path $modelDirectory 'model.safetensors.index.json'))) {
     throw 'Qwen model weights missing.'
 }
-$probe = 'import sys, torch, transformers; from transformers import AutoModelForMultimodalLM, AutoProcessor; assert sys.version_info >= (3,12), "Python 3.12 required"; assert transformers.__version__ == "5.13.0", "Use validated Transformers 5.13.0"; assert torch.cuda.is_available(), "CUDA unavailable"; print("Validated Qwen runtime on " + torch.cuda.get_device_name(0))'
-& $pythonExe -B -c $probe
+$probe = 'import sys, torch, transformers; from transformers import AutoModelForMultimodalLM, AutoProcessor; assert sys.version_info >= (3,12), "Python 3.12 required"; assert torch.__version__ in ("2.11.0+cpu", "2.11.0+cu128"), "Use validated PyTorch 2.11.0 CPU or CUDA 12.8"; assert transformers.__version__ == "5.13.0", "Use validated Transformers 5.13.0"; AutoProcessor.from_pretrained(sys.argv[1], local_files_only=True, trust_remote_code=False); backend = "CUDA" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "CPU"; print("Validated Qwen runtime; inference backend: " + backend)'
+& $pythonExe -B -c $probe $modelDirectory
 if ($LASTEXITCODE -ne 0) { throw 'Qwen environment validation failed; registration unchanged.' }
 if ($ValidateOnly) { return }
 [IO.Directory]::CreateDirectory($AppDataPath) | Out-Null

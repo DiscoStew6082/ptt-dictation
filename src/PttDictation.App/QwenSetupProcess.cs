@@ -76,7 +76,7 @@ internal static class QwenSetupProcess
                 throw new OperationCanceledException("Qwen setup was cancelled.", failure, cancellationToken);
             throw new TimeoutException(install
                 ? "Qwen package installation exceeded 45 minutes. Try setup again; downloaded wheels are cached."
-                : "Qwen runtime validation exceeded 90 seconds. Check the NVIDIA driver or use Parakeet.", failure);
+                : "Qwen runtime validation exceeded 90 seconds. Check the local runtime and model files, or try setup again.", failure);
         }
         finally
         {
