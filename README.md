@@ -114,6 +114,8 @@ Review the upstream repositories for their own license terms before redistributi
 
 ## Release Verification
 
+For local error investigation, see [Error tracing](docs/error-diagnostics.md). Failures are retained separately from the detailed preview timeline.
+
 Every published release should include a SHA-256 checksum for the downloadable zip. Users should compare the published checksum with:
 
 ```powershell

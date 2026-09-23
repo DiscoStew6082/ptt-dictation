@@ -112,6 +112,10 @@ public static class DiagnosticTrace
             Session? session = null;
             if (recordingId != null)
                 sessions.TryGetValue(recordingId, out session);
+            if (session != null && stage == "focus_guard.begin")
+                Volatile.Write(ref session.TargetContext, data);
+            if (session != null && stage == "target.process")
+                Volatile.Write(ref session.TargetProcess, data);
             return new Entry
             {
                 TimestampUtc = DateTimeOffset.UtcNow,
@@ -121,6 +125,8 @@ public static class DiagnosticTrace
                 ElapsedMs = Stopwatch.GetElapsedTime(session?.Started ?? started).TotalMilliseconds,
                 Stage = stage,
                 Data = data,
+                TargetContext = session == null ? null : Volatile.Read(ref session.TargetContext),
+                TargetProcess = session == null ? null : Volatile.Read(ref session.TargetProcess),
                 Error = error
             };
         }
@@ -263,10 +269,6 @@ public static class DiagnosticTrace
 
         private void Append(Entry entry)
         {
-            var path = Path.Combine(root, "events.jsonl");
-            var previous = Path.Combine(root, "events.previous.jsonl");
-            RejectLink(path);
-            RejectLink(previous);
             var line = JsonSerializer.Serialize(new
             {
                 timestampUtc = entry.TimestampUtc,
@@ -275,12 +277,37 @@ public static class DiagnosticTrace
                 sessionSequence = entry.SessionSequence,
                 elapsedMs = entry.ElapsedMs,
                 build,
+                processId = Environment.ProcessId,
                 stage = entry.Stage,
                 data = entry.Data,
+                target = entry.TargetContext,
+                targetProcess = entry.TargetProcess,
                 exception = entry.Error?.ToString()
             });
             if (System.Text.Encoding.UTF8.GetByteCount(line) > MaximumLogBytes)
                 line = JsonSerializer.Serialize(new { timestampUtc = entry.TimestampUtc, build, stage = "diagnostics.event_too_large", originalStage = entry.Stage });
+            // Preserve failures independently of high-volume preview traffic.
+            // Either destination can fail without preventing the other write.
+            if (IsIssue(entry))
+                try { AppendRotating("errors", line); }
+                catch { Interlocked.Increment(ref failures); }
+            AppendRotating("events", line);
+        }
+
+        private static bool IsIssue(Entry entry) =>
+            entry.Error is not null and not OperationCanceledException
+            || entry.Stage.EndsWith("_failed", StringComparison.Ordinal)
+            || entry.Stage.EndsWith("_rejected", StringComparison.Ordinal)
+            || entry.Stage.EndsWith("_timeout", StringComparison.Ordinal)
+            || entry.Stage is "target.conflict" or "inline.conflict" or "target.unavailable"
+                or "ui.error" or "ui.warning" or "diagnostics.loss";
+
+        private void AppendRotating(string name, string line)
+        {
+            var path = Path.Combine(root, name + ".jsonl");
+            var previous = Path.Combine(root, name + ".previous.jsonl");
+            RejectLink(path);
+            RejectLink(previous);
             if (File.Exists(path) && new FileInfo(path).Length + System.Text.Encoding.UTF8.GetByteCount(line) + 2 > MaximumLogBytes)
                 File.Move(path, previous, overwrite: true);
             File.AppendAllText(path, line + Environment.NewLine);
@@ -314,6 +341,8 @@ public static class DiagnosticTrace
         {
             public readonly long Started = Stopwatch.GetTimestamp();
             public long Sequence;
+            public object? TargetContext;
+            public object? TargetProcess;
         }
 
         private sealed class Entry
@@ -325,6 +354,8 @@ public static class DiagnosticTrace
             public double ElapsedMs;
             public string Stage = string.Empty;
             public object? Data;
+            public object? TargetContext;
+            public object? TargetProcess;
             public Exception? Error;
             public Stream? Audio;
             public TaskCompletionSource? Completion;

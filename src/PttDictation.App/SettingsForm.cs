@@ -887,6 +887,7 @@ internal sealed class SettingsForm : Form
         }
         catch (InvalidOperationException ex)
         {
+            DiagnosticTrace.Write("settings.validation_failed", error: ex);
             MessageBox.Show(this, ex.Message, "Choose different hotkeys", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -899,6 +900,7 @@ internal sealed class SettingsForm : Form
         }
         catch (Exception error)
         {
+            DiagnosticTrace.Write("settings.save_failed", error: error);
             _saveStatus.Text = "Settings were not saved: " + error.Message;
         }
         finally { _save.Enabled = true; }
@@ -1062,6 +1064,7 @@ internal sealed class SettingsForm : Form
         }
         catch (Exception error)
         {
+            DiagnosticTrace.Write("qwen.setup_failed", error: error);
             if (!IsDisposed) SetQwenSetupStatus("Qwen setup failed: " + error.Message);
         }
         finally
@@ -1159,6 +1162,7 @@ internal sealed class SettingsForm : Form
         }
         catch (Exception ex)
         {
+            DiagnosticTrace.Write("model.download_failed", error: ex);
             _modelStatus.Text = $"Download failed: {ex.Message}";
             _downloadModel.Enabled = true;
             _downloadModel.Text = "Download";

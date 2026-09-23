@@ -36,11 +36,32 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
         var focus = _events.ReadFocus();
         var valid = !_disposed && _events.Available && focus.Foreground != IntPtr.Zero
             && focus.Focused != IntPtr.Zero && generation == Interlocked.Read(ref _generation);
-        DiagnosticTrace.Write("focus_guard.begin", new { valid, generation, hasForeground = focus.Foreground != IntPtr.Zero, hasFocusedControl = focus.Focused != IntPtr.Zero }, recordingId: recordingId);
+        DiagnosticTrace.Write("focus_guard.begin", new { valid, generation,
+            hasForeground = focus.Foreground != IntPtr.Zero, hasFocusedControl = focus.Focused != IntPtr.Zero,
+            targetProcessId = focus.ProcessId, foregroundWindow = focus.Foreground.ToInt64(),
+            focusedWindow = focus.Focused.ToInt64() }, recordingId: recordingId);
+        // Process inspection is diagnostic only and never delays target capture.
+        if (focus.ProcessId != 0)
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    using var process = System.Diagnostics.Process.GetProcessById((int)focus.ProcessId);
+                    DiagnosticTrace.Write("target.process", new { targetProcessId = focus.ProcessId,
+                        processName = process.ProcessName }, recordingId: recordingId);
+                }
+                catch (Exception error)
+                {
+                    DiagnosticTrace.Write("target.process_lookup_failed", new { targetProcessId = focus.ProcessId,
+                        exceptionType = error.GetType().FullName }, recordingId: recordingId);
+                }
+            });
         return () =>
         {
+            bool SamePosition(FocusCapturePosition current) =>
+                focus.Foreground == current.Foreground && focus.Focused == current.Focused;
             var accepted = valid && !_disposed && generation == Interlocked.Read(ref _generation)
-                && focus == _events.ReadFocus() && generation == Interlocked.Read(ref _generation);
+                && SamePosition(_events.ReadFocus()) && generation == Interlocked.Read(ref _generation);
             DiagnosticTrace.Write("focus_guard.confirm", new { accepted, valid, disposed = _disposed, initialGeneration = generation, currentGeneration = Interlocked.Read(ref _generation) }, recordingId: recordingId);
             return accepted;
         };
@@ -92,9 +113,9 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
             var foreground = GetForegroundWindow();
             if (foreground == IntPtr.Zero) return default;
             var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
-            var thread = GetWindowThreadProcessId(foreground, out _);
+            var thread = GetWindowThreadProcessId(foreground, out var process);
             return GetGUIThreadInfo(thread, ref info)
-                ? new FocusCapturePosition(foreground, info.Focused) : default;
+                ? new FocusCapturePosition(foreground, info.Focused) { ProcessId = process } : default;
         }
 
         public bool IsInFocusedHierarchy(IntPtr window)
@@ -144,7 +165,10 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
     }
 }
 
-internal readonly record struct FocusCapturePosition(IntPtr Foreground, IntPtr Focused);
+internal readonly record struct FocusCapturePosition(IntPtr Foreground, IntPtr Focused)
+{
+    public uint ProcessId { get; init; }
+}
 
 internal interface IFocusCaptureEvents : IDisposable
 {

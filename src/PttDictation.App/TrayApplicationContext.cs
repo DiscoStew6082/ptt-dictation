@@ -124,6 +124,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
             catch (Exception ex)
             {
+                DiagnosticTrace.Write("ui.action_failed", error: ex);
                 var status = DictationStatusCatalog.Error(ex.Message);
                 ShowStatus(status, ToolTipIcon.Error);
                 _statusSoundPlayer.Play(StatusSound.Error);
@@ -165,6 +166,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
+            DiagnosticTrace.Write("settings.load_failed", error: ex);
             ShowTrayNotification("Settings were not loaded", ex.Message, ToolTipIcon.Warning);
         }
     }
@@ -297,6 +299,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowTrayNotification(string title, string message, ToolTipIcon icon)
     {
+        if (icon is ToolTipIcon.Error or ToolTipIcon.Warning)
+            DiagnosticTrace.Write(icon == ToolTipIcon.Error ? "ui.error" : "ui.warning",
+                new { title, message, notificationsEnabled = _settings.NotificationsEnabled });
         if (!_settings.NotificationsEnabled)
         {
             return;

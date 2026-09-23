@@ -419,9 +419,13 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
                 textReadOnly = text.DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute);
             }
 
-            var canPaste = AllowsFallback(element.Current.IsEnabled, element.Current.IsPassword,
-                element.Current.ControlType == ControlType.Edit, valueReadOnly, textReadOnly);
-            DiagnosticTrace.Write("target.surface_capabilities", new { canPaste, hasTextPattern = pattern is not null, valueReadOnly, textReadOnly = textReadOnly is bool readOnly ? (bool?)readOnly : null });
+            var enabled = element.Current.IsEnabled;
+            var password = element.Current.IsPassword;
+            var controlType = element.Current.ControlType;
+            var canPaste = AllowsFallback(enabled, password,
+                controlType == ControlType.Edit, valueReadOnly, textReadOnly);
+            DiagnosticTrace.Write("target.surface_capabilities", new { canPaste, controlType = controlType.ProgrammaticName,
+                hasTextPattern = pattern is not null, valueReadOnly, textReadOnly = textReadOnly is bool readOnly ? (bool?)readOnly : null });
             if (canPaste && pattern is not null && textReadOnly is false
                 && pattern.SupportedTextSelection != SupportedTextSelection.None)
                 return new AutomationTextSurface(element, pattern, canPasteFallback: true, supportsReplacement: true);
