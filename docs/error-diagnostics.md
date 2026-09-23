@@ -28,6 +28,12 @@ The existing detailed timeline can contain dictated text and exception messages.
 
 Recognition and insertion are separate: a `qwen.final_completed` event followed by a workflow failure can mean recognition succeeded but insertion failed. A saved transcript is not evidence that the textbox was updated.
 
+`qwen.preload_started`, `qwen.preload_completed`, `qwen.preload_cancelled`, and `qwen.preload_failed` identify background startup loading and its elapsed time. Compare worker readiness with recording start and Stop to distinguish cold loading from final inference latency.
+
+`recognition.preview_empty_warning` is also retained in the error index. It means at least two successful, non-cancelled preview responses were all empty or whitespace, no assembled preview contained text, and final recognition returned nonempty text. Failed previews, incomplete worker settlement, cancelled final recognition, empty final text, and insufficient preview samples do not trigger this comparison. The event contains counts, audio/processing durations, and final character count only. It changes no notifications, recognition, retries, insertion, or audio retention. It proves a preview/final discrepancy, not its acoustic or model cause.
+
+The [controlled empty-preview investigation](research/parakeet-empty-preview-2026-09-23.md) records the observed incident and the limits of replay evidence.
+
 ## September 23 investigation
 
 Three distinct sequences were present in the local trace; they should not be treated as one generic "textbox changed" failure:

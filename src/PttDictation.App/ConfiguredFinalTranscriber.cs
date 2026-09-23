@@ -61,7 +61,10 @@ internal sealed class ConfiguredFinalTranscriber : ITranscriber, IWarmableTransc
         {
             if (engine != FinalTranscriptionEngine.Qwen)
             {
-                RetireQwen();
+                // A session keeps its captured engine, but must not unload Qwen
+                // selected and preloaded since that older session began.
+                if (_settings().FinalTranscriptionEngine != FinalTranscriptionEngine.Qwen)
+                    RetireQwen();
                 return await _preview.TranscribeAsync(wavPath, linked.Token);
             }
             _report("Finishing transcription with Qwen.");

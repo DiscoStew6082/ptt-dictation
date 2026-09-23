@@ -300,7 +300,7 @@ public static class DiagnosticTrace
             || entry.Stage.EndsWith("_rejected", StringComparison.Ordinal)
             || entry.Stage.EndsWith("_timeout", StringComparison.Ordinal)
             || entry.Stage is "target.conflict" or "inline.conflict" or "target.unavailable"
-                or "ui.error" or "ui.warning" or "diagnostics.loss";
+                or "ui.error" or "ui.warning" or "diagnostics.loss" or "recognition.preview_empty_warning";
 
         private void AppendRotating(string name, string line)
         {

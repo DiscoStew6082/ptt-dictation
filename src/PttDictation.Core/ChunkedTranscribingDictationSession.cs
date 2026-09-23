@@ -53,6 +53,7 @@ public sealed class ChunkedTranscribingDictationSession(
     private bool _stopping;
     private string? _recordingId;
     private int _nextChunkId;
+    private PreviewObservations _previewObservations = new();
 
     public event Action<TranscriptUpdate>? TranscriptUpdated;
 
@@ -84,6 +85,7 @@ public sealed class ChunkedTranscribingDictationSession(
             _started = true;
             _recordingId = DiagnosticTrace.CurrentRecordingId;
             _nextChunkId = 0;
+            _previewObservations = new();
             _latestCumulativeDuration = null;
             _stopping = false;
             _chunkProcessing = Task.CompletedTask;
@@ -155,9 +157,11 @@ public sealed class ChunkedTranscribingDictationSession(
         RecordedAudio? finalAudio = null;
         try
         {
+            PreviewObservations previewObservations;
             lock (_gate)
             {
                 _stopping = true;
+                previewObservations = _previewObservations;
             }
 
             finalAudio = await recorder.StopAsync(cancellationToken);
@@ -165,10 +169,13 @@ public sealed class ChunkedTranscribingDictationSession(
             recorder.AudioChunkReady -= OnAudioChunkReady;
             CancelChunkProcessing();
             await WaitForChunkProcessingToSettleAsync();
+            var previewsSettled = GetChunkProcessingTask().IsCompletedSuccessfully;
             ReleaseOutstandingChunks();
             Trace("recognition.final_started");
             var finalTranscript = await finalTranscriber.TranscribeAsync(finalAudio.Path, cancellationToken);
             Trace("recognition.final_raw", finalTranscript);
+            if (previewsSettled && !cancellationToken.IsCancellationRequested)
+                TraceEmptyPreviewDiscrepancy(previewObservations, finalAudio.Duration, finalTranscript.Text);
             Release(finalAudio);
             finalAudio = null;
             return new DictationSessionResult(finalTranscript, CleanupWarningPath);
@@ -288,7 +295,7 @@ public sealed class ChunkedTranscribingDictationSession(
                 ReleaseOwnedChunk(superseded.Value.Audio);
                 Trace("chunk.superseded", new { chunkId = superseded.Value.Id, replacementChunkId = chunkId });
             }
-            _pendingChunks.AddLast(new QueuedAudioChunk(chunk, cancellationToken, queuedAt, chunkId));
+            _pendingChunks.AddLast(new QueuedAudioChunk(chunk, cancellationToken, queuedAt, chunkId, _previewObservations));
             Trace("chunk.queued", new { chunkId, chunk.Duration, chunk.OverlapDuration, chunk.IsCumulative, ownedChunks = _ownedChunks.Count });
             if (!_chunkWorkerRunning)
             {
@@ -298,7 +305,17 @@ public sealed class ChunkedTranscribingDictationSession(
         }
     }
 
-    private sealed record QueuedAudioChunk(RecordedAudio Audio, CancellationToken Cancellation, long QueuedAt, int Id);
+    private sealed record QueuedAudioChunk(RecordedAudio Audio, CancellationToken Cancellation, long QueuedAt,
+        int Id, PreviewObservations Observations);
+
+    private sealed class PreviewObservations
+    {
+        public int Successful, Empty, Failed, Cancelled;
+        public bool HasNonemptyPreview;
+        public double MinimumAudioMilliseconds = double.PositiveInfinity;
+        public double MaximumAudioMilliseconds;
+        public long ProcessingMilliseconds;
+    }
 
     private async Task ProcessQueuedChunksAsync()
     {
@@ -315,12 +332,17 @@ public sealed class ChunkedTranscribingDictationSession(
                 queued = next.Value;
                 _pendingChunks.RemoveFirst();
             }
-            if (queued.Cancellation.IsCancellationRequested) ReleaseOwnedChunk(queued.Audio);
-            else await ProcessChunkAsync(queued.Audio, queued.Cancellation, queued.QueuedAt, queued.Id);
+            if (queued.Cancellation.IsCancellationRequested)
+            {
+                lock (_gate) queued.Observations.Cancelled++;
+                ReleaseOwnedChunk(queued.Audio);
+            }
+            else await ProcessChunkAsync(queued.Audio, queued.Cancellation, queued.QueuedAt, queued.Id, queued.Observations);
         }
     }
 
-    private async Task ProcessChunkAsync(RecordedAudio chunk, CancellationToken cancellationToken, long queuedAt, int chunkId)
+    private async Task ProcessChunkAsync(RecordedAudio chunk, CancellationToken cancellationToken, long queuedAt,
+        int chunkId, PreviewObservations observations)
     {
         using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
         var startedAt = Environment.TickCount64;
@@ -331,12 +353,21 @@ public sealed class ChunkedTranscribingDictationSession(
             Trace("recognition.chunk_raw", new { chunkId, transcript.Text, transcript.Words, transcript.InferenceTime, transcript.Confidence });
             if (cancellationToken.IsCancellationRequested)
             {
+                lock (_gate) observations.Cancelled++;
                 Trace("chunk.result_cancelled", new { chunkId });
                 return;
             }
 
             var stableText = chunk.IsCumulative ? transcript.Text
                 : _assembler.Add(transcript, chunk.OverlapDuration.GetValueOrDefault());
+            lock (_gate)
+            {
+                observations.Successful++;
+                if (string.IsNullOrWhiteSpace(transcript.Text)) observations.Empty++;
+                observations.HasNonemptyPreview |= !string.IsNullOrWhiteSpace(stableText);
+                observations.MinimumAudioMilliseconds = Math.Min(observations.MinimumAudioMilliseconds, chunk.Duration.TotalMilliseconds);
+                observations.MaximumAudioMilliseconds = Math.Max(observations.MaximumAudioMilliseconds, chunk.Duration.TotalMilliseconds);
+            }
             Trace("preview.assembled", new { chunkId, chunk.IsCumulative, text = stableText });
             if (stableText.Length > 0)
             {
@@ -345,12 +376,44 @@ public sealed class ChunkedTranscribingDictationSession(
         }
         catch (Exception ex)
         {
+            lock (_gate)
+            {
+                if (ex is OperationCanceledException) observations.Cancelled++;
+                else observations.Failed++;
+            }
             Trace(ex is OperationCanceledException ? "chunk.cancelled" : "chunk.failed", new { chunkId }, ex);
         }
         finally
         {
-            Trace("chunk.finished", new { chunkId, elapsedMilliseconds = Environment.TickCount64 - startedAt });
+            var elapsedMilliseconds = Environment.TickCount64 - startedAt;
+            lock (_gate) observations.ProcessingMilliseconds += elapsedMilliseconds;
+            Trace("chunk.finished", new { chunkId, elapsedMilliseconds });
             ReleaseOwnedChunk(chunk);
+        }
+    }
+
+    private void TraceEmptyPreviewDiscrepancy(PreviewObservations observations, TimeSpan finalDuration, string finalText)
+    {
+        // Only settled, successful recognition is compared. Obsolete cancelled
+        // work is counted separately; provider failures already have their own
+        // diagnostics. Keep this warning metadata-only and behavior-neutral.
+        if (string.IsNullOrWhiteSpace(finalText)) return;
+        lock (_gate)
+        {
+            if (observations.Successful < 2 || observations.Empty != observations.Successful
+                || observations.Failed != 0 || observations.HasNonemptyPreview) return;
+            Trace("recognition.preview_empty_warning", new
+            {
+                successfulPreviewCount = observations.Successful,
+                emptyPreviewCount = observations.Empty,
+                failedPreviewCount = observations.Failed,
+                cancelledPreviewCount = observations.Cancelled,
+                minimumPreviewAudioMilliseconds = observations.MinimumAudioMilliseconds,
+                maximumPreviewAudioMilliseconds = observations.MaximumAudioMilliseconds,
+                previewProcessingMilliseconds = observations.ProcessingMilliseconds,
+                finalAudioMilliseconds = finalDuration.TotalMilliseconds,
+                finalCharacterCount = finalText.Length
+            });
         }
     }
 

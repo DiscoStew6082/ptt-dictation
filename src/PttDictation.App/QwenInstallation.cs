@@ -64,7 +64,7 @@ internal static class QwenInstallation
         try
         {
             _ = Load(appData);
-            return "Configured locally. Loads on first use and stays ready for later dictations.";
+            return "Configured locally. When selected, loads in the background after app startup or selection and stays ready for later dictations.";
         }
         catch (Exception error)
         {

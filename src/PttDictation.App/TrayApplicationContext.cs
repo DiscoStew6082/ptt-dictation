@@ -10,6 +10,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly WasapiAudioRecorder _recorder;
     private readonly LazyAssetTranscriber _transcriber;
     private readonly ConfiguredFinalTranscriber _finalTranscriber;
+    private readonly SelectedQwenPreloader _qwenPreloader;
     private readonly DictationWorkflow _dictationWorkflow;
     private readonly LiveClipboardPaster _livePaster;
     private readonly DictationPresentation _dictationPresentation;
@@ -50,6 +51,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             message => workflow?.ReportProcessingDetail(message));
         _finalTranscriber = new ConfiguredFinalTranscriber(_transcriber, () => _settings,
             AppPaths.RootDirectory, message => workflow?.ReportProcessingDetail(message));
+        _qwenPreloader = new SelectedQwenPreloader(_finalTranscriber.WarmUpAsync, _lifetime.Token);
         _livePaster = new LiveClipboardPaster();
         workflow = new DictationWorkflow(
             new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, () => _finalTranscriber.CreateSessionTranscriber()),
@@ -341,6 +343,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _hotkeySource.Configure(settings.HoldHotkey, settings.ToggleHotkey);
         _settings = settings;
         UpdateTrayText();
+        _ = _qwenPreloader.ApplySelection(settings.FinalTranscriptionEngine);
     }
 
     private void OnAudioLevelChanged(double level)
