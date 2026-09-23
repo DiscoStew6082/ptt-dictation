@@ -4,6 +4,11 @@ using NAudio.Wave;
 using PttDictation.App;
 using PttDictation.Core;
 
+if (args.Length == 2 && args[0] == "--capture-stop-probe")
+    return await CaptureStopProbe.RunAsync(args[1]);
+if (args.Length == 3 && args[0] == "--capture-stop-probe-worker")
+    return await CaptureStopProbe.RunWorkerAsync(args[1], args[2]);
+
 if (args.Length == 3 && args[0] == "--qwen-probe")
     return await QwenIntegrationProbe.RunAsync(args[1], args[2]);
 
@@ -18,7 +23,8 @@ if (args.Length == 3 && args[0] == "--saved-insertion-probe")
 if (args.Length == 5 && args[0] == "--context-probe")
     return await RecognitionContextProbe.RunAsync(args[1], args[2], args[3], args[4]);
 
-// This harness drives the experimental production workflow. It never opens the microphone,
+// The default replay below is microphone-free; only the explicit capture-stop probe opens it.
+// This default harness drives the experimental production workflow. It never opens the microphone,
 // creates a Windows text target, accesses the clipboard, or saves app settings.
 if (args.Length != 2 && args.Length != 4)
 {

@@ -166,6 +166,34 @@ public sealed class LiveInsertionFailureWorkflowTests
     }
 
     [TestMethod]
+    public async Task CaptureFailureRemainsVisibleWhenAutomaticStopAlsoFails()
+    {
+        var session = new FinishingSession { StartRelease = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        var output = new SignallingOutput();
+        var history = new SessionHistory();
+        var workflow = new DictationWorkflow(new SingleDictationSessionFactory(session), output, history);
+        var start = workflow.HandleAsync(DictationIntent.Toggle, CancellationToken.None);
+        // Recorded ordering: target capture rejects while microphone startup is
+        // pending; automatic finalization then encounters a capture-stop error.
+        output.Fail();
+        Assert.AreEqual(0, session.StopCount);
+        session.StartRelease.TrySetResult();
+        await session.StopRequested.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        session.Final.TrySetException(new InvalidOperationException(
+            "Windows could not stop microphone capture.", new TimeoutException("Capture stop timed out.")));
+        await start.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.AreEqual(DictationWorkflowPhase.Failed, workflow.CurrentState.Phase);
+        StringAssert.Contains(workflow.CurrentState.ErrorMessage!, "Automation reference is unavailable.",
+            "The original textbox failure must remain visible when cleanup/finalization also fails.");
+        StringAssert.Contains(workflow.CurrentState.ErrorMessage!, "Windows could not stop microphone capture.");
+        Assert.AreEqual(1, session.StopCount);
+        Assert.IsFalse(session.Recording);
+        Assert.AreEqual(0, output.Pastes);
+        Assert.AreEqual(0, history.Items.Count);
+    }
+
+    [TestMethod]
     public async Task UserStopAndQueuedFailureShareOneStopAndRemainCancellable()
     {
         var dispatcher = new QueuedContext();

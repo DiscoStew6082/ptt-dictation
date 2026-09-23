@@ -286,6 +286,13 @@ public sealed class DictationWorkflow
             if (TryCompleteAcknowledgedPreview(comparison, operation,
                 sessionResultCleanupWarningPath ?? session.CleanupWarningPath)) return;
             Trace("workflow.finish_failed", error: ex);
+            Exception? insertionFailure;
+            lock (_gate) insertionFailure = _insertionFailure;
+            // Automatic finishing after a rejected target can itself fail (for
+            // example while stopping capture). Keep the original cause visible.
+            var failureMessage = insertionFailure is not null && !ReferenceEquals(insertionFailure, ex)
+                ? insertionFailure.Message + " Finalization also failed: " + ex.Message
+                : ex.Message;
             var retained = comparison?.FinalText;
             if (_clipboardPaster is ILiveClipboardPaster)
             {
@@ -295,7 +302,7 @@ public sealed class DictationWorkflow
             Publish(new DictationWorkflowState(
                 DictationWorkflowPhase.Failed,
                 Transcript: retained ?? string.Empty,
-                ErrorMessage: ex.Message + (_clipboardPaster is ILiveClipboardPaster && !string.IsNullOrWhiteSpace(retained)
+                ErrorMessage: failureMessage + (_clipboardPaster is ILiveClipboardPaster && !string.IsNullOrWhiteSpace(retained)
                     ? " Your transcript is available in Session History." : string.Empty),
                 CleanupWarningPath: sessionResultCleanupWarningPath ?? session.CleanupWarningPath));
         }

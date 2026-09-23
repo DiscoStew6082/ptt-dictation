@@ -157,19 +157,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
         Exception? stopError = null;
         try
         {
-            if (!stopped.Task.IsCompleted)
-            {
-                recorder.StopRecording();
-            }
-
-            if (!stopped.Task.Wait(StopTimeout))
-            {
-                stopError = new TimeoutException("Windows did not stop microphone capture in time.");
-            }
-            else
-            {
-                stopError = stopped.Task.Result;
-            }
+            stopError = StopCapture(() => recorder.CaptureState, recorder.StopRecording, stopped.Task, StopTimeout);
         }
         catch (Exception ex)
         {
@@ -286,6 +274,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
     private void DisposeCore()
     {
         WasapiRecorder? recorder;
+        TaskCompletionSource<Exception?>? stopped;
         PcmChunkBuffer? pcm;
         lock (_gate)
         {
@@ -299,7 +288,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             _chunkPublications.StopAccepting();
             recorder = _recorder;
             _recorder = null;
-            _recordingStopped = null;
+            stopped = _recordingStopped;
             pcm = _pcm;
             _pcm = null;
         }
@@ -308,13 +297,25 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
         {
             try
             {
-                recorder.StopRecording();
+                if (stopped is not null)
+                {
+                    StopCapture(() => recorder.CaptureState, recorder.StopRecording, stopped.Task, StopTimeout);
+                }
+                else
+                {
+                    recorder.StopRecording();
+                }
             }
             catch
             {
             }
 
             DetachAndDispose(recorder);
+        }
+
+        lock (_gate)
+        {
+            _recordingStopped = null;
         }
 
         _chunkPublications.Drain();
@@ -325,6 +326,40 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
     internal static WaveFormat CreateCaptureFormat()
     {
         return new WaveFormat(16000, 16, 1);
+    }
+
+    internal static Exception? StopCapture(
+        Func<CaptureState> getCaptureState,
+        Action stopRecording,
+        Task<Exception?> recordingStopped,
+        TimeSpan timeout)
+    {
+        if (!recordingStopped.IsCompleted)
+        {
+            stopRecording();
+        }
+
+        // NAudio 3.1.0 can overwrite an early Stopping state with Capturing
+        // when its capture thread finishes starting. Replay only on that state
+        // transition; a fixed startup delay cannot establish this handshake.
+        var completed = SpinWait.SpinUntil(() =>
+        {
+            if (recordingStopped.IsCompleted)
+            {
+                return true;
+            }
+
+            if (getCaptureState() == CaptureState.Capturing)
+            {
+                stopRecording();
+            }
+
+            return recordingStopped.IsCompleted;
+        }, timeout);
+
+        return completed
+            ? recordingStopped.GetAwaiter().GetResult()
+            : new TimeoutException("Windows did not stop microphone capture in time.");
     }
 
     internal static string DescribeCaptureFailure(string? deviceName)

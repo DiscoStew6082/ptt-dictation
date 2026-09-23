@@ -48,7 +48,9 @@ per segment; app connection pooling may have slightly different overhead.
 
 Working-set and private-memory counters describe only this owned server. Peak
 working set is the Windows process lifetime peak, not a sampled GPU measurement.
-The selected CPU baseline does not use CUDA. Keep other benchmark inference serial
+The September 11 CPU baseline did not use CUDA; the September 23 selected runtime
+was verified using CUDA0 in the [updated comparison](../../docs/research/qwen-chunking-evaluation-2026-09-23.md).
+Keep other benchmark inference serial
 to avoid competition; leave unrelated live applications unchanged and document them.
 
 The script emits JSONL progress to stdout and atomically updates one JSON report

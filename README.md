@@ -116,6 +116,8 @@ Review the upstream repositories for their own license terms before redistributi
 
 For local error investigation, see [Error tracing](docs/error-diagnostics.md). Failures are retained separately from the detailed preview timeline.
 
+The [same-audio chunking evaluation](docs/research/qwen-chunking-evaluation-2026-09-23.md) compares Qwen and Parakeet with full recordings, independent chunks, and growing audio prefixes. It records why the current app retains Parakeet previews and Qwen's complete-recording final pass.
+
 Every published release should include a SHA-256 checksum for the downloadable zip. Users should compare the published checksum with:
 
 ```powershell

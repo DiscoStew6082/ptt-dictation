@@ -85,8 +85,10 @@ or textbox insertion overhead.
 
 PyTorch peak allocated/reserved figures describe its allocator. Reserved memory can
 persist from earlier requests and is not total device usage or a per-clip minimum.
-The current Parakeet model runs on CPU. Results therefore compare the proposed
-setup with the actual installed setup, not equal-hardware model performance.
+The September 11 Parakeet baseline ran on CPU. Those historical results compare
+the proposed setup with the setup installed then, not equal-hardware model
+performance. The September 23 comparison verified both engines on CUDA; see
+[updated chunking results](../../docs/research/qwen-chunking-evaluation-2026-09-23.md).
 
 Every result persists errors and completion state. Inspect token-limit flags and
 transcript stability before accepting a score. The Qwen runner has a token budget
@@ -105,3 +107,39 @@ The nine checks cover EOU continuation, malformed responses/audio, refusing the
 wrong loopback owner before audio transfer, and scoring substitutions, insertions,
 deletions, abbreviations, and empty references. The actual saved-audio runs provide
 the runtime evidence. Application acceptance would require separate approved work.
+
+## Whole recordings, independent chunks, and cumulative previews
+
+`chunking_eval.py prepare --corpus EXISTING_CORPUS --output IGNORED_DIRECTORY`
+hash-verifies existing PCM16 inputs and writes three labelled variants:
+
+- `whole`: the complete recording.
+- `fixed6`: disjoint six-second windows, concatenated without deleting repeated
+  boundary words. This is a context-loss probe, not stateful streaming.
+- `cumulative2`: every two-second prefix of the longest public clip, plus its
+  exact full tail. This samples the recorder's growing-context workload at a
+  slower cadence than production: the first live prefix covers two seconds,
+  then the two-second window with 1.2-second overlap advances by 0.8 seconds
+  per emitted chunk, subject to audio callback timing.
+
+Run both existing benchmark runners serially against the resulting `corpus.json`,
+using two warm repeats (`--repeats 2 --probe-repeats 2` for Qwen and
+`--warm-runs 2` for Parakeet). Then run:
+
+```powershell
+& $python tools/asr-benchmark/chunking_eval.py score `
+  --groups "$output/inputs/groups.json" `
+  --results "$output/qwen.json" "$output/parakeet.json" `
+  --repeats 2 --output "$output/comparison.json"
+& $python -B -m unittest discover -s tools/asr-benchmark -p test_chunking_eval.py
+```
+
+Scores verify each prepared part's SHA256 and duration against the runner's input
+metadata (and Qwen's per-run metadata), rejecting stale same-ID results. They also
+reject missing, failed, duplicated, or token-capped runs and report every repeat's
+public WER. Private dictation remains unscored; the summary never includes
+transcript text. Prefix latency is measured offline, not an app responsiveness or
+cancellation test. Independent chunk scores must not be called the current app's
+preview score: its recorder currently emits cumulative audio. Keep raw model output
+and prepared audio in Git-ignored `publish/` or `smoke/` directories. Qwen's existing
+runner prints raw text, so redirect its console output to an ignored local log.
