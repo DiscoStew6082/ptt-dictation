@@ -8,8 +8,10 @@ namespace PttDictation.Tests;
 public sealed class SettingsPersistenceTests
 {
     [TestMethod]
+    [VisibleUi]
     public void ExplicitDeviceSaveSurvivesFreshSettingsFormAndStore()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnSta(() =>
         {
             using var fixture = new Fixture();
@@ -80,8 +82,10 @@ public sealed class SettingsPersistenceTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void ChangingDeviceDiscardsOldRuntimePathButKeepsModel()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnSta(() =>
         {
             using var fixture = new Fixture();
@@ -111,8 +115,10 @@ public sealed class SettingsPersistenceTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void FailedSettingsSaveKeepsDeviceDraftAndReportsFailureForRetry()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnSta(() =>
         {
             var directory = Path.Combine(Path.GetTempPath(), $"ptt-save-failure-{Guid.NewGuid():N}");
@@ -185,8 +191,10 @@ public sealed class SettingsPersistenceTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
+    [VisibleUi]
     public void SettingsPublicationCompletesBeforeDerivedPathMerge(bool modelDownload)
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnSta(() =>
         {
             using var fixture = new Fixture();

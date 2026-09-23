@@ -50,6 +50,9 @@ jobs:
         run: dotnet restore PttDictation.sln --locked-mode
 
       - name: Test
+        # This opt-in is limited to the disposable GitHub-hosted Windows runner.
+        env:
+          PTT_RUN_VISIBLE_UI_TESTS: '1'
         run: dotnet test PttDictation.sln --configuration Release --no-restore
 
       - name: Test permanent local deployment workflow

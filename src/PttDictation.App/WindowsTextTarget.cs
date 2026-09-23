@@ -6,6 +6,7 @@ using PttDictation.Core;
 namespace PttDictation.App;
 
 internal enum TextTargetUpdateResult { Success, Pending, Unfocused, Unsupported, Conflict }
+internal enum TextPatternRequeryResult { NotSupported, Refreshed, Rejected }
 
 internal sealed class TextTargetUnavailableException(ElementNotAvailableException innerException)
     : InvalidOperationException("Windows can no longer access the original textbox's automation reference. The textbox may still be visible; its identity and selected text cannot be verified safely.", innerException)
@@ -38,6 +39,7 @@ internal interface IWindowsTextSurface
     void RevealCaret();
     // Refresh only the original provider reference; never adopt another editor.
     bool TryRefreshOriginalReference() => false;
+    TextPatternRequeryResult RequerySelectionPattern() => TextPatternRequeryResult.NotSupported;
 }
 
 internal sealed class WindowsTextTarget : IWindowsTextTarget
@@ -50,6 +52,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private readonly TextTargetSnapshot? _capturedSelection;
     private TextTargetSnapshot? _preparedSelection;
     private TextTargetSnapshot? _selectionBeforeRequest;
+    private bool _selectionPatternRequeryAttempted;
     private DateTimeOffset _selectionSince;
     private long _selectionRequestOrdinal;
     private long? _selectionGenerationAtRequest;
@@ -219,13 +222,42 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 if (!_surface.Select(Prefix, currentOwned, Suffix))
                     return Conflict("select_owned_range_failed");
                 _selectionBeforeRequest = snapshot;
+                _selectionPatternRequeryAttempted = false;
                 _selectionSince = _clock();
                 selected = ReadOriginalSurface(_surface.Read);
             }
             else selected = snapshot;
             if (!IsFocused) return TextTargetUpdateResult.Unfocused;
-            if (!selected.IsConsistent || selected.Prefix != Prefix
-                || selected.Selection != currentOwned || selected.Suffix != Suffix)
+            if (!MatchesOwnedSelection(selected, currentOwned) && selected == _selectionBeforeRequest
+                && !_selectionPatternRequeryAttempted && _clock() - _selectionSince < AcknowledgementTimeout)
+            {
+                // A provider can keep returning its pre-Select caret. Query the
+                // SAME element's pattern once; never repeat Select or extend its
+                // deadline. A new pattern is not proof of success: the exact
+                // original document partition and focus still govern the paste.
+                _selectionPatternRequeryAttempted = true;
+                TraceSelectionObservation("target.selection_requery_requested", currentOwned,
+                    selected, _selectionBeforeRequest!, _clock() - _selectionSince);
+                var requery = _surface.RequerySelectionPattern();
+                Trace("target.selection_requery_result", new { result = requery.ToString(), requestOrdinal = _selectionRequestOrdinal });
+                if (requery == TextPatternRequeryResult.Rejected)
+                {
+                    if (!IsFocused) return TextTargetUpdateResult.Unfocused;
+                    return Conflict("selection_provider_requery_rejected");
+                }
+                if (requery == TextPatternRequeryResult.Refreshed)
+                {
+                    // Do not recursively refresh an unavailable query/read.
+                    selected = _surface.Read();
+                    var elapsed = _clock() - _selectionSince;
+                    TraceSelectionObservation("target.selection_requery_observed", currentOwned,
+                        selected, _selectionBeforeRequest!, elapsed);
+                    if (elapsed >= AcknowledgementTimeout)
+                        return Conflict("selection_acknowledgement_timeout");
+                    if (!IsFocused) return TextTargetUpdateResult.Unfocused;
+                }
+            }
+            if (!MatchesOwnedSelection(selected, currentOwned))
             {
                 // Chromium can return the old caret briefly after Select succeeds.
                 // Wait only for an unchanged pre-request snapshot; never reselect
@@ -300,6 +332,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     Trace("target.original_reference_refreshed");
                     return result;
                 }
+                Trace("target.original_reference_refresh_rejected");
             }
             catch (Exception error) when (IsProviderFailure(error))
             {
@@ -315,6 +348,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private string Prefix => _initialDecorationDisappeared ? "" : _initial!.Prefix;
     private string Suffix => _initialDecorationDisappeared ? "" : _initial!.Suffix;
     private string ExpectedDocument(string text) => Prefix + text + Suffix;
+    private bool MatchesOwnedSelection(TextTargetSnapshot snapshot, string owned) =>
+        snapshot.IsConsistent && snapshot.Prefix == Prefix && snapshot.Selection == owned && snapshot.Suffix == Suffix;
     private void TraceSelectionObservation(string stage, string currentOwned, TextTargetSnapshot snapshot,
         TextTargetSnapshot beforeRequest, TimeSpan elapsed)
     {
@@ -360,7 +395,12 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 
     private TextTargetUnavailableException Unavailable(string operation, ElementNotAvailableException error)
     {
-        Trace("target.unavailable", new { operation }, error);
+        Trace("target.unavailable", new { operation,
+            originalReferenceRefreshAttempted = _originalReferenceRefreshAttempted,
+            selectionRequeryAttempted = _selectionPatternRequeryAttempted,
+            selectionRequestOrdinal = _selectionRequestOrdinal,
+            writeAwaitingAcknowledgement = _pendingText is not null,
+            hasAcknowledgedWrite = _hasAcknowledgedWrite }, error);
         return new TextTargetUnavailableException(error);
     }
 
@@ -403,31 +443,38 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
         var element = capturedIdentity;
         try
         {
-            if (element is null || !element.Current.IsEnabled || element.Current.IsPassword)
+            if (element is null
+                || !TextProviderDiagnostics.Observe("capture.enabled", () => element.Current.IsEnabled)
+                || TextProviderDiagnostics.Observe("capture.password", () => element.Current.IsPassword))
             {
                 DiagnosticTrace.Write("target.surface_rejected", new { reason = "missing_disabled_or_password_field" });
                 return new AutomationTextSurface(element, null);
             }
             bool? valueReadOnly = null;
-            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var rawValue) && rawValue is ValuePattern value)
-                valueReadOnly = value.Current.IsReadOnly;
+            var rawValue = TextProviderDiagnostics.Observe("capture.value_pattern", () =>
+                element.TryGetCurrentPattern(ValuePattern.Pattern, out var candidate) ? candidate : null);
+            if (rawValue is ValuePattern value)
+                valueReadOnly = TextProviderDiagnostics.Observe("capture.value_read_only", () => value.Current.IsReadOnly);
             TextPattern? pattern = null;
             object? textReadOnly = null;
-            if (element.TryGetCurrentPattern(TextPattern.Pattern, out var rawText) && rawText is TextPattern text)
+            var rawText = TextProviderDiagnostics.Observe("capture.text_pattern", () =>
+                element.TryGetCurrentPattern(TextPattern.Pattern, out var candidate) ? candidate : null);
+            if (rawText is TextPattern text)
             {
                 pattern = text;
-                textReadOnly = text.DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute);
+                textReadOnly = TextProviderDiagnostics.Observe("capture.text_read_only", () =>
+                    text.DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute));
             }
 
-            var enabled = element.Current.IsEnabled;
-            var password = element.Current.IsPassword;
-            var controlType = element.Current.ControlType;
+            var enabled = TextProviderDiagnostics.Observe("capture.enabled", () => element.Current.IsEnabled);
+            var password = TextProviderDiagnostics.Observe("capture.password", () => element.Current.IsPassword);
+            var controlType = TextProviderDiagnostics.Observe("capture.control_type", () => element.Current.ControlType);
             var canPaste = AllowsFallback(enabled, password,
                 controlType == ControlType.Edit, valueReadOnly, textReadOnly);
             DiagnosticTrace.Write("target.surface_capabilities", new { canPaste, controlType = controlType.ProgrammaticName,
                 hasTextPattern = pattern is not null, valueReadOnly, textReadOnly = textReadOnly is bool readOnly ? (bool?)readOnly : null });
             if (canPaste && pattern is not null && textReadOnly is false
-                && pattern.SupportedTextSelection != SupportedTextSelection.None)
+                && TextProviderDiagnostics.Observe("capture.selection_support", () => pattern.SupportedTextSelection) != SupportedTextSelection.None)
                 return new AutomationTextSurface(element, pattern, canPasteFallback: true, supportsReplacement: true);
             return new AutomationTextSurface(element, pattern, canPaste);
         }
@@ -450,9 +497,10 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
             if (_element is null) return false;
             // Probe the captured element even while its window is in the
             // background, so a closed editor does not look merely unfocused.
-            var hasKeyboardFocus = _element.Current.HasKeyboardFocus;
+            var hasKeyboardFocus = TextProviderDiagnostics.Observe("focus.original_element", () => _element.Current.HasKeyboardFocus);
             return _foregroundWindow != IntPtr.Zero && GetForegroundWindow() == _foregroundWindow
-                && hasKeyboardFocus && Automation.Compare(_element, AutomationElement.FocusedElement);
+                && hasKeyboardFocus && TextProviderDiagnostics.Observe("focus.compare_original", () =>
+                    Automation.Compare(_element, AutomationElement.FocusedElement));
         }
     }
     public bool TryRefreshOriginalReference()
@@ -460,12 +508,25 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
         // Capture queries the SAME AutomationElement and refreshes its pattern.
         // A permanently unavailable element cannot pass these current-property
         // reads; no new element is adopted from focus, position, text, or IDs.
-        if (_element is null || !IsFocused || !_supportsReplacement) return false;
+        if (_element is null) return RejectRefresh("missing_original_element");
+        if (!IsFocused) return RejectRefresh("original_element_unfocused");
+        if (!_supportsReplacement) return RejectRefresh("replacement_unsupported");
         var refreshed = Capture(_element);
-        if (!refreshed.SupportsReplacement || !refreshed.CanPasteFallback || !refreshed.IsFocused)
-            return false;
+        if (!refreshed.SupportsReplacement || !refreshed.CanPasteFallback)
+            return RejectRefresh("original_element_capabilities_unavailable");
+        if (!refreshed.IsFocused) return RejectRefresh("original_element_focus_changed");
         _pattern = refreshed._pattern;
+        DiagnosticTrace.Write("target.provider_refresh_completed");
         return true;
+    }
+
+    public TextPatternRequeryResult RequerySelectionPattern() => TryRefreshOriginalReference()
+        ? TextPatternRequeryResult.Refreshed : TextPatternRequeryResult.Rejected;
+
+    private static bool RejectRefresh(string reason)
+    {
+        DiagnosticTrace.Write("target.provider_refresh_rejected", new { reason });
+        return false;
     }
 
     public bool SupportsReplacement => _supportsReplacement;
@@ -477,18 +538,31 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     public TextTargetSnapshot Read()
     {
         if (_pattern is null) throw new NotSupportedException("This editor exposes no readable text selection.");
-        var document = _pattern.DocumentRange;
-        var selection = _pattern.GetSelection();
+        var document = TextProviderDiagnostics.Observe("snapshot.document_range", () => _pattern.DocumentRange);
+        var selection = TextProviderDiagnostics.Observe("snapshot.selection", _pattern.GetSelection);
         if (selection.Length != 1) throw new NotSupportedException("Multiple selections are not supported.");
-        var prefix = document.Clone();
-        prefix.MoveEndpointByRange(TextPatternRangeEndpoint.End, selection[0], TextPatternRangeEndpoint.Start);
-        var suffix = document.Clone();
-        suffix.MoveEndpointByRange(TextPatternRangeEndpoint.Start, selection[0], TextPatternRangeEndpoint.End);
-        return new TextTargetSnapshot(document.GetText(-1), prefix.GetText(-1), selection[0].GetText(-1), suffix.GetText(-1));
+        var prefix = TextProviderDiagnostics.Observe("snapshot.prefix_range", () =>
+        {
+            var range = document.Clone();
+            range.MoveEndpointByRange(TextPatternRangeEndpoint.End, selection[0], TextPatternRangeEndpoint.Start);
+            return range;
+        });
+        var suffix = TextProviderDiagnostics.Observe("snapshot.suffix_range", () =>
+        {
+            var range = document.Clone();
+            range.MoveEndpointByRange(TextPatternRangeEndpoint.Start, selection[0], TextPatternRangeEndpoint.End);
+            return range;
+        });
+        return new TextTargetSnapshot(
+            TextProviderDiagnostics.Observe("snapshot.document_text", () => document.GetText(-1)),
+            TextProviderDiagnostics.Observe("snapshot.prefix_text", () => prefix.GetText(-1)),
+            TextProviderDiagnostics.Observe("snapshot.selected_text", () => selection[0].GetText(-1)),
+            TextProviderDiagnostics.Observe("snapshot.suffix_text", () => suffix.GetText(-1)));
     }
 
     public bool Select(string prefix, string ownedText, string suffix)
-        => TextRangeSelector.Select(new AutomationTextRange(_pattern!.DocumentRange), prefix, ownedText, suffix, () => IsFocused);
+        => TextProviderDiagnostics.Observe("selection.request", () =>
+            TextRangeSelector.Select(new AutomationTextRange(_pattern!.DocumentRange), prefix, ownedText, suffix, () => IsFocused));
 
     public void RevealCaret()
     {

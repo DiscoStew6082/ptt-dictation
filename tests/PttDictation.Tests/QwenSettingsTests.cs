@@ -28,8 +28,10 @@ public sealed class QwenSettingsTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsSelectionSavesQwenAndCanReturnToParakeetWithoutChangingPreviewModel()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnSta(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"qwen-form-{Guid.NewGuid():N}.json");

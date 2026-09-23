@@ -63,7 +63,7 @@ public sealed class TranscriptHistoryTests
             Assert.IsTrue(text.Height > 120, "Comparison should retain a usable scrollable text area at minimum size.");
 
             var previewPath = Environment.GetEnvironmentVariable("PARAKEET_COMPARISON_PREVIEW_PATH");
-            if (!string.IsNullOrWhiteSpace(previewPath))
+            if (VisibleUiTestGate.ShouldCaptureScreenshot(previewPath))
             {
                 form.Show();
                 Application.DoEvents();

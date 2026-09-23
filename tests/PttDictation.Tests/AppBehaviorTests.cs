@@ -395,8 +395,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void TrayPresentsSettingsImmediatelyFromCurrentSettings()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -422,8 +424,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void TrayRecreatesDisposedSettingsFormBeforePresenting()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -449,8 +453,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void TrayOpenSettingsMenuWorksOnFirstClickAndAfterDisposedForm()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -545,8 +551,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsFormUsesResponsiveDarkSectionsAtMinimumSize()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -576,7 +584,7 @@ public sealed class AppBehaviorTests
             AssertButtonTextFits(form.SaveButtonForTest);
 
             var previewPath = Environment.GetEnvironmentVariable("PARAKEET_SETTINGS_PREVIEW_PATH");
-            if (!string.IsNullOrWhiteSpace(previewPath))
+            if (VisibleUiTestGate.ShouldCaptureScreenshot(previewPath))
             {
                 using var preview = new Bitmap(form.Width, form.Height);
                 form.DrawToBitmap(preview, new Rectangle(Point.Empty, form.Size));
@@ -602,8 +610,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsFormStacksSectionsAtHighDpi()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -642,8 +652,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsFormCorrectionEditorGeometryMatchesResponsiveMode()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -688,7 +700,7 @@ public sealed class AppBehaviorTests
                 form.CorrectionPreviewBoundsForTest.Top);
 
             var previewPath = Environment.GetEnvironmentVariable("PARAKEET_SETTINGS_WIDE_PREVIEW_PATH");
-            if (!string.IsNullOrWhiteSpace(previewPath))
+            if (VisibleUiTestGate.ShouldCaptureScreenshot(previewPath))
             {
                 form.ApplyWideLayoutForTest();
                 form.PerformLayout();
@@ -879,8 +891,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsFormCorrectionEditorShowsRulesAndKeepsEditorAndPreviewInSync()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -932,7 +946,7 @@ public sealed class AppBehaviorTests
                 form.CorrectionPreviewOutputForTest);
 
             var previewPath = Environment.GetEnvironmentVariable("PARAKEET_CORRECTIONS_PREVIEW_PATH");
-            if (!string.IsNullOrWhiteSpace(previewPath))
+            if (VisibleUiTestGate.ShouldCaptureScreenshot(previewPath))
             {
                 var editor = form.CorrectionEditorForTest;
                 using var preview = new Bitmap(editor.Width, editor.Height);
@@ -943,8 +957,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsFormSavePersistsCorrectionRulesWithoutClosingSettings()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -974,8 +990,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsFormSavesSelectedRuleCollisionExactlyAsPreviewed()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -1014,8 +1032,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void SettingsFormIncompleteDraftLeavesSavedRulesUntouchedAndReloadDiscardsEdits()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
@@ -1058,8 +1078,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void InlineRecordingUsesSmallIndicatorThroughFinalProcessing()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
@@ -1147,8 +1169,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void StatusOverlayCanHideAfterPasteCompletes()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
@@ -1294,8 +1318,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void StatusOverlayTracksProcessingInPlaceUntilPasteCompletes()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
@@ -1325,8 +1351,10 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void BackgroundModelWarmUpDoesNotReplaceTheRecordingTranscript()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
@@ -1641,7 +1669,7 @@ public sealed class AppBehaviorTests
             AssertControlInsideClient(form, quitButton);
 
             var previewPath = Environment.GetEnvironmentVariable("PARAKEET_HISTORY_PREVIEW_PATH");
-            if (!string.IsNullOrWhiteSpace(previewPath))
+            if (VisibleUiTestGate.ShouldCaptureScreenshot(previewPath))
             {
                 form.Show();
                 Application.DoEvents();
@@ -1742,7 +1770,7 @@ public sealed class AppBehaviorTests
     private static void SaveOverlayPreviewIfRequested(StatusOverlayForm overlay, string environmentVariable)
     {
         var previewPath = Environment.GetEnvironmentVariable(environmentVariable);
-        if (string.IsNullOrWhiteSpace(previewPath))
+        if (!VisibleUiTestGate.ShouldCaptureScreenshot(previewPath))
         {
             return;
         }

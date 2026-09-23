@@ -17,6 +17,9 @@ For textbox incidents, inspect the first specific event rather than only the fin
 | --- | --- |
 | `target.surface_capabilities` / `inline.capture_result` | Whether Windows exposed a usable editable target at capture time. |
 | `target.unavailable` | The captured UI Automation reference stopped working; this alone does not prove the visible textbox disappeared. |
+| `target.provider_operation_failed` | Names the exact failing native operation, such as `focus.original_element`, `capture.text_pattern`, or `snapshot.selection`, with exception type and HRESULT only. |
+| `target.provider_refresh_rejected` | Explains why refreshing the original element was refused, including lost focus or unavailable capabilities. |
+| `target.selection_requery_requested` / `target.selection_requery_observed` | Compares the unchanged pre-selection snapshot with a read after re-querying the original element's text pattern. Only lengths, equality checks, and timing are recorded. |
 | `selection_acknowledgement_timeout` | The requested selection was not observed before the deadline; compare `documentMatches`, `snapshotMatchesBeforeRequest`, and focus-generation metadata. |
 | `document_partition_or_surroundings_changed` | The observed text no longer matched the range the app owned and its surroundings. |
 | `clipboard.paste_failed` | Inspect stage/sequence metadata to distinguish an unsent read failure from an uncertain submitted paste. |
@@ -40,3 +43,13 @@ Deterministic regression tests cover the native state overwrite and primary-erro
 The real microphone probe reproduced the old state sequence: Start returned `Starting`, the single Stop timed out after 5,002 ms, and the recorder remained `Capturing`. The new handshake rescued that baseline trial. Ten immediate production Stop trials then completed in 31-50 ms; three immediate Dispose trials completed in 33-38 ms; a normal 250 ms recording produced audio and stopped in 23 ms. All temporary probe audio was deleted. The pinned [NAudio capture implementation](https://github.com/naudio/NAudio/blob/0aaef29d04bec9567bdf2f669036fabecc33a2e2/src/NAudio.Wasapi/WasapiRecorder.cs) contains the startup overwrite.
 
 To repeat this microphone lifecycle check deliberately, build `tools/PttDictation.Replay` in Release and run its executable with `--capture-stop-probe <ignored-output-directory>`. Unlike the default fixture replay, this explicit probe briefly opens the microphone. It uses a child process with a 60-second deadline, removes its temporary WAVs, and retains only diagnostic metadata in the output directory. It does not use speech recognition, clipboard access, or the running app.
+
+## Bounded selection recovery and remaining evidence
+
+If the first read after Select still reports exactly the pre-request caret, the app can re-query TextPattern on the same captured AutomationElement once for that selection request. It does not issue another Select, discover a replacement textbox, or extend the two-second acknowledgement deadline. The re-read must still match the complete original document partition, exact owned text, and original focus before paste is authorized. A changed document or different selection is a conflict; focus loss pauses insertion. A native read cannot be cancelled mid-call, but recovery returned after the original deadline does not authorize a paste. The existing insertion watchdog also remains in place.
+
+The new trace records whether the re-query was supported, rejected, or returned a pattern, and the resulting snapshot comparisons. Success means a validated selection was observed after re-query; it cannot prove whether the old wrapper was stale or the provider simply finished acknowledging Select during that time. Failed or ignored selections still produce a safe refusal.
+
+Unavailable references keep their existing single same-reference recovery attempt per recording. Provider-stage diagnostics now identify which required operation failed without adding diagnostic-only UIA reads. The app never treats an accessible window handle, identical text, or a reused runtime ID as proof that a replacement editor is the original target.
+
+Headless regressions cover these recovery boundaries. The original intermittent editor failures have not been reproduced under the new build; these tests establish the bounded recovery behavior, not a claim that both real provider failures are eliminated. Ordinary use will supply the relevant provider-stage evidence if either recurs.

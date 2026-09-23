@@ -7,8 +7,10 @@ namespace PttDictation.Tests;
 public sealed class DictationPresentationTests
 {
     [TestMethod]
+    [VisibleUi]
     public void LiveTextboxRecordingAndProcessingNeverShowFloatingOverlay()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();
@@ -34,8 +36,10 @@ public sealed class DictationPresentationTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void EnteringToggleRecordingPresentsConfiguredTriggerAndEnablesCancellation()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();
@@ -62,8 +66,10 @@ public sealed class DictationPresentationTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void ProcessingUpdatesTranscriptAndDetailWithoutReplayingTransitionSound()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();
@@ -103,8 +109,10 @@ public sealed class DictationPresentationTests
     [TestMethod]
     [DataRow(DictationWorkflowPhase.Pasted)]
     [DataRow(DictationWorkflowPhase.InsertedPreview)]
+    [VisibleUi]
     public void CompletedPasteRefreshesHistoryAndHidesAfterQuarterSecond(DictationWorkflowPhase phase)
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();
@@ -141,8 +149,10 @@ public sealed class DictationPresentationTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void CompletedPasteDoesNotHideAWorkflowThatStartedDuringVisibilityDelay()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();
@@ -168,8 +178,10 @@ public sealed class DictationPresentationTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void FailedStateDisablesCancellationAndPresentsErrorOnce()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();
@@ -226,8 +238,10 @@ public sealed class DictationPresentationTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void CleanupWarningIsPresentedOnceAcrossProcessingAndTerminalState()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(async () =>
         {
             using var overlay = new StatusOverlayForm();

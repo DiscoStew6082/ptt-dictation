@@ -9,8 +9,10 @@ namespace PttDictation.Tests;
 public sealed class LiveOverlayTests
 {
     [TestMethod]
+    [VisibleUi]
     public void LongFallbackTranscriptCanScrollBackAndFollowsNewSpeech()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
@@ -51,8 +53,10 @@ public sealed class LiveOverlayTests
     }
 
     [TestMethod]
+    [VisibleUi]
     public void InlinePreviewKeepsRecordingIndicatorAndRestoresFullFallbackWhenDisabled()
     {
+        VisibleUiTestGate.RequireOptIn();
         RunOnStaThread(() =>
         {
             using var overlay = new StatusOverlayForm();
