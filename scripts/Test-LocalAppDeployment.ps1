@@ -72,6 +72,8 @@ function Invoke-Fixture([string]$Scenario) {
             ExecutablePath = (Join-Path $caseRoot 'runtime\parakeet-server.exe'); CreationDate = [datetime]'2025-01-01' }
     }
     $global:pttTestStartCount = 0
+    $global:pttTestPendingProcess = $null
+    $global:pttTestDiscoveryPolls = 0
     $global:pttTestStopCount = 0
     $global:pttTestLaunches = @()
     $global:pttTestSettingsAtStops = @()
@@ -85,7 +87,16 @@ function Invoke-Fixture([string]$Scenario) {
     }
     function Get-CimInstance {
         param($ClassName, $Filter)
-        if ($Filter -eq "Name = 'PttDictation.exe'") { return $global:pttTestRunning }
+        if ($Filter -eq "Name = 'PttDictation.exe'") {
+            if ($null -ne $global:pttTestPendingProcess) {
+                $global:pttTestDiscoveryPolls++
+                if ($global:pttTestDiscoveryPolls -ge 3) {
+                    $global:pttTestRunning = @($global:pttTestPendingProcess)
+                    $global:pttTestPendingProcess = $null
+                }
+            }
+            return $global:pttTestRunning
+        }
         if ($Filter -match '^ParentProcessId = (\d+)') {
             $parentId = [int]$Matches[1]
             return @($global:pttTestWorkers | Where-Object ParentProcessId -eq $parentId)
@@ -109,25 +120,74 @@ function Invoke-Fixture([string]$Scenario) {
         }
     }
     function Wait-Process { param($Id, $Timeout, $ErrorAction) }
-    function Start-Sleep { param($Seconds) }
+    function Start-Sleep {
+        param($Seconds, $Milliseconds)
+        if ($Seconds -eq 2 -and $global:pttTestStartCount -eq 1) {
+            if ($global:pttTestFailure -eq 'early-exit') { $global:pttTestRunning = @() }
+            if ($global:pttTestFailure -eq 'replaced-process') {
+                $replacement = $global:pttTestRunning[0].PSObject.Copy()
+                $replacement.CreationDate = $replacement.CreationDate.AddSeconds(1)
+                $global:pttTestRunning = @($replacement)
+            }
+        }
+    }
     function Move-Item { throw 'Do not rename the live executable or directory; preserve pinned shortcut targets.' }
-    function Start-Process {
-        param($FilePath, $WorkingDirectory, [switch]$PassThru)
+    function Start-Process { throw 'Direct launches inherit the deployment host lifetime; launch through Explorer desktop.' }
+    function Invoke-DesktopLaunch {
+        param($FilePath, $Arguments, $WorkingDirectory, $Verb, $Show)
         Assert ($FilePath -eq $global:pttTestExpectedExe) 'Launched outside the permanent location.'
+        Assert ($Arguments -ceq '' -and $Verb -ceq 'open' -and $Show -eq 1) 'Expected a normal, no-argument shell launch.'
         Assert ($WorkingDirectory -eq (Split-Path $global:pttTestExpectedExe -Parent)) 'Wrong working directory.'
         $global:pttTestStartCount++
         $global:pttTestLaunches += [pscustomobject]@{
             Settings = Get-SettingsSnapshot
             PackageHash = (Get-FileHash -LiteralPath (Join-Path $WorkingDirectory 'PttDictation.dll')).Hash
         }
+        if ($global:pttTestFailure -eq 'shell-dispatch-failure' -and $global:pttTestStartCount -eq 1) {
+            throw 'Injected Explorer dispatch failure.'
+        }
         $newId = 200 + $global:pttTestStartCount
         if ($global:pttTestFailure -notin @('startup-failure', 'settings-startup-failure', 'settings-missing-rollback') -or
             $global:pttTestStartCount -gt 1) {
             $global:pttTestRunning = @([pscustomobject]@{
-                ProcessId = $newId; ExecutablePath = $FilePath; CommandLine = '"' + $FilePath + '"'; CreationDate = [datetime]'2026-01-02'
+                ProcessId = $newId; ExecutablePath = $FilePath; CommandLine = '"' + $FilePath + '"'; CreationDate = [datetime]::Now
             })
+            if ($global:pttTestStartCount -eq 1) {
+                switch ($global:pttTestFailure) {
+                    'delayed-launch' {
+                        $global:pttTestPendingProcess = $global:pttTestRunning[0]
+                        $global:pttTestRunning = @()
+                    }
+                    'stale-process' { $global:pttTestRunning[0].CreationDate = [datetime]'2026-01-01' }
+                    'duplicate-process' {
+                        $duplicate = $global:pttTestRunning[0].PSObject.Copy()
+                        $duplicate.ProcessId = 999
+                        $global:pttTestRunning += $duplicate
+                    }
+                }
+            }
         }
-        return [pscustomobject]@{ Id = $newId }
+    }
+    function New-Object {
+        param($ComObject)
+        Assert ($ComObject -eq 'Shell.Application') 'Unexpected COM object.'
+        $application = [pscustomobject]@{}
+        $application | Add-Member ScriptMethod ShellExecute {
+            param($FilePath, $Arguments, $WorkingDirectory, $Verb, $Show)
+            Invoke-DesktopLaunch $FilePath $Arguments $WorkingDirectory $Verb $Show
+        }
+        $desktop = [pscustomobject]@{ Document = [pscustomobject]@{ Application = $application } }
+        $windows = [pscustomobject]@{ Desktop = $desktop }
+        $windows | Add-Member ScriptMethod FindWindowSW {
+            param($Location, $Root, $Class, $Handle, $Options)
+            Assert ($Location -eq 0 -and $Root -eq 0 -and $Class -eq 8 -and $Options -eq 1) 'Expected the Explorer desktop automation object.'
+            if ($global:pttTestFailure -eq 'desktop-unavailable') { return $null }
+            return $this.Desktop
+        }
+        $shell = [pscustomobject]@{ ShellWindows = $windows }
+        $shell | Add-Member ScriptMethod Windows { return $this.ShellWindows }
+        $shell | Add-Member ScriptMethod ShellExecute { throw 'The root Shell.Application launch still inherits the host job.' }
+        return $shell
     }
     function Copy-Item {
         param([Parameter(ValueFromPipeline)]$InputObject, $Destination, [switch]$Recurse, [switch]$Force)
@@ -164,12 +224,16 @@ function Invoke-Fixture([string]$Scenario) {
     try { $result = & $testScript @arguments }
     catch { $caught = $_ }
 
-    $successScenarios = @('success', 'owned-worker', 'settings-success', 'settings-first-install', 'settings-frozen-source')
-    $rollbackScenarios = @('startup-failure', 'corrupt-install', 'settings-startup-failure', 'settings-copy-failure', 'settings-missing-rollback')
+    $successScenarios = @('success', 'owned-worker', 'delayed-launch', 'settings-success', 'settings-first-install', 'settings-frozen-source')
+    $rollbackScenarios = @('startup-failure', 'corrupt-install', 'settings-startup-failure', 'settings-copy-failure', 'settings-missing-rollback',
+        'shell-dispatch-failure', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process')
     if ($Scenario -in $successScenarios) {
         Assert ($null -eq $caught) "Install failed: $caught"
         $expectedStops = if ($Scenario -eq 'owned-worker') { 2 } else { 1 }
         Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'Expected the app and its owned worker to stop, followed by one normal start.'
+        if ($Scenario -eq 'delayed-launch') {
+            Assert ($global:pttTestDiscoveryPolls -eq 3) 'Delayed Explorer dispatch was not observed.'
+        }
         if ($Scenario -eq 'owned-worker') {
             Assert ($global:pttTestWorkers.Count -eq 2 -and
                 1999 -in @($global:pttTestWorkers | ForEach-Object ProcessId) -and
@@ -194,7 +258,8 @@ function Invoke-Fixture([string]$Scenario) {
     else {
         Assert ($null -ne $caught) "Expected $Scenario to fail."
         $expectedError = switch ($Scenario) {
-            { $_ -in @('startup-failure', 'settings-startup-failure', 'settings-missing-rollback') } { '*Expected exactly one new process*'; break }
+            { $_ -in @('startup-failure', 'settings-startup-failure', 'settings-missing-rollback', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process') } { '*Expected exactly one new process*'; break }
+            'shell-dispatch-failure' { '*Injected Explorer dispatch failure*' }
             'corrupt-install' { '*Installed file hash mismatch*' }
             'settings-copy-failure' { '*Injected package copy failure*' }
             'missing-file' { '*Incomplete self-contained package*' }
@@ -202,6 +267,7 @@ function Invoke-Fixture([string]$Scenario) {
             'ancestor-as-source' { '*Stage a separate package*' }
             'unexpected-arguments' { '*Unexpected arguments*' }
             'other-location' { '*Another PTT executable*' }
+            'desktop-unavailable' { '*Explorer desktop is unavailable*' }
             { $_ -in @('settings-malformed-json', 'settings-invalid-root') } { '*Invalid settings JSON*'; break }
             'settings-missing-source' { '*does not exist*' }
             { $_ -in @('settings-unc-source', 'settings-slash-unc-source') } { '*Settings source must be a local JSON file*'; break }
@@ -251,7 +317,8 @@ function Invoke-Fixture([string]$Scenario) {
 }
 
 try {
-    $scenarios = @('owned-worker', 'success', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
+    $scenarios = @('desktop-unavailable', 'delayed-launch', 'shell-dispatch-failure', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process',
+        'owned-worker', 'success', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
         'ancestor-as-source', 'unexpected-arguments', 'other-location', 'verify-existing',
         'settings-success', 'settings-first-install', 'settings-startup-failure', 'settings-copy-failure',
         'settings-missing-rollback', 'settings-malformed-json', 'settings-invalid-root', 'settings-missing-source',
@@ -268,5 +335,5 @@ finally {
     }
     Remove-Item -LiteralPath $resolved -Recurse -Force
     Remove-Variable -Scope Global -Name pttTestExpectedExe,pttTestRunning,pttTestWorkers,pttTestStartCount,pttTestStopCount,pttTestFailure,
-        pttTestSettingsPath,pttTestSettingsSource,pttTestLaunches,pttTestSettingsAtStops -ErrorAction SilentlyContinue
+        pttTestSettingsPath,pttTestSettingsSource,pttTestLaunches,pttTestSettingsAtStops,pttTestPendingProcess,pttTestDiscoveryPolls -ErrorAction SilentlyContinue
 }

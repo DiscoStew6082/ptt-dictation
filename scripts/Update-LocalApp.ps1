@@ -84,12 +84,45 @@ function Get-LiveProcesses {
     return $all
 }
 
+function Get-ExplorerDesktopApplication {
+    # Direct Start-Process and the root Shell.Application object can inherit the
+    # deployment host's kill-on-close job. Dispatch from Explorer's desktop
+    # automation object instead, so closing the updater cannot close dictation.
+    $shell = New-Object -ComObject Shell.Application
+    $windows = $shell.Windows()
+    $desktopHandle = 0
+    $desktop = $windows.FindWindowSW(0, 0, 8, [ref]$desktopHandle, 1)
+    if ($null -eq $desktop -or $null -eq $desktop.Document -or $null -eq $desktop.Document.Application) {
+        throw 'Explorer desktop is unavailable; cannot launch PTT independently of the deployment host.'
+    }
+    return $desktop.Document.Application
+}
+
 function Start-AndVerifyLive {
-    Write-Host "Launch: Start-Process -FilePath '$liveExe' -WorkingDirectory '$liveDirectory'"
-    $started = Start-Process -FilePath $liveExe -WorkingDirectory $liveDirectory -PassThru
+    $desktopApplication = Get-ExplorerDesktopApplication
+    Assert-LiveStopped
+    $launchedAt = [DateTime]::Now
+    Write-Host "Launch via Explorer desktop: ShellExecute('$liveExe', '', '$liveDirectory', 'open', 1)"
+    $desktopApplication.ShellExecute($liveExe, '', $liveDirectory, 'open', 1)
+    # Explorer dispatch is asynchronous and provides no PID. Accept only a fresh
+    # canonical process, then confirm the same identity survives startup.
+    $started = $null
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        $running = @(Get-LiveProcesses)
+        if ($running.Count -gt 1) { break }
+        if ($running.Count -eq 1) {
+            if ($running[0].CreationDate -ge $launchedAt) { $started = $running[0] }
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($null -eq $started) {
+        throw 'Expected exactly one new process at the permanent executable path.'
+    }
     Start-Sleep -Seconds 2
     $running = @(Get-LiveProcesses)
-    if ($running.Count -ne 1 -or $running[0].ProcessId -ne $started.Id) {
+    if ($running.Count -ne 1 -or $running[0].ProcessId -ne $started.ProcessId -or
+        $running[0].CreationDate -ne $started.CreationDate) {
         throw 'Expected exactly one new process at the permanent executable path.'
     }
     return $running[0]
@@ -264,6 +297,8 @@ try {
     }
     Assert-NoLinks $source
     $expected = Get-PackageHashes $source
+    # Detect an unavailable interactive desktop before stopping a working app.
+    $null = Get-ExplorerDesktopApplication
     $installId = [guid]::NewGuid().ToString('N')
     $prepared = Join-Path $publishDirectory ".install-$installId"
     $backup = Join-Path $publishDirectory ".backup-$installId"
