@@ -74,6 +74,9 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     public static Func<IWindowsTextTarget> CaptureFocusedIdentity(Func<long>? readFocusGeneration = null)
     {
         var recordingId = DiagnosticTrace.CurrentRecordingId;
+        var generation = readFocusGeneration?.Invoke();
+        var foreground = GetForegroundWindow();
+        GetWindowThreadProcessId(foreground, out var processId);
         AutomationElement? identity;
         try { identity = AutomationElement.FocusedElement; }
         catch (Exception ex) when (IsProviderFailure(ex))
@@ -81,9 +84,70 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             DiagnosticTrace.Write("target.identity_failed", error: ex, recordingId: recordingId);
             identity = null;
         }
-        return () => new WindowsTextTarget(AutomationTextSurface.Capture(identity), recordingId: recordingId,
-            readFocusGeneration: readFocusGeneration);
+        bool OriginalWindowCurrent()
+        {
+            if (foreground == IntPtr.Zero || processId == 0 || foreground != GetForegroundWindow()) return false;
+            GetWindowThreadProcessId(foreground, out var currentProcess);
+            return currentProcess == processId;
+        }
+        bool CaptureUnchanged() => generation is not null && generation == readFocusGeneration?.Invoke()
+            && OriginalWindowCurrent();
+
+        return () =>
+        {
+            var firstInspection = true;
+            var legacyContainer = false;
+            var captured = InitialTextTargetCapture.Capture(identity,
+                element =>
+                {
+                    var surface = AutomationTextSurface.Capture(element);
+                    var target = new WindowsTextTarget(surface, recordingId: recordingId,
+                        readFocusGeneration: readFocusGeneration);
+                    if (firstInspection)
+                    {
+                        firstInspection = false;
+                        legacyContainer = surface.IsLegacyFocusContainer && element is not null
+                            && element.Current.ProcessId == processId;
+                    }
+                    return new InitialTextTargetCandidate(target, surface.IsUnsupportedInitialPane
+                        && element is not null && element.Current.ProcessId == processId);
+                },
+                () => AutomationElement.FocusedElement,
+                (original, candidate) =>
+                {
+                    if (candidate.Current.ProcessId != processId || !candidate.Current.HasKeyboardFocus) return false;
+                    // Refine only the exact captured container. Never search for an
+                    // arbitrary editor or infer identity from its text or position.
+                    AutomationElement? ancestor = candidate;
+                    for (var depth = 0; ancestor is not null && depth < 32; depth++)
+                    {
+                        if (Automation.Compare(original, ancestor)) return true;
+                        ancestor = TreeWalker.RawViewWalker.GetParent(ancestor);
+                    }
+                    return false;
+                },
+                CaptureUnchanged, Thread.Sleep,
+                (reason, attempt) => DiagnosticTrace.Write("target.initial_capture_recovery",
+                    new { reason, attempt }, recordingId: recordingId));
+            if (captured.SupportsReplacement || captured.CanPasteFallback || !legacyContainer
+                || !CaptureUnchanged()) return captured;
+
+            // A browser's read-only UIA container may have a more precise MSAA
+            // keyboard-focus target. The container remains unwritable; only
+            // an independently verified, exact focused text child earns fallback.
+            var legacy = LegacyAccessibleTextTarget.TryCapture(
+                () => NativeLegacyAccessibleNode.FromWindow(foreground), processId,
+                CaptureUnchanged, OriginalWindowCurrent);
+            DiagnosticTrace.Write("target.legacy_focus_capture", new { accepted = legacy is not null },
+                recordingId: recordingId);
+            return legacy ?? captured;
+        };
     }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out int processId);
 
     internal WindowsTextTarget(IWindowsTextSurface surface, Func<DateTimeOffset>? clock = null, string? recordingId = null,
         Func<long>? readFocusGeneration = null)
@@ -426,12 +490,14 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     private readonly bool _supportsReplacement;
 
     private AutomationTextSurface(AutomationElement? element, TextPattern? pattern, bool canPasteFallback = false,
-        bool supportsReplacement = false)
+        bool supportsReplacement = false, bool isUnsupportedInitialPane = false, bool isLegacyFocusContainer = false)
     {
         _element = element;
         _pattern = pattern;
         CanPasteFallback = canPasteFallback;
         _supportsReplacement = supportsReplacement;
+        IsUnsupportedInitialPane = isUnsupportedInitialPane;
+        IsLegacyFocusContainer = isLegacyFocusContainer;
         _foregroundWindow = GetForegroundWindow();
     }
 
@@ -476,7 +542,10 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
             if (canPaste && pattern is not null && textReadOnly is false
                 && TextProviderDiagnostics.Observe("capture.selection_support", () => pattern.SupportedTextSelection) != SupportedTextSelection.None)
                 return new AutomationTextSurface(element, pattern, canPasteFallback: true, supportsReplacement: true);
-            return new AutomationTextSurface(element, pattern, canPaste);
+            return new AutomationTextSurface(element, pattern, canPaste,
+                isUnsupportedInitialPane: enabled && !password && controlType == ControlType.Pane
+                    && rawValue is null && pattern is null && !canPaste,
+                isLegacyFocusContainer: AllowsLegacyFocusResolution(enabled, password, canPaste, controlType));
         }
         catch (Exception ex) when (WindowsTextTarget.IsProviderFailure(ex)) { DiagnosticTrace.Write("target.surface_capture_failed", error: ex); }
         return new AutomationTextSurface(element, null);
@@ -489,6 +558,10 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
         if (textReadOnly is not null && textReadOnly is not bool) return false;
         return valueReadOnly is false || textReadOnly is false || editControl;
     }
+
+    internal static bool AllowsLegacyFocusResolution(bool enabled, bool password, bool canPaste, ControlType controlType)
+        => enabled && !password && !canPaste
+            && (controlType == ControlType.Window || controlType == ControlType.Document || controlType == ControlType.Pane);
 
     public bool IsFocused
     {
@@ -530,6 +603,8 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     }
 
     public bool SupportsReplacement => _supportsReplacement;
+    internal bool IsUnsupportedInitialPane { get; }
+    internal bool IsLegacyFocusContainer { get; }
     public bool CanPasteFallback { get; }
 
     [DllImport("user32.dll")]

@@ -59,7 +59,10 @@ public interface ILiveClipboardPaster : IClipboardPaster
     void EndSession();
 }
 
-public sealed record LiveInsertionFailureDelivery(string AcknowledgedText, bool CanCompleteFromAcknowledgedText);
+public sealed record LiveInsertionFailureDelivery(
+    string AcknowledgedText,
+    bool CanCompleteFromAcknowledgedText,
+    bool InitialCaptureRejected = false);
 
 public sealed record RecordedAudio(
     string Path,

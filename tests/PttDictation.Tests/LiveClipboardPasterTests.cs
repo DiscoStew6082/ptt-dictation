@@ -6,6 +6,56 @@ namespace PttDictation.Tests;
 public sealed class LiveClipboardPasterTests
 {
     [TestMethod]
+    public void InitialCaptureTimeoutReportsRejectionAndDisallowsLateConfirmation()
+    {
+        long now = 100;
+        Action? confirm = null;
+        var failures = 0;
+        var writes = 0;
+        using var output = new LiveClipboardPaster(() => new Target(), (_, _) => writes++,
+            confirmCapture: action => confirm = action, tickCount: () => now);
+        output.InsertionFailed += _ => failures++;
+        output.CaptureTarget();
+        now += 5001;
+        output.Pump();
+
+        Assert.AreEqual(1, failures);
+        Assert.IsTrue(output.FailureDelivery?.InitialCaptureRejected == true,
+            "A timed-out initial target must bypass final transcription.");
+        Assert.IsNotNull(confirm);
+        confirm();
+        output.UpdatePreview("must not insert");
+        output.Pump();
+        Assert.AreEqual(0, writes);
+        Assert.AreEqual(1, failures);
+        Assert.IsFalse(output.InlinePreview);
+    }
+
+    [TestMethod]
+    public void TimeoutAfterAcceptedCaptureRemainsAnInsertionFailure()
+    {
+        long now = 100;
+        LiveClipboardPaster? current = null;
+        using var output = new LiveClipboardPaster(() => new Target(), (_, canPaste) =>
+        {
+            now += 5001;
+            current!.Pump();
+            Assert.IsFalse(canPaste(), "Timed-out insertion must lose permission to write.");
+        }, tickCount: () => now);
+        current = output;
+        var failures = 0;
+        output.InsertionFailed += _ => failures++;
+        output.CaptureTarget();
+        output.UpdatePreview("words already being processed");
+        output.Pump();
+
+        Assert.AreEqual(1, failures);
+        Assert.IsNotNull(output.FailureDelivery);
+        Assert.IsFalse(output.FailureDelivery.InitialCaptureRejected,
+            "A later insertion timeout must retain the normal final-transcription path.");
+    }
+
+    [TestMethod]
     public void RetiringCaptureDuringFailurePresentationCannotNotifyTheNextCapture()
     {
         var target = new Target();

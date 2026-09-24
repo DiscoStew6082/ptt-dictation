@@ -11,6 +11,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private readonly Func<Func<IWindowsTextTarget>> _prepareCapture;
     private readonly Func<Func<bool>> _beginCaptureGuard;
     private readonly Action<Action> _confirmCapture;
+    private readonly Func<long> _tickCount;
     private readonly WindowsFocusCaptureGuard? _focusGuard;
     private readonly Action<string, Func<bool>> _paste;
     private readonly Func<bool> _canPaste;
@@ -26,11 +27,13 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     { }
 
     internal LiveClipboardPaster(Func<IWindowsTextTarget> capture, Action<string, Func<bool>> paste,
-        bool startTimer = false, Func<bool>? canPaste = null, Func<Func<bool>>? beginCaptureGuard = null)
+        bool startTimer = false, Func<bool>? canPaste = null, Func<Func<bool>>? beginCaptureGuard = null,
+        Action<Action>? confirmCapture = null, Func<long>? tickCount = null)
     {
         _prepareCapture = () => capture;
         _beginCaptureGuard = beginCaptureGuard ?? (() => () => true);
-        _confirmCapture = action => action();
+        _confirmCapture = confirmCapture ?? (action => action());
+        _tickCount = tickCount ?? (() => Environment.TickCount64);
         _paste = paste;
         _canPaste = canPaste ?? (() => true);
         if (startTimer)
@@ -42,7 +45,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             // the hotkey. All document/provider reads then happen on the worker.
             _prepareCapture = () => WindowsTextTarget.CaptureFocusedIdentity(() => focusGuard.Generation);
             var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-            _confirmCapture = action => ui.Post(_ => action(), null);
+            _confirmCapture = confirmCapture ?? (action => ui.Post(_ => action(), null));
             _automation = new ApartmentWorker(ApartmentState.MTA, "Dictation text target");
             _clipboard = new ApartmentWorker(ApartmentState.STA, "Dictation live paste");
             _timer = new System.Windows.Forms.Timer { Interval = 200 };
@@ -59,7 +62,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     public void CaptureTarget()
     {
         EndSession();
-        var session = new Session { BusySince = Environment.TickCount64, RecordingId = DiagnosticTrace.CurrentRecordingId };
+        var session = new Session { BusySince = _tickCount(), RecordingId = DiagnosticTrace.CurrentRecordingId };
         Trace(session, "inline.capture_started");
         Volatile.Write(ref _session, session);
         SetPresentation(false, null);
@@ -71,7 +74,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             Trace(session, "inline.identity_capture_failed", error: ex);
             session.Ready = true;
             Interlocked.Exchange(ref session.BusySince, 0);
-            FailInsertion(session, ex);
+            FailInsertion(session, ex, initialCaptureRejected: true);
             return;
         }
         Dispatch(() =>
@@ -110,7 +113,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                     if (session.Conflicted)
                     {
                         FailInsertion(session, new InvalidOperationException(session.Failure
-                            ?? "The textbox could not be verified for dictation."));
+                            ?? "The textbox could not be verified for dictation."), initialCaptureRejected: true);
                         return;
                     }
                     SetPresentation(!session.Fallback && !session.Conflicted, null);
@@ -137,7 +140,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         lock (session)
         {
             session.Desired = text;
-            session.FinishingSince = Environment.TickCount64;
+            session.FinishingSince = _tickCount();
             session.Finishing = true;
         }
         Trace(session, "inline.final_requested", new { text });
@@ -152,14 +155,15 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         // A timed-out external operation loses permission to write even if it
         // returns later. Notify the workflow so capture cannot remain running.
         if (Interlocked.Read(ref session.BusySince) is var started && started != 0
-            && Environment.TickCount64 - started > 5000)
+            && _tickCount() - started > 5000)
         {
-            Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = Environment.TickCount64 - started });
-            FailInsertion(session, new InvalidOperationException("The original editor stopped responding."));
+            Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = _tickCount() - started });
+            FailInsertion(session, new InvalidOperationException("The original editor stopped responding."),
+                initialCaptureRejected: !session.Ready);
             return;
         }
         if (Interlocked.Exchange(ref _queued, 1) != 0) return;
-        Interlocked.Exchange(ref session.BusySince, Environment.TickCount64);
+        Interlocked.Exchange(ref session.BusySince, _tickCount());
         Dispatch(() =>
         {
             try { if (IsCurrent(session)) PumpSession(session); }
@@ -182,7 +186,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             var target = session.Target!;
             if (!target.IsFocused)
             {
-                if (session.Finishing && Environment.TickCount64 - session.FinishingSince >= FinalFocusWaitMilliseconds)
+                if (session.Finishing && _tickCount() - session.FinishingSince >= FinalFocusWaitMilliseconds)
                     throw new InvalidOperationException("The original textbox did not regain focus after dictation stopped.");
                 if (!session.FocusPaused) Trace(session, "inline.focus_paused");
                 session.FocusPaused = true;
@@ -249,14 +253,15 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         }
     }
 
-    private void FailInsertion(Session session, Exception error)
+    private void FailInsertion(Session session, Exception error, bool initialCaptureRejected = false)
     {
         var failureSubscribers = InsertionFailed;
         if (!IsCurrent(session) || Interlocked.Exchange(ref session.FailureNotified, 1) != 0) return;
         lock (session)
         {
             session.FailureDelivery = new(session.Acknowledged,
-                error is TextTargetUnavailableException && !session.Conflicted && session.InFlight is null);
+                error is TextTargetUnavailableException && !session.Conflicted && session.InFlight is null,
+                initialCaptureRejected);
         }
         session.Conflicted = true;
         session.Failure = error.Message;

@@ -10,6 +10,7 @@ public sealed class DictationWorkflow
     private readonly object _gate = new();
     private IDictationSession? _session;
     private CancellationTokenSource? _operation;
+    private CancellationTokenSource? _finalization;
     private DictationTriggerMode? _activeTriggerMode;
     private DictationWorkflowState _state = DictationWorkflowState.Idle;
     private bool _starting;
@@ -193,6 +194,7 @@ public sealed class DictationWorkflow
     {
         IDictationSession? session;
         CancellationTokenSource? operation;
+        CancellationTokenSource finalization;
         DictationWorkflowState processing;
         lock (_gate)
         {
@@ -204,6 +206,9 @@ public sealed class DictationWorkflow
 
             session = _session;
             operation = _operation;
+            if (session is null || operation is null) return;
+            finalization = CancellationTokenSource.CreateLinkedTokenSource(operation.Token);
+            _finalization = finalization;
             _finishing = true;
             processing = new DictationWorkflowState(
                 DictationWorkflowPhase.Processing,
@@ -223,7 +228,21 @@ public sealed class DictationWorkflow
         TranscriptComparison? comparison = null;
         try
         {
-            var sessionResult = await session.StopAsync(operation.Token);
+            // A rejected initial target never acquired permission to insert.
+            // Stop and release its audio without queuing final inference behind
+            // model startup. Later insertion failures still retain transcription.
+            Exception? captureFailure;
+            lock (_gate)
+                captureFailure = (_clipboardPaster as ILiveClipboardPaster)?.FailureDelivery?.InitialCaptureRejected == true
+                    ? _insertionFailure : null;
+            if (captureFailure is not null)
+            {
+                Trace("workflow.capture_rejection_cleanup");
+                await session.CancelAsync(CancellationToken.None);
+                operation.Token.ThrowIfCancellationRequested();
+                throw captureFailure;
+            }
+            var sessionResult = await session.StopAsync(finalization.Token);
             sessionResultCleanupWarningPath = sessionResult.CleanupWarningPath;
             operation.Token.ThrowIfCancellationRequested();
             var cleanupWarningPath = sessionResultCleanupWarningPath ?? session.CleanupWarningPath;
@@ -288,9 +307,12 @@ public sealed class DictationWorkflow
             Trace("workflow.finish_failed", error: ex);
             Exception? insertionFailure;
             lock (_gate) insertionFailure = _insertionFailure;
+            var initialCaptureRejected = (_clipboardPaster as ILiveClipboardPaster)?.FailureDelivery?.InitialCaptureRejected == true;
             // Automatic finishing after a rejected target can itself fail (for
             // example while stopping capture). Keep the original cause visible.
-            var failureMessage = insertionFailure is not null && !ReferenceEquals(insertionFailure, ex)
+            var failureMessage = insertionFailure is not null && initialCaptureRejected && ex is OperationCanceledException
+                ? insertionFailure.Message
+                : insertionFailure is not null && !ReferenceEquals(insertionFailure, ex)
                 ? insertionFailure.Message + " Finalization also failed: " + ex.Message
                 : ex.Message;
             var retained = comparison?.FinalText;
@@ -392,6 +414,11 @@ public sealed class DictationWorkflow
                 || operation.IsCancellationRequested || _insertionFailure is not null) return;
             _insertionFailure = error;
             Trace("workflow.insertion_failed", error: error);
+            // Capture may finish only after the user has already released the
+            // hotkey. Interrupt that operation's final inference without turning
+            // a rejected field into a user cancellation or stopping audio twice.
+            if ((_clipboardPaster as ILiveClipboardPaster)?.FailureDelivery?.InitialCaptureRejected == true)
+                _finalization?.Cancel();
             finish = !_starting && _state.Phase == DictationWorkflowPhase.Recording;
         }
         // Failure can originate in a preview callback or on the UIA worker.
@@ -529,6 +556,8 @@ public sealed class DictationWorkflow
 
             if (ReferenceEquals(_operation, operation))
             {
+                _finalization?.Dispose();
+                _finalization = null;
                 _operation = null;
                 operation.Dispose();
             }
