@@ -13,9 +13,11 @@ internal sealed class GlobalHotkeySource : IDisposable
     private const int WmSysKeyUp = 0x0105;
 
     private readonly LowLevelKeyboardProc _callback;
+    private readonly object _lifecycleGate = new();
+    private KeyboardHookThread? _hookThread;
+    private bool _disposed;
     private IntPtr _hookId;
-    private int _holdVirtualKey;
-    private int _toggleVirtualKey;
+    private HotkeyConfiguration _configuration = null!;
     private int _activeHoldVirtualKey;
     private int _activeToggleVirtualKey;
     private bool _holdPressed;
@@ -41,11 +43,15 @@ internal sealed class GlobalHotkeySource : IDisposable
 
     public void Start()
     {
-        if (_hookId != IntPtr.Zero)
+        lock (_lifecycleGate)
         {
-            return;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _hookThread ??= new KeyboardHookThread(InstallHook, RemoveHook);
         }
+    }
 
+    private void InstallHook()
+    {
         using var process = Process.GetCurrentProcess();
         using var module = process.MainModule;
         _hookId = SetWindowsHookEx(WhKeyboardLl, _callback, GetModuleHandle(module?.ModuleName), 0);
@@ -53,6 +59,9 @@ internal sealed class GlobalHotkeySource : IDisposable
         {
             throw new InvalidOperationException("Could not install the global dictation keyboard hook.");
         }
+        var configuration = Volatile.Read(ref _configuration);
+        DiagnosticTrace.Write("hotkey.started", new { configuration.Hold, configuration.Toggle,
+            threadId = Environment.CurrentManagedThreadId });
     }
 
     internal void Configure(DictationHotkey holdHotkey, DictationHotkey toggleHotkey)
@@ -62,11 +71,24 @@ internal sealed class GlobalHotkeySource : IDisposable
             throw new ArgumentException("Hold-to-talk and toggle-to-talk must use different keys.");
         }
 
-        _holdVirtualKey = DictationHotkeyCatalog.VirtualKey(holdHotkey);
-        _toggleVirtualKey = DictationHotkeyCatalog.VirtualKey(toggleHotkey);
+        Volatile.Write(ref _configuration, new HotkeyConfiguration(
+            DictationHotkeyCatalog.VirtualKey(holdHotkey), DictationHotkeyCatalog.VirtualKey(toggleHotkey)));
     }
 
     public void Dispose()
+    {
+        KeyboardHookThread? thread;
+        lock (_lifecycleGate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            thread = _hookThread;
+            _hookThread = null;
+        }
+        thread?.Dispose();
+    }
+
+    private void RemoveHook()
     {
         if (_hookId != IntPtr.Zero)
         {
@@ -77,7 +99,7 @@ internal sealed class GlobalHotkeySource : IDisposable
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && ProcessHookEvent(lParam, wParam.ToInt32()))
+        if (nCode >= 0 && ProcessHookEvent(lParam, wParam.ToInt32(), trace: true))
         {
             return (IntPtr)1;
         }
@@ -89,18 +111,30 @@ internal sealed class GlobalHotkeySource : IDisposable
 
     internal bool ProcessHookEventForTest(IntPtr data, int message) => ProcessHookEvent(data, message);
 
-    private bool ProcessHookEvent(IntPtr data, int message)
+    private bool ProcessHookEvent(IntPtr data, int message, bool trace = false)
     {
         var key = Marshal.PtrToStructure<KeyboardHookData>(data);
         // Our paste shortcut must reach the target without changing physical hold/toggle state.
-        if (key.ExtraInfo == WindowsPasteInput.InputMarker) return false;
-        return ProcessKeyEvent((int)key.VirtualKey, message);
+        var configuration = Volatile.Read(ref _configuration);
+        var virtualKey = (int)key.VirtualKey;
+        var isHotkey = virtualKey == configuration.Hold || virtualKey == configuration.Toggle
+            || (_holdPressed && virtualKey == _activeHoldVirtualKey)
+            || (_togglePressed && virtualKey == _activeToggleVirtualKey);
+        // This is the state before Windows processes this event, not a physical-key assertion.
+        var windowsDownBeforeEvent = trace && isHotkey && (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+        var ownInput = key.ExtraInfo == WindowsPasteInput.InputMarker;
+        var swallowed = !ownInput && ProcessKeyEvent(virtualKey, message);
+        if (trace && isHotkey)
+            DiagnosticTrace.Write("hotkey.input", new { virtualKey, message, injected = (key.Flags & 0x10) != 0,
+                ownInput, swallowed, windowsDownBeforeEvent });
+        return swallowed;
     }
 
     internal static int VirtualKeyForTest(DictationHotkey hotkey) => DictationHotkeyCatalog.VirtualKey(hotkey);
 
     private bool ProcessKeyEvent(int virtualKey, int message)
     {
+        var configuration = Volatile.Read(ref _configuration);
         var isKeyDown = message is WmKeyDown or WmSysKeyDown;
         var isKeyUp = message is WmKeyUp or WmSysKeyUp;
         if (!isKeyDown && !isKeyUp)
@@ -112,16 +146,20 @@ internal sealed class GlobalHotkeySource : IDisposable
         {
             _holdPressed = false;
             Released?.Invoke();
-            return true;
+            return !IsControl(virtualKey);
         }
 
         if (isKeyUp && _togglePressed && virtualKey == _activeToggleVirtualKey)
         {
             _togglePressed = false;
-            return true;
+            return !IsControl(virtualKey);
         }
 
-        if (isKeyDown && virtualKey == _holdVirtualKey)
+        // A held key remains owned until its release, even if Settings changes the binding.
+        if (isKeyDown && ((_holdPressed && virtualKey == _activeHoldVirtualKey)
+            || (_togglePressed && virtualKey == _activeToggleVirtualKey))) return true;
+
+        if (isKeyDown && virtualKey == configuration.Hold)
         {
             if (!_holdPressed)
             {
@@ -133,12 +171,7 @@ internal sealed class GlobalHotkeySource : IDisposable
             return true;
         }
 
-        if (isKeyUp && virtualKey == _holdVirtualKey)
-        {
-            return true;
-        }
-
-        if (isKeyDown && virtualKey == _toggleVirtualKey)
+        if (isKeyDown && virtualKey == configuration.Toggle)
         {
             if (!_togglePressed)
             {
@@ -150,13 +183,14 @@ internal sealed class GlobalHotkeySource : IDisposable
             return true;
         }
 
-        if (isKeyUp && virtualKey == _toggleVirtualKey)
-        {
-            return true;
-        }
-
+        // Never swallow an unmatched release: its press may have reached Windows
+        // before startup/reconfiguration. Matched Ctrl releases also pass through
+        // above so a pre-existing down state cannot remain latched by this hook.
         return false;
     }
+
+    private static bool IsControl(int virtualKey) => virtualKey is 0xA2 or 0xA3;
+    private sealed record HotkeyConfiguration(int Hold, int Toggle);
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -181,4 +215,7 @@ internal sealed class GlobalHotkeySource : IDisposable
 
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
 }

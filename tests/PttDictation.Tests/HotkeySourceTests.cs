@@ -7,6 +7,61 @@ namespace PttDictation.Tests;
 public sealed class HotkeySourceTests
 {
     [TestMethod]
+    [DataRow(DictationHotkey.RightControl)]
+    [DataRow(DictationHotkey.LeftControl)]
+    public void ControlReleaseReachesWindowsAndEndsHoldExactlyOnce(DictationHotkey key)
+    {
+        using var source = new GlobalHotkeySource(key, DictationHotkey.F9);
+        var releases = 0;
+        source.Released += () => releases++;
+        var vk = GlobalHotkeySource.VirtualKeyForTest(key);
+        Assert.IsTrue(source.ProcessKeyEventForTest(vk, GlobalHotkeySource.KeyDownMessageForTest));
+        Assert.IsFalse(source.ProcessKeyEventForTest(vk, GlobalHotkeySource.KeyUpMessageForTest),
+            "Windows must receive Ctrl-up even if its state was already down before PTT intercepted a press.");
+        Assert.AreEqual(1, releases);
+        Assert.IsFalse(source.ProcessKeyEventForTest(vk, GlobalHotkeySource.KeyUpMessageForTest));
+        Assert.AreEqual(1, releases);
+    }
+
+    [TestMethod]
+    public void UnmatchedReleaseAfterStartupOrReconfigurationIsNotSwallowed()
+    {
+        using var source = new GlobalHotkeySource(DictationHotkey.F8, DictationHotkey.F9);
+        var vk = GlobalHotkeySource.VirtualKeyForTest(DictationHotkey.RightControl);
+        Assert.IsFalse(source.ProcessKeyEventForTest(vk, GlobalHotkeySource.KeyDownMessageForTest));
+        source.Configure(DictationHotkey.RightControl, DictationHotkey.RightShift);
+        Assert.IsFalse(source.ProcessKeyEventForTest(vk, GlobalHotkeySource.KeyUpMessageForTest),
+            "The press reached Windows before PTT reserved this key; the release must also reach Windows.");
+        Assert.IsFalse(source.ProcessKeyEventForTest(0xA1, GlobalHotkeySource.KeyUpMessageForTest));
+    }
+
+    [TestMethod]
+    public void ControlToggleReleaseReachesWindowsWithoutAnExtraToggle()
+    {
+        using var source = new GlobalHotkeySource(DictationHotkey.F8, DictationHotkey.RightControl);
+        var toggles = 0;
+        source.ToggleRequested += () => toggles++;
+        Assert.IsTrue(source.ProcessKeyEventForTest(0xA3, GlobalHotkeySource.KeyDownMessageForTest));
+        Assert.IsFalse(source.ProcessKeyEventForTest(0xA3, GlobalHotkeySource.KeyUpMessageForTest));
+        Assert.AreEqual(1, toggles);
+        Assert.IsTrue(source.ProcessKeyEventForTest(0xA3, GlobalHotkeySource.KeyDownMessageForTest));
+        Assert.AreEqual(2, toggles);
+    }
+
+    [TestMethod]
+    public void ReconfigurationDuringHoldRetainsReleaseOwnershipAndSuppressesOldKeyRepeats()
+    {
+        using var source = new GlobalHotkeySource(DictationHotkey.RightControl, DictationHotkey.F9);
+        var releases = 0;
+        source.Released += () => releases++;
+        Assert.IsTrue(source.ProcessKeyEventForTest(0xA3, GlobalHotkeySource.KeyDownMessageForTest));
+        source.Configure(DictationHotkey.F10, DictationHotkey.F11);
+        Assert.IsTrue(source.ProcessKeyEventForTest(0xA3, GlobalHotkeySource.KeyDownMessageForTest));
+        Assert.IsFalse(source.ProcessKeyEventForTest(0xA3, GlobalHotkeySource.KeyUpMessageForTest));
+        Assert.AreEqual(1, releases);
+    }
+
+    [TestMethod]
     public void SelectedHoldKeyDownAndKeyUpEmitPushToTalkEvents()
     {
         using var hotkeySource = new GlobalHotkeySource(DictationHotkey.F8, DictationHotkey.F9);

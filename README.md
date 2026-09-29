@@ -63,7 +63,7 @@ Trust-boundary notes:
 - Cancelling stops further insertion; it does not undo text already inserted. Recognition-stage comparisons stay in memory for the current app session.
 - This development checkpoint enables local diagnostic traces under `%LOCALAPPDATA%\PttDictation\diagnostics\experimental`. They include dictated text, recognition stages, timing, and errors. Logs rotate at 4 MiB. Ordinary dictation does not retain complete recordings; older diagnostic recordings may still exist from earlier builds. These files are separate from session history and may contain sensitive speech; they are not uploaded automatically or included in the repository. Original clipboard contents and surrounding textbox text are not logged.
 - Transcript correction rules are stored locally with settings and are applied before history and paste.
-- The configurable hold and toggle keys use a low-level Windows keyboard hook. The hook consumes only the selected keys and is used for hotkey state, not transcript collection.
+- The configurable hold and toggle keys use a low-level Windows keyboard hook on a dedicated message thread, so slow editor accessibility calls cannot block hook delivery. The hook consumes selected key presses; Ctrl releases and unmatched releases reach Windows to clear any existing modifier state. It is used for hotkey state, not transcript collection. Local `hotkey.input` diagnostics describe only reserved-key events (injection, pass-through, and the Windows key state before delivery), never ordinary typed keys.
 - Runtime/model downloads leave the local machine to fetch third-party artifacts; transcription itself runs locally.
 
 ## Requirements
