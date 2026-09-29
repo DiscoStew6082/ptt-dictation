@@ -1,6 +1,6 @@
 namespace PttDictation.App;
 
-internal readonly record struct InitialTextTargetCandidate(IWindowsTextTarget Target, bool IsUnsupportedPane);
+internal readonly record struct InitialTextTargetCandidate(IWindowsTextTarget Target, bool IsUnsupportedContainer);
 
 // This policy is used only before a recording has accepted its first text target.
 internal static class InitialTextTargetCapture
@@ -12,7 +12,7 @@ internal static class InitialTextTargetCapture
         where TIdentity : class
     {
         var initial = inspect(original);
-        if (original is null || !initial.IsUnsupportedPane || initial.Target.SupportsReplacement
+        if (original is null || !initial.IsUnsupportedContainer || initial.Target.SupportsReplacement
             || initial.Target.CanPasteFallback) return initial.Target;
 
         for (var attempt = 1; attempt <= 3; attempt++)

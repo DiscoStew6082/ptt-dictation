@@ -109,7 +109,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                         legacyContainer = surface.IsLegacyFocusContainer && element is not null
                             && element.Current.ProcessId == processId;
                     }
-                    return new InitialTextTargetCandidate(target, surface.IsUnsupportedInitialPane
+                    return new InitialTextTargetCandidate(target, surface.IsUnsupportedInitialContainer
                         && element is not null && element.Current.ProcessId == processId);
                 },
                 () => AutomationElement.FocusedElement,
@@ -490,13 +490,13 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     private readonly bool _supportsReplacement;
 
     private AutomationTextSurface(AutomationElement? element, TextPattern? pattern, bool canPasteFallback = false,
-        bool supportsReplacement = false, bool isUnsupportedInitialPane = false, bool isLegacyFocusContainer = false)
+        bool supportsReplacement = false, bool isUnsupportedInitialContainer = false, bool isLegacyFocusContainer = false)
     {
         _element = element;
         _pattern = pattern;
         CanPasteFallback = canPasteFallback;
         _supportsReplacement = supportsReplacement;
-        IsUnsupportedInitialPane = isUnsupportedInitialPane;
+        IsUnsupportedInitialContainer = isUnsupportedInitialContainer;
         IsLegacyFocusContainer = isLegacyFocusContainer;
         _foregroundWindow = GetForegroundWindow();
     }
@@ -543,8 +543,8 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
                 && TextProviderDiagnostics.Observe("capture.selection_support", () => pattern.SupportedTextSelection) != SupportedTextSelection.None)
                 return new AutomationTextSurface(element, pattern, canPasteFallback: true, supportsReplacement: true);
             return new AutomationTextSurface(element, pattern, canPaste,
-                isUnsupportedInitialPane: enabled && !password && controlType == ControlType.Pane
-                    && rawValue is null && pattern is null && !canPaste,
+                isUnsupportedInitialContainer: AllowsInitialFocusRefinement(enabled, password, canPaste,
+                    controlType, rawValue is not null, pattern is not null),
                 isLegacyFocusContainer: AllowsLegacyFocusResolution(enabled, password, canPaste, controlType));
         }
         catch (Exception ex) when (WindowsTextTarget.IsProviderFailure(ex)) { DiagnosticTrace.Write("target.surface_capture_failed", error: ex); }
@@ -561,7 +561,13 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
 
     internal static bool AllowsLegacyFocusResolution(bool enabled, bool password, bool canPaste, ControlType controlType)
         => enabled && !password && !canPaste
-            && (controlType == ControlType.Window || controlType == ControlType.Document || controlType == ControlType.Pane);
+            && (controlType == ControlType.Window || controlType == ControlType.Document
+                || controlType == ControlType.Pane || controlType == ControlType.Group);
+
+    internal static bool AllowsInitialFocusRefinement(bool enabled, bool password, bool canPaste,
+        ControlType controlType, bool hasValuePattern, bool hasTextPattern)
+        => enabled && !password && !canPaste && !hasValuePattern && !hasTextPattern
+            && (controlType == ControlType.Pane || controlType == ControlType.Group);
 
     public bool IsFocused
     {
@@ -603,7 +609,7 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     }
 
     public bool SupportsReplacement => _supportsReplacement;
-    internal bool IsUnsupportedInitialPane { get; }
+    internal bool IsUnsupportedInitialContainer { get; }
     internal bool IsLegacyFocusContainer { get; }
     public bool CanPasteFallback { get; }
 

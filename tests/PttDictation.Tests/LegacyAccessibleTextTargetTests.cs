@@ -10,7 +10,7 @@ public sealed class LegacyAccessibleTextTargetTests
     [TestMethod]
     public void OnlyUnsupportedNonPasswordContainersCanResolveLegacyFocus()
     {
-        foreach (var control in new[] { ControlType.Window, ControlType.Document, ControlType.Pane })
+        foreach (var control in new[] { ControlType.Window, ControlType.Document, ControlType.Pane, ControlType.Group })
         {
             Assert.IsTrue(AutomationTextSurface.AllowsLegacyFocusResolution(true, false, false, control));
             Assert.IsFalse(AutomationTextSurface.AllowsLegacyFocusResolution(false, false, false, control));
