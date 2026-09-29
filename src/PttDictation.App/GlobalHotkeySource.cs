@@ -146,13 +146,13 @@ internal sealed class GlobalHotkeySource : IDisposable
         {
             _holdPressed = false;
             Released?.Invoke();
-            return !IsControl(virtualKey);
+            return !IsModifierKey(virtualKey);
         }
 
         if (isKeyUp && _togglePressed && virtualKey == _activeToggleVirtualKey)
         {
             _togglePressed = false;
-            return !IsControl(virtualKey);
+            return !IsModifierKey(virtualKey);
         }
 
         // A held key remains owned until its release, even if Settings changes the binding.
@@ -184,12 +184,12 @@ internal sealed class GlobalHotkeySource : IDisposable
         }
 
         // Never swallow an unmatched release: its press may have reached Windows
-        // before startup/reconfiguration. Matched Ctrl releases also pass through
+        // before startup/reconfiguration. Matched modifier releases also pass through
         // above so a pre-existing down state cannot remain latched by this hook.
         return false;
     }
 
-    private static bool IsControl(int virtualKey) => virtualKey is 0xA2 or 0xA3;
+    private static bool IsModifierKey(int virtualKey) => virtualKey is >= 0xA0 and <= 0xA5;
     private sealed record HotkeyConfiguration(int Hold, int Toggle);
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);

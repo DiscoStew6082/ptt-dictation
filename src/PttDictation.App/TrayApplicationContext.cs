@@ -16,6 +16,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly DictationPresentation _dictationPresentation;
     private readonly StatusSoundPlayer _statusSoundPlayer;
     private readonly Func<SettingsForm> _settingsFormFactory;
+    private readonly bool _hasNvidiaGpu;
     private readonly Icon _trayIcon;
     private readonly Icon _activeTrayIcon;
     private readonly NotifyIcon _notifyIcon;
@@ -36,8 +37,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     internal TrayApplicationContext(Func<SettingsForm>? settingsFormFactory)
     {
+        _hasNvidiaGpu = GraphicsHardware.HasNvidiaAdapter();
         _settingsFormFactory = settingsFormFactory
-            ?? (() => new SettingsForm(_settingsStore, _modelRegistry));
+            ?? (() => new SettingsForm(_settingsStore, _modelRegistry, _hasNvidiaGpu));
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         var staleAudioCleanupFailures = AudioResidueCleaner.DeleteStaleFiles(AppPaths.RootDirectory);
         _recorder = new WasapiAudioRecorder(AppPaths.RootDirectory);
@@ -340,6 +342,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ApplySettings(AppSettings settings)
     {
+        settings = GraphicsHardware.UseSupportedSettings(settings, _hasNvidiaGpu);
         _hotkeySource.Configure(settings.HoldHotkey, settings.ToggleHotkey);
         _settings = settings;
         UpdateTrayText();

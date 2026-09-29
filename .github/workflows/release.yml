@@ -66,6 +66,7 @@ jobs:
           Compress-Archive -Path publish\ptt-dictation-win-x64\* -DestinationPath publish\PttDictation-win-x64.zip -Force
           $hash = (Get-FileHash publish\PttDictation-win-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  PttDictation-win-x64.zip" | Set-Content -NoNewline -Encoding ascii publish\PttDictation-win-x64.zip.sha256
+          Copy-Item scripts\Install-PttDictation.ps1 publish\Install-PttDictation.ps1
 
       - name: Upload release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -75,6 +76,7 @@ jobs:
             publish/PttDictation-win-x64.zip
             publish/PttDictation-win-x64.zip.sha256
             publish/PttDictation.cdx.json
+            publish/Install-PttDictation.ps1
 
       - name: Attest release artifact
         if: ${{ github.event.repository.private == false }}
@@ -83,7 +85,7 @@ jobs:
           subject-path: publish/PttDictation-win-x64.zip
 
   publish:
-    name: Draft GitHub release
+    name: Publish GitHub release
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
@@ -106,7 +108,7 @@ jobs:
             publish\PttDictation-win-x64.zip `
             publish\PttDictation-win-x64.zip.sha256 `
             publish\PttDictation.cdx.json `
-            --draft `
+            publish\Install-PttDictation.ps1 `
             --repo $env:GITHUB_REPOSITORY `
             --title $env:GITHUB_REF_NAME `
             --notes "See README.md and SECURITY.md for privacy, verification, and third-party runtime/model asset notes."

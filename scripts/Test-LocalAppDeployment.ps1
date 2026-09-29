@@ -6,11 +6,9 @@ Set-StrictMode -Version Latest
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ptt-deployment-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $installer = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Update-LocalApp.ps1') -Raw
-$fixedPath = 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64'
 $fixedSettingsInitialization = '$settingsPath = Join-Path $env:LOCALAPPDATA ''PttDictation\settings.json'''
-if ([regex]::Matches($installer, [regex]::Escape($fixedPath)).Count -ne 1 -or
-    [regex]::Matches($installer, [regex]::Escape($fixedSettingsInitialization)).Count -ne 1) {
-    throw 'Expected exactly one fixed installation path and one fixed settings initialization in the production script.'
+if ([regex]::Matches($installer, [regex]::Escape($fixedSettingsInitialization)).Count -ne 1) {
+    throw 'Expected exactly one fixed settings initialization in the production script.'
 }
 
 function Assert($Condition, [string]$Message) {
@@ -36,9 +34,9 @@ function Invoke-Fixture([string]$Scenario) {
     $global:pttTestSettingsPath = Join-Path $caseRoot 'appdata\PttDictation\settings.json'
     $global:pttTestSettingsSource = Join-Path $caseRoot 'requested-settings.json'
     $oldSettingsBytes = [Text.Encoding]::Unicode.GetPreamble() + [Text.Encoding]::Unicode.GetBytes(
-        "{  ""FinalTranscriptionBackend"": ""Parakeet"", ""note"": ""café old"" }" + [char]13 + [char]10)
+        "{  ""devicePreference"": ""Cuda"", ""FinalTranscriptionBackend"": ""Parakeet"", ""note"": ""café old"" }" + [char]13 + [char]10)
     $newSettingsBytes = [Text.Encoding]::UTF8.GetPreamble() + [Text.Encoding]::UTF8.GetBytes(
-        "{ ""FinalTranscriptionBackend"": ""Qwen"", ""note"": ""café new"" }" + [char]10)
+        "{ ""devicePreference"": ""Cpu"", ""FinalTranscriptionBackend"": ""Qwen"", ""note"": ""café new"" }" + [char]10)
     $hadSettings = $Scenario -notin @('settings-first-install', 'settings-missing-rollback')
     if ($hadSettings) {
         [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($global:pttTestSettingsPath)) | Out-Null
@@ -48,15 +46,13 @@ function Invoke-Fixture([string]$Scenario) {
     $oldSettingsSnapshot = if ($hadSettings) { [Convert]::ToBase64String($oldSettingsBytes) } else { '<missing>' }
     $newSettingsSnapshot = [Convert]::ToBase64String($newSettingsBytes)
 
-    # Both production destinations are replaced before the test script can run.
-    # Refuse the fixture if either real installation or appdata access remains.
+    # The production settings destination is replaced before the test script can run.
+    # The installation destination is supplied explicitly to every invocation.
     $testScript = Join-Path $caseRoot 'installer.ps1'
     $settingsInitialization = '$settingsPath = ''' + $global:pttTestSettingsPath.Replace("'", "''") + ''''
-    $isolatedInstaller = $installer.Replace($fixedPath, $live).
-        Replace($fixedSettingsInitialization, $settingsInitialization).
+    $isolatedInstaller = $installer.Replace($fixedSettingsInitialization, $settingsInitialization).
         Replace('Local\PttDictation-PermanentDeployment', "Local\PttTest-$Scenario")
-    Assert (-not $isolatedInstaller.Contains($fixedPath) -and
-        -not $isolatedInstaller.Contains('$env:LOCALAPPDATA')) 'Fixture could access a real installation or appdata.'
+    Assert (-not $isolatedInstaller.Contains('$env:LOCALAPPDATA')) 'Fixture could access real appdata.'
     [IO.File]::WriteAllText($testScript, $isolatedInstaller, [Text.UTF8Encoding]::new($false))
     $global:pttTestExpectedExe = Join-Path $live 'PttDictation.exe'
     $global:pttTestRunning = @([pscustomobject]@{
@@ -77,6 +73,7 @@ function Invoke-Fixture([string]$Scenario) {
     $global:pttTestStopCount = 0
     $global:pttTestLaunches = @()
     $global:pttTestSettingsAtStops = @()
+    $global:pttTestExitedPids = @()
     $global:pttTestFailure = $Scenario
     $oldHash = (Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash
     $newHash = (Get-FileHash -LiteralPath (Join-Path $stage 'PttDictation.dll')).Hash
@@ -85,24 +82,38 @@ function Invoke-Fixture([string]$Scenario) {
         if (-not [IO.File]::Exists($global:pttTestSettingsPath)) { return '<missing>' }
         return [Convert]::ToBase64String([IO.File]::ReadAllBytes($global:pttTestSettingsPath))
     }
+    function Get-Process {
+        param($Name, $ErrorAction)
+        Assert ($Name -eq 'PttDictation') 'Unexpected process-name query.'
+        if ($null -ne $global:pttTestPendingProcess) {
+            $global:pttTestDiscoveryPolls++
+            if ($global:pttTestDiscoveryPolls -ge 3) {
+                $global:pttTestRunning = @($global:pttTestPendingProcess)
+                $global:pttTestPendingProcess = $null
+            }
+        }
+        return @($global:pttTestRunning | ForEach-Object {
+            $view = [pscustomobject]@{ Id = $_.ProcessId; Path = $_.ExecutablePath }
+            $view | Add-Member -MemberType ScriptProperty -Name HasExited -Value {
+                return $this.Id -in $global:pttTestExitedPids
+            }
+            $view
+        })
+    }
     function Get-CimInstance {
         param($ClassName, $Filter)
-        if ($Filter -eq "Name = 'PttDictation.exe'") {
-            if ($null -ne $global:pttTestPendingProcess) {
-                $global:pttTestDiscoveryPolls++
-                if ($global:pttTestDiscoveryPolls -ge 3) {
-                    $global:pttTestRunning = @($global:pttTestPendingProcess)
-                    $global:pttTestPendingProcess = $null
-                }
-            }
-            return $global:pttTestRunning
-        }
         if ($Filter -match '^ParentProcessId = (\d+)') {
             $parentId = [int]$Matches[1]
             return @($global:pttTestWorkers | Where-Object ParentProcessId -eq $parentId)
         }
         if ($Filter -match '^ProcessId = (\d+)$') {
             $processId = [int]$Matches[1]
+            if ($global:pttTestFailure -eq 'vanished-process' -and $processId -eq 101 -and
+                $processId -notin $global:pttTestExitedPids) {
+                $global:pttTestExitedPids += $processId
+                $global:pttTestRunning = @($global:pttTestRunning | Where-Object ProcessId -ne $processId)
+                return @()
+            }
             return @(@($global:pttTestRunning) + @($global:pttTestWorkers) | Where-Object ProcessId -eq $processId)
         }
         throw "Unexpected process query: $Filter"
@@ -204,7 +215,7 @@ function Invoke-Fixture([string]$Scenario) {
         }
     }
 
-    $arguments = @{ StagedPath = $stage }
+    $arguments = @{ StagedPath = $stage; InstallDirectory = $live }
     if ($Scenario.StartsWith('settings-')) { $arguments.SettingsSource = $global:pttTestSettingsSource }
     switch ($Scenario) {
         'missing-file' { Remove-Item -LiteralPath (Join-Path $stage 'PttDictation.Core.dll') }
@@ -212,24 +223,24 @@ function Invoke-Fixture([string]$Scenario) {
         'ancestor-as-source' { $arguments.StagedPath = $caseRoot }
         'unexpected-arguments' { $global:pttTestRunning[0].CommandLine += ' --settings' }
         'other-location' { $global:pttTestRunning[0].ExecutablePath = Join-Path $stage 'PttDictation.exe' }
-        'verify-existing' { $arguments = @{ VerifyOnly = $true } }
+        'verify-existing' { $arguments = @{ VerifyOnly = $true; InstallDirectory = $live } }
         'settings-malformed-json' { [IO.File]::WriteAllText($global:pttTestSettingsSource, '{"invalid":') }
         'settings-invalid-root' { [IO.File]::WriteAllText($global:pttTestSettingsSource, '[]') }
         'settings-unc-source' { $arguments.SettingsSource = '\\unreachable.invalid\share\settings.json' }
         'settings-slash-unc-source' { $arguments.SettingsSource = '//unreachable.invalid/share/settings.json' }
         'settings-missing-source' { [IO.File]::Delete($global:pttTestSettingsSource) }
-        'settings-verify-rejected' { $arguments = @{ VerifyOnly = $true; SettingsSource = $global:pttTestSettingsSource } }
+        'settings-verify-rejected' { $arguments = @{ VerifyOnly = $true; SettingsSource = $global:pttTestSettingsSource; InstallDirectory = $live } }
     }
     $caught = $null
     try { $result = & $testScript @arguments }
     catch { $caught = $_ }
 
-    $successScenarios = @('success', 'owned-worker', 'delayed-launch', 'settings-success', 'settings-first-install', 'settings-frozen-source')
+    $successScenarios = @('success', 'owned-worker', 'vanished-process', 'delayed-launch', 'settings-success', 'settings-first-install', 'settings-frozen-source')
     $rollbackScenarios = @('startup-failure', 'corrupt-install', 'settings-startup-failure', 'settings-copy-failure', 'settings-missing-rollback',
         'shell-dispatch-failure', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process')
     if ($Scenario -in $successScenarios) {
         Assert ($null -eq $caught) "Install failed: $caught"
-        $expectedStops = if ($Scenario -eq 'owned-worker') { 2 } else { 1 }
+        $expectedStops = if ($Scenario -eq 'owned-worker') { 2 } elseif ($Scenario -eq 'vanished-process') { 0 } else { 1 }
         Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'Expected the app and its owned worker to stop, followed by one normal start.'
         if ($Scenario -eq 'delayed-launch') {
             Assert ($global:pttTestDiscoveryPolls -eq 3) 'Delayed Explorer dispatch was not observed.'
@@ -240,13 +251,13 @@ function Invoke-Fixture([string]$Scenario) {
                 1102 -in @($global:pttTestWorkers | ForEach-Object ProcessId)) 'Owned worker survived or an unrelated/older worker was stopped.'
         }
         Assert ((Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash -eq $newHash) 'New package was not installed.'
-        $verified = & $testScript -VerifyOnly
+        $verified = & $testScript -VerifyOnly -InstallDirectory $live
         Assert $verified.DeploymentReceiptVerified 'Receipt verification failed.'
         Assert ($verified.FilesHashed -eq 6) 'Nested package files were not verified.'
         Assert (-not (Test-Path -LiteralPath (Join-Path $live 'old-only.dat'))) 'Obsolete package file was not removed.'
         Set-Content -LiteralPath (Join-Path $live 'nested\asset.dat') -Value 'tampered'
         $tamperError = $null
-        try { $null = & $testScript -VerifyOnly } catch { $tamperError = $_ }
+        try { $null = & $testScript -VerifyOnly -InstallDirectory $live } catch { $tamperError = $_ }
         Assert ($null -ne $tamperError -and "$tamperError" -like '*hash mismatch*') 'Tampered asset was not rejected.'
         Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'VerifyOnly changed process state.'
     }
@@ -318,7 +329,7 @@ function Invoke-Fixture([string]$Scenario) {
 
 try {
     $scenarios = @('desktop-unavailable', 'delayed-launch', 'shell-dispatch-failure', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process',
-        'owned-worker', 'success', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
+        'owned-worker', 'success', 'vanished-process', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
         'ancestor-as-source', 'unexpected-arguments', 'other-location', 'verify-existing',
         'settings-success', 'settings-first-install', 'settings-startup-failure', 'settings-copy-failure',
         'settings-missing-rollback', 'settings-malformed-json', 'settings-invalid-root', 'settings-missing-source',
@@ -335,5 +346,5 @@ finally {
     }
     Remove-Item -LiteralPath $resolved -Recurse -Force
     Remove-Variable -Scope Global -Name pttTestExpectedExe,pttTestRunning,pttTestWorkers,pttTestStartCount,pttTestStopCount,pttTestFailure,
-        pttTestSettingsPath,pttTestSettingsSource,pttTestLaunches,pttTestSettingsAtStops,pttTestPendingProcess,pttTestDiscoveryPolls -ErrorAction SilentlyContinue
+        pttTestSettingsPath,pttTestSettingsSource,pttTestLaunches,pttTestSettingsAtStops,pttTestPendingProcess,pttTestDiscoveryPolls,pttTestExitedPids -ErrorAction SilentlyContinue
 }

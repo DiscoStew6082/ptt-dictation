@@ -135,7 +135,8 @@ public sealed class QwenTranscriberTests
     public async Task StartupTimeoutKillsWorkerAndCanBeRetried()
     {
         using var fixture = new WorkerFixture("hang-start", "normal");
-        using var adapter = fixture.CreateAdapter(startupTimeout: TimeSpan.FromSeconds(3));
+        // A Windows PowerShell fixture can take several seconds to initialize on a busy or fresh machine.
+        using var adapter = fixture.CreateAdapter(startupTimeout: TimeSpan.FromSeconds(8));
         await Assert.ThrowsExactlyAsync<TimeoutException>(() => adapter.WarmUpAsync(CancellationToken.None));
         await fixture.AssertOwnedProcessesExitedAsync();
         await adapter.WarmUpAsync(CancellationToken.None);
