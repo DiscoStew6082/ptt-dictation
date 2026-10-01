@@ -7,6 +7,47 @@ namespace PttDictation.Tests;
 public sealed class WindowsTextTargetTests
 {
     [TestMethod]
+    public void EmptyEditorWithUnstableLabelRangeReusesVerifiedCaretAndAllowsRevisions()
+    {
+        // Paseo's empty TextPattern snapshot reports the first character of its
+        // label, but a fresh range reports the whole label and refuses Select.
+        var surface = new FakeSurface("", "", "M")
+        {
+            RejectInitialCaretSelection = true,
+            DiscardSurroundingsOnFirstPaste = true
+        };
+        var target = new WindowsTextTarget(surface);
+
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "first words", text =>
+        {
+            Assert.IsTrue(target.IsPreparedSelectionCurrent);
+            surface.Paste(text);
+        }));
+        Assert.AreEqual(0, surface.SelectCalls);
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "first words", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("first words", "Final words.", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("first words", "Final words.", surface.Paste));
+        Assert.AreEqual("Final words.", surface.Document);
+        Assert.AreEqual(2, surface.Pastes);
+        Assert.AreEqual(1, surface.SelectCalls, "Revisions must still select only the owned text.");
+    }
+
+    [TestMethod]
+    public void ReusedInitialCaretStillRejectsChangedSelectionBeforePaste()
+    {
+        var surface = new FakeSurface("before ", "", " after") { RejectInitialCaretSelection = true };
+        var target = new WindowsTextTarget(surface);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", _ =>
+        {
+            surface.Prefix = "before  after";
+            surface.Suffix = "";
+            Assert.IsFalse(target.IsPreparedSelectionCurrent, "A moved caret must invalidate the prepared paste.");
+        }));
+        Assert.AreEqual(0, surface.SelectCalls);
+        Assert.AreEqual(0, surface.Pastes);
+    }
+
+    [TestMethod]
     public void UnavailableAutomationReferenceDoesNotClaimTheVisibleTextboxDisappeared()
     {
         var surface = new FakeSurface("before ", "", " after");
@@ -192,7 +233,7 @@ public sealed class WindowsTextTargetTests
     [TestMethod]
     public void FocusLostDuringSelectionNeverPastesIntoAnotherField()
     {
-        var surface = new FakeSurface("before", "", "after") { LoseFocusDuringSelection = true };
+        var surface = new FakeSurface("before", "selected", "after") { LoseFocusDuringSelection = true };
         var target = new WindowsTextTarget(surface);
         Assert.AreEqual(TextTargetUpdateResult.Unfocused, target.TryReplace("", "speech", surface.Paste));
         Assert.AreEqual(0, surface.Pastes);
@@ -219,13 +260,13 @@ public sealed class WindowsTextTargetTests
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("first words", "revised words", surface.Paste));
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("first words", "revised words", surface.Paste));
         Assert.AreEqual(1, surface.Pastes);
-        Assert.AreEqual(2, surface.SelectCalls, "Polling must not issue another selection request.");
+        Assert.AreEqual(1, surface.SelectCalls, "Polling must not issue another selection request.");
         surface.ApplyDelayedSelection();
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("first words", "revised words", surface.Paste));
         Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("first words", "revised words", surface.Paste));
         Assert.AreEqual("before revised words after", surface.Document);
         Assert.AreEqual(2, surface.Pastes);
-        Assert.AreEqual(2, surface.SelectCalls);
+        Assert.AreEqual(1, surface.SelectCalls);
     }
 
     [TestMethod]
@@ -415,7 +456,7 @@ public sealed class WindowsTextTargetTests
     [TestMethod]
     public void OriginalReferenceRecoveryNeverRetriesSelectionOrPaste()
     {
-        var surface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var surface = new FakeSurface("", "selected", "") { RefreshOriginalReference = true };
         var target = new WindowsTextTarget(surface);
         surface.SelectionAvailable = false;
         Assert.Throws<TextTargetUnavailableException>(() => target.TryReplace("", "final", surface.Paste));
@@ -468,7 +509,7 @@ public sealed class WindowsTextTargetTests
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("preview", "final", surface.Paste));
         now += TimeSpan.FromMilliseconds(101);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("preview", "final", surface.Paste));
-        Assert.AreEqual(2, surface.SelectCalls);
+        Assert.AreEqual(1, surface.SelectCalls);
         Assert.AreEqual(1, surface.Pastes);
     }
 
@@ -506,6 +547,7 @@ public sealed class WindowsTextTargetTests
         public bool DelayPaste { get; init; }
         public bool DelaySelection { get; set; }
         public bool DiscardSurroundingsOnFirstPaste { get; init; }
+        public bool RejectInitialCaretSelection { get; init; }
         public int Pastes { get; private set; }
         public int SelectCalls { get; private set; }
         private string? _delayed;
@@ -517,6 +559,7 @@ public sealed class WindowsTextTargetTests
         {
             if (!SelectionAvailable) throw new ElementNotAvailableException();
             SelectCalls++;
+            if (RejectInitialCaretSelection && Pastes == 0 && owned.Length == 0) return false;
             if (Document != before + owned + after) return false;
             if (DelaySelection)
             {

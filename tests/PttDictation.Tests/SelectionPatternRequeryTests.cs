@@ -239,6 +239,9 @@ public sealed class SelectionPatternRequeryTests
         public WindowsTextTarget Target { get; }
         public Harness()
         {
+            // These tests count real selection requests. Start with selected
+            // content so setup does not take the verified collapsed-caret path.
+            Surface.Selection = "initial selection";
             Target = new WindowsTextTarget(Surface, () => Now);
             Assert.AreEqual(TextTargetUpdateResult.Pending, Target.TryReplace("", "first words", Surface.Paste));
             Assert.AreEqual(TextTargetUpdateResult.Success, Target.TryReplace("", "first words", Surface.Paste));

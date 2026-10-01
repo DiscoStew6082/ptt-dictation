@@ -205,7 +205,11 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 if (expected is null) return CanPasteFallback && IsFocused;
                 var current = ReadOriginalSurface(_surface.Read);
                 var valid = current.IsConsistent && current == expected && IsFocused;
-                if (!valid) Trace("target.prepared_invalid", new { reason = "snapshot_or_focus_changed", current.IsConsistent, snapshotMatches = current == expected });
+                if (!valid)
+                {
+                    Trace("target.prepared_invalid", new { reason = "snapshot_or_focus_changed", current.IsConsistent, snapshotMatches = current == expected });
+                    TraceSnapshotDifference("target.prepared_snapshot_difference", expected, current);
+                }
                 return valid;
             }
             catch (ElementNotAvailableException ex) { throw Unavailable("prepared_selection", ex); }
@@ -248,6 +252,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 {
                     if (_clock() - _pendingSince < AcknowledgementTimeout)
                         return TextTargetUpdateResult.Pending;
+                    TraceSnapshotDifference("target.write_acknowledgement_timeout",
+                        new(ExpectedDocument(pending), Prefix + pending, "", Suffix), snapshot);
                     return Conflict("acknowledgement_timeout");
                 }
 
@@ -282,8 +288,16 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             {
                 _selectionRequestOrdinal++;
                 _selectionGenerationAtRequest = ReadFocusGenerationForDiagnostics();
-                TraceSelectionObservation("target.selection_requested", currentOwned, snapshot, snapshot, TimeSpan.Zero);
-                if (!_surface.Select(Prefix, currentOwned, Suffix))
+                // The initial caret already identifies the insertion point. Some
+                // empty Chromium editors expose their label through TextPattern,
+                // and reselecting this unchanged caret corrupts the provider range.
+                // Reuse only an exact, collapsed initial selection; revisions still
+                // select owned text and the pre-paste guard rereads the snapshot.
+                var reuseInitialCaret = !HasAttemptedWrite && currentOwned.Length == 0
+                    && MatchesOwnedSelection(snapshot, currentOwned);
+                TraceSelectionObservation(reuseInitialCaret ? "target.initial_caret_reused" : "target.selection_requested",
+                    currentOwned, snapshot, snapshot, TimeSpan.Zero);
+                if (!reuseInitialCaret && !_surface.Select(Prefix, currentOwned, Suffix))
                     return Conflict("select_owned_range_failed");
                 _selectionBeforeRequest = snapshot;
                 _selectionPatternRequeryAttempted = false;
@@ -412,6 +426,28 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private string Prefix => _initialDecorationDisappeared ? "" : _initial!.Prefix;
     private string Suffix => _initialDecorationDisappeared ? "" : _initial!.Suffix;
     private string ExpectedDocument(string text) => Prefix + text + Suffix;
+    private void TraceSnapshotDifference(string stage, TextTargetSnapshot expected, TextTargetSnapshot observed)
+    {
+        // Lengths/equality only: never persist surrounding user text. Use the
+        // existing observation, avoiding additional calls into a fragile provider.
+        Trace(stage, new
+        {
+            expectedDocumentLength = expected.Document.Length, documentLength = observed.Document.Length,
+            expectedPrefixLength = expected.Prefix.Length, prefixLength = observed.Prefix.Length,
+            expectedSelectionLength = expected.Selection.Length, selectionLength = observed.Selection.Length,
+            expectedSuffixLength = expected.Suffix.Length, suffixLength = observed.Suffix.Length,
+            documentMatches = expected.Document == observed.Document,
+            prefixMatches = expected.Prefix == observed.Prefix,
+            selectionMatches = expected.Selection == observed.Selection,
+            suffixMatches = expected.Suffix == observed.Suffix, observed.IsConsistent,
+            expectedPrefixOnlyLineBreaks = OnlyLineBreaks(expected.Prefix),
+            expectedSuffixOnlyLineBreaks = OnlyLineBreaks(expected.Suffix),
+            observedPrefixOnlyLineBreaks = OnlyLineBreaks(observed.Prefix),
+            observedSuffixOnlyLineBreaks = OnlyLineBreaks(observed.Suffix)
+        });
+    }
+
+    private static bool OnlyLineBreaks(string text) => text.Length > 0 && text.All(c => c is '\r' or '\n');
     private bool MatchesOwnedSelection(TextTargetSnapshot snapshot, string owned) =>
         snapshot.IsConsistent && snapshot.Prefix == Prefix && snapshot.Selection == owned && snapshot.Suffix == Suffix;
     private void TraceSelectionObservation(string stage, string currentOwned, TextTargetSnapshot snapshot,
