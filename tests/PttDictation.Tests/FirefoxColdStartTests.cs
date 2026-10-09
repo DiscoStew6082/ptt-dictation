@@ -54,23 +54,28 @@ public sealed class FirefoxColdStartTests
                 Assert.IsLessThan(20000L, started.ElapsedMilliseconds, "PTT accessibility client startup failed before Firefox launch.");
                 await Task.Delay(25);
             }
+            // Preparation occurs before any Firefox process exists and performs
+            // no accessibility or browser work. Opt-in diagnostics only.
+            await using var slowCollector = await FirefoxSlowCallCollector.StartIfEnabledAsync(output);
             for (var trial = 1; trial <= 3; trial++)
             {
                 var trialOutput = Path.Combine(output, $"trial-{trial}");
                 Directory.CreateDirectory(trialOutput);
-                await RunTrialAsync(executable!, editorKind, trialOutput, paster, overlay);
+                await RunTrialAsync(executable!, editorKind, trialOutput, paster, overlay, slowCollector);
                 await DiagnosticTrace.FlushAsync();
             }
         });
     }
 
     private async Task RunTrialAsync(string executable, string editorKind, string output,
-        LiveClipboardPaster paster, StatusOverlayForm overlay)
+        LiveClipboardPaster paster, StatusOverlayForm overlay, FirefoxSlowCallCollector? slowCollector)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var token = deadline.Token;
         await using var fixture = FirefoxEditorFixture.Start(editorKind);
         using var browser = new OwnedFirefox(executable, fixture.Url, output);
+        using var stopSlowMonitor = new CancellationTokenSource();
+        Task? slowMonitor = null;
         var sessions = new KnownTranscripts();
         var history = new SessionHistory();
         var ui = SynchronizationContext.Current!;
@@ -105,6 +110,8 @@ public sealed class FirefoxColdStartTests
             // attachment, provider probing, or arbitrary warmup delay precedes PTT.
             await Until(() => fixture.Latest is { Focused: true, Ready: true }, "Firefox editor DOM focus", 20000);
             browser.BindReadyWindow();
+            slowMonitor = slowCollector?.WatchTrialAsync(browser.WaitChainTarget, GetCurrentThreadId(), output,
+                stopSlowMonitor.Token);
             var clicksBefore = fixture.Latest!.TrustedClicks;
             browser.ClickEditor(fixture.Latest);
             await Until(() => fixture.Latest is { Focused: true } state && state.TrustedClicks > clicksBefore,
@@ -185,6 +192,12 @@ public sealed class FirefoxColdStartTests
         }
         finally
         {
+            stopSlowMonitor.Cancel();
+            if (slowMonitor is not null)
+            {
+                try { await slowMonitor; }
+                catch (Exception error) { TestContext.WriteLine($"Slow-call diagnostics unavailable: {error}"); }
+            }
             if (keyDown) SendRightControl(release: true);
             await workflow.HandleAsync(DictationIntent.Cancel, CancellationToken.None);
             File.WriteAllText(Path.Combine(output, "dom-observations.json"), JsonSerializer.Serialize(fixture.Snapshots));

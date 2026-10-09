@@ -1,13 +1,12 @@
 #Requires -Version 7.0
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$TargetsPath, [Parameter(Mandatory)][string]$OutputPath,
-    [string]$DumpPath, [int]$DumpProcessId)
+param([string]$TargetsPath, [Parameter(Mandatory)][string]$OutputPath,
+    [string]$DumpPath, [int]$DumpProcessId, [string]$RequestPath, [string]$ReadyPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 # This disposable worker accepts only an exact PID/start-time/name manifest.
 # It does not attach a debugger, send input, query UIA, or enumerate other processes.
-$targets = @(Get-Content -LiteralPath $TargetsPath -Raw | ConvertFrom-Json)
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -18,6 +17,13 @@ using System.Runtime.InteropServices;
 
 public static class PttWaitChainWorker
 {
+    public static void Prepare()
+    {
+        System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(
+            typeof(PttWaitChainWorker).GetMethod("WriteDump").MethodHandle);
+        LoadLibrary("dbghelp.dll");
+    }
+
     public static void WriteDump(int pid, long startedUtcTicks, string processName,
         string dumpPath, Action<object> write)
     {
@@ -140,6 +146,20 @@ public static class PttWaitChainWorker
         IntPtr exception, IntPtr userStream, IntPtr callback);
 }
 '@
+
+if ($RequestPath) {
+    if (-not $ReadyPath) { throw 'A prepared worker requires a readiness path.' }
+    [PttWaitChainWorker]::Prepare()
+    [IO.File]::WriteAllText($ReadyPath, [DateTimeOffset]::UtcNow.ToString('O'))
+    while (-not [IO.File]::Exists($RequestPath)) { [Threading.Thread]::Sleep(5) }
+    $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+    $targets = @($request.Targets)
+    $DumpPath = [string]$request.DumpPath
+    $DumpProcessId = [int]$request.DumpProcessId
+} else {
+    if (-not $TargetsPath) { throw 'A one-shot worker requires a target manifest.' }
+    $targets = @(Get-Content -LiteralPath $TargetsPath -Raw | ConvertFrom-Json)
+}
 
 $writer = [IO.StreamWriter]::new($OutputPath, $false, [Text.UTF8Encoding]::new($false))
 $writer.AutoFlush = $true

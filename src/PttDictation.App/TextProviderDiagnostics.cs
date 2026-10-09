@@ -9,6 +9,12 @@ internal static class TextProviderDiagnostics
 {
     private sealed record Operation(string Name, long Started, string Apartment);
     private static readonly ConcurrentDictionary<int, Operation> Active = new();
+    internal sealed record PendingOperation(string Name, int ManagedThreadId, string Apartment, double ElapsedMilliseconds);
+
+    // Observes already-recorded metadata only; never invokes the provider.
+    internal static IReadOnlyList<PendingOperation> SnapshotPendingOperations() => Active
+        .Select(entry => new PendingOperation(entry.Value.Name, entry.Key, entry.Value.Apartment,
+            Stopwatch.GetElapsedTime(entry.Value.Started).TotalMilliseconds)).ToArray();
 
     internal static void WritePendingOperations(string? recordingId)
     {

@@ -121,6 +121,40 @@ public sealed class TextProviderDiagnosticsTests
     }
 
     [TestMethod]
+    public async Task ConcurrentPendingSnapshotDoesNotInvokeProvidersOrExposeTheirValues()
+    {
+        using var entered = new CountdownEvent(2);
+        using var release = new ManualResetEventSlim();
+        const string secret = "private editor text captured only inside the provider";
+        var calls = 0;
+        var reads = Enumerable.Range(0, 2).Select(index => Task.Factory.StartNew(() =>
+            TextProviderDiagnostics.Observe("snapshot.concurrent_" + index, () =>
+            {
+                Interlocked.Increment(ref calls);
+                entered.Signal();
+                release.Wait();
+                return secret;
+            }), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+        try
+        {
+            Assert.IsTrue(entered.Wait(TimeSpan.FromSeconds(2)));
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                var snapshot = TextProviderDiagnostics.SnapshotPendingOperations();
+                Assert.HasCount(2, snapshot);
+                Assert.HasCount(2, snapshot.Select(operation => operation.ManagedThreadId).Distinct().ToArray());
+                Assert.IsTrue(snapshot.All(operation => operation.ElapsedMilliseconds >= 0));
+                Assert.IsFalse(JsonSerializer.Serialize(snapshot).Contains(secret));
+            }
+            Assert.IsTrue(reads.All(read => !read.IsCompleted));
+            Assert.AreEqual(2, calls);
+        }
+        finally { release.Set(); }
+        await Task.WhenAll(reads);
+        Assert.IsEmpty(TextProviderDiagnostics.SnapshotPendingOperations());
+    }
+
+    [TestMethod]
     public async Task ErrorIndexContainsOperationTypeAndCodeWithoutProviderMessageOrText()
     {
         using var configured = DiagnosticTrace.Configure(directory, "provider-test");
