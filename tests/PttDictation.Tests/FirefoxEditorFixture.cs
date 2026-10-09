@@ -10,7 +10,12 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
 {
     internal sealed record State(string Text, bool Focused, long Sequence,
         string UserAgent, double Timestamp, double? FirstFocusedAt, bool Ready,
-        long TrustedInputEvents, long TrustedPasteEvents);
+        long TrustedInputEvents, long TrustedPasteEvents, double ClickX, double ClickY,
+        double PixelRatio, long TrustedClicks, int SelectionRangeCount, string? SelectionAnchor,
+        int? SelectionOffset)
+    {
+        public DateTimeOffset ReceivedUtc { get; init; }
+    }
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpListener _listener;
@@ -26,7 +31,8 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
         _listener = listener;
         Url = url;
         _page = BuildPage(kind);
-        _server = ServeAsync();
+        // DOM observations must not wait for the PTT test's UI/COM apartment.
+        _server = Task.Run(ServeAsync);
     }
 
     public Uri Url { get; }
@@ -161,8 +167,11 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
         }
         var state = JsonSerializer.Deserialize<State>(buffer.AsSpan(0, count), JsonOptions);
         if (state is null || state.Text is null || state.UserAgent is null || state.Sequence <= 0
-            || !double.IsFinite(state.Timestamp) || state.TrustedInputEvents < 0 || state.TrustedPasteEvents < 0)
+            || !double.IsFinite(state.Timestamp) || state.TrustedInputEvents < 0 || state.TrustedPasteEvents < 0
+            || !double.IsFinite(state.ClickX) || !double.IsFinite(state.ClickY)
+            || !double.IsFinite(state.PixelRatio) || state.PixelRatio <= 0 || state.TrustedClicks < 0)
             throw new InvalidDataException("Invalid Firefox state report.");
+        state = state with { ReceivedUtc = DateTimeOffset.UtcNow };
         lock (_gate)
         {
             if (_latest is null || state.Sequence > _latest.Sequence)
@@ -195,16 +204,25 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             <script>
             const editor = document.getElementById('editor');
             let sequence = 0, firstFocusedAt = null, sending = false, ready = false;
-            let trustedInputEvents = 0, trustedPasteEvents = 0;
+            let trustedInputEvents = 0, trustedPasteEvents = 0, trustedClicks = 0;
             function observe() {
               const focused = document.activeElement === editor && document.hasFocus();
               if (focused && firstFocusedAt === null) firstFocusedAt = performance.now();
+              const rect = editor.getBoundingClientRect();
+              const selection = window.getSelection();
+              const textarea = editor instanceof HTMLTextAreaElement;
               return {
-                text: (editor instanceof HTMLTextAreaElement ? editor.value : editor.innerText)
+                text: (textarea ? editor.value : editor.innerText)
                   .replace(/\r\n?/g, '\n'),
                 focused, sequence: ++sequence, userAgent: navigator.userAgent,
                 timestamp: performance.now(), firstFocusedAt, ready,
-                trustedInputEvents, trustedPasteEvents
+                trustedInputEvents, trustedPasteEvents,
+                clickX: window.mozInnerScreenX + rect.left + Math.min(24, rect.width / 2),
+                clickY: window.mozInnerScreenY + rect.top + Math.min(24, rect.height / 2),
+                pixelRatio: window.devicePixelRatio, trustedClicks,
+                selectionRangeCount: selection?.rangeCount ?? 0,
+                selectionAnchor: selection?.anchorNode?.nodeName ?? null,
+                selectionOffset: textarea ? editor.selectionStart : selection?.anchorOffset ?? null
               };
             }
             async function report() {
@@ -224,6 +242,10 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             });
             editor.addEventListener('paste', event => {
               if (event.isTrusted) trustedPasteEvents++;
+              void report();
+            });
+            editor.addEventListener('click', event => {
+              if (event.isTrusted) trustedClicks++;
               void report();
             });
             editor.addEventListener('focus', () => void report());

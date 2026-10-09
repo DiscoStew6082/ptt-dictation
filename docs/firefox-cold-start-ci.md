@@ -35,7 +35,9 @@ setup failure rather than allowing a skipped browser check.
 
 The entry point is `scripts/Test-FirefoxColdStart.ps1`. It refuses to run outside
 a GitHub-hosted Windows runner. The test additionally requires explicit opt-in
-and a valid Firefox executable. The ordinary test job excludes the
+and a valid Firefox executable. An ordinary local test run skips this category
+without opt-in; explicit opt-in on a non-runner fails before any browser action.
+The ordinary CI test job excludes the
 `FirefoxColdStart` category so an opt-out or skipped integration test cannot
 masquerade as Firefox coverage. The dedicated job requires exactly two passed
 test cases, zero skipped cases, and a new TRX result. Missing Firefox, absent

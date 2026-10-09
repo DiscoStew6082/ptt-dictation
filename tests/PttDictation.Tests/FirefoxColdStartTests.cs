@@ -21,6 +21,8 @@ public sealed class FirefoxColdStartTests
     [DataRow("contenteditable")]
     public async Task FreshFirefoxAcceptsFirstAndSecondDictation(string editorKind)
     {
+        if (Environment.GetEnvironmentVariable("PTT_RUN_FIREFOX_COLD_START_TESTS") != "1")
+            Assert.Inconclusive("Firefox integration runs only in its dedicated GitHub-hosted Windows CI job.");
         Assert.AreEqual("true", Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "CI-only test.");
         Assert.AreEqual("github-hosted", Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT"), "Disposable runner required.");
         Assert.AreEqual("1", Environment.GetEnvironmentVariable("PTT_RUN_FIREFOX_COLD_START_TESTS"), "Explicit Firefox CI opt-in required.");
@@ -83,6 +85,10 @@ public sealed class FirefoxColdStartTests
             // attachment, provider probing, or arbitrary warmup delay precedes PTT.
             await Until(() => fixture.Latest is { Focused: true, Ready: true }, "Firefox editor DOM focus", 20000);
             browser.BindReadyWindow();
+            var clicksBefore = fixture.Latest!.TrustedClicks;
+            browser.ClickEditor(fixture.Latest);
+            await Until(() => fixture.Latest is { Focused: true } state && state.TrustedClicks > clicksBefore,
+                "native click establishes Firefox caret", 5000);
             Assert.IsTrue(fixture.Latest!.UserAgent.Contains("Firefox/", StringComparison.Ordinal));
             Assert.AreEqual("", fixture.Latest.Text);
             for (var dictation = 1; dictation <= 2; dictation++)
@@ -285,6 +291,20 @@ public sealed class FirefoxColdStartTests
             ProcessId = process.Id;
         }
 
+        public void ClickEditor(FirefoxEditorFixture.State page)
+        {
+            RequireForeground();
+            Assert.AreEqual(1d, page.PixelRatio, "CI click coordinates require the runner's normal 100% display scaling.");
+            var point = new NativePoint { X = (int)Math.Round(page.ClickX), Y = (int)Math.Round(page.ClickY) };
+            Assert.AreEqual(_window, GetAncestor(WindowFromPoint(point), 2), "Editor point must belong to this Firefox window.");
+            Assert.IsTrue(SetCursorPos(point.X, point.Y));
+            WindowsPasteInput.NativeInput[] inputs = [
+                new() { Type = 0, Data = new WindowsPasteInput.InputUnion { Mouse = new WindowsPasteInput.MouseInput { Flags = 2 } } },
+                new() { Type = 0, Data = new WindowsPasteInput.InputUnion { Mouse = new WindowsPasteInput.MouseInput { Flags = 4 } } }
+            ];
+            Assert.AreEqual(2u, SendInput(2, inputs, Marshal.SizeOf<WindowsPasteInput.NativeInput>()));
+        }
+
         public void Dispose()
         {
             // No browser existed at Start. Only this CI trial can launch one;
@@ -336,6 +356,15 @@ public sealed class FirefoxColdStartTests
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder title, int length);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X, Y; }
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(NativePoint point);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, [In] WindowsPasteInput.NativeInput[] inputs, int size);
 }
