@@ -50,6 +50,14 @@ by the timer and again before writing or acknowledging a late result. Initial
 capture/preparation and focus-return limits remain five seconds. These are
 separate phase limits, not a total dictation deadline.
 
+Preparation retains the exact editor and selection obtained while the cold
+provider becomes ready. After refinement, a strict native focus/input guard,
+fresh validation of that same editor's selection, and queued native-event
+confirmation all finish before microphone startup. The recording adopts that
+prepared target without repeating provider capability discovery. The original
+preparation deadline and intent checks remain active through this handoff;
+changed identity, selection, or cancellation cannot select a replacement editor.
+
 UI Automation identity capture and target validation run on the serialized,
 windowless MTA worker, following
 [Microsoft's UI Automation threading guidance](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading).

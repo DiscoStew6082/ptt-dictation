@@ -20,7 +20,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private readonly WindowsAccessibilityWarmup? _accessibilityWarmup;
     private readonly Func<CancellationToken, Task<IDisposable>>? _acquireCapture;
     private readonly Func<Func<bool>> _beginPreparation;
-    private readonly Func<Func<bool>> _createReadiness;
+    private readonly Func<TextTargetReadiness> _createReadiness;
     private CapturePreparation? _preparation;
     private readonly Action<string, Func<bool>> _paste;
     private readonly Func<string, Func<bool>, IPendingClipboardPaste>? _pasteAwaitingAcknowledgement;
@@ -58,7 +58,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         Func<Func<bool>>? beginPreparation = null, Func<Func<bool>>? createReadiness = null,
         ApartmentWorker? automationWorker = null, Func<IntPtr>? statusWindow = null,
         Func<string, Func<bool>, IPendingClipboardPaste>? pasteAwaitingAcknowledgement = null,
-        ApartmentWorker? clipboardWorker = null, Func<Func<IWindowsTextTarget>>? prepareCapture = null)
+        ApartmentWorker? clipboardWorker = null, Func<Func<IWindowsTextTarget>>? prepareCapture = null,
+        Func<TextTargetReadiness>? createPreparedReadiness = null)
     {
         _prepareCapture = prepareCapture ?? (() => capture);
         _beginCaptureGuard = beginCaptureGuard ?? (() => () => true);
@@ -69,7 +70,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         _canPaste = canPaste ?? (() => true);
         _acquireCapture = acquireCapture;
         _beginPreparation = beginPreparation ?? (() => () => true);
-        _createReadiness = createReadiness ?? (() => () => true);
+        _createReadiness = createPreparedReadiness ?? (() => new((createReadiness ?? (() => () => true))()));
         _automation = automationWorker;
         _clipboard = clipboardWorker;
         if (startTimer)
@@ -79,7 +80,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             _accessibilityWarmup = new WindowsAccessibilityWarmup(() => Volatile.Read(ref _session) is null);
             _acquireCapture = _accessibilityWarmup.AcquireCaptureAsync;
             _beginPreparation = () => focusGuard.BeginPreparation(() => GlobalHotkeySource.InputGeneration);
-            _createReadiness = BrowserCaptureReadiness.Create;
+            _createReadiness = () => BrowserCaptureReadiness.Create(() => focusGuard.Generation);
             focusGuard.FocusChanged += _accessibilityWarmup.Request;
             _beginCaptureGuard = focusGuard.BeginCapture;
             // Native intent is captured on the UI thread. Identity and every
@@ -127,17 +128,45 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         {
             preparation.SetLease(await _acquireCapture(preparation.Token));
             Check();
-            Func<bool>? ready = null;
+            TextTargetReadiness? ready = null;
             await OnWorker(() => { Check(); ready = _createReadiness(); });
             while (true)
             {
                 var available = false;
-                await OnWorker(() => { Check(); available = ready!(); Check(); });
+                await OnWorker(() => { Check(); available = ready!.Probe(); Check(); });
                 Check();
                 if (available) break;
                 await Task.Delay(50, preparation.Token);
             }
-            preparation.ValidateIdentity = ready;
+            preparation.ValidateIdentity = ready!.Probe;
+            if (ready.Target is { } target)
+            {
+                // Readiness may legitimately refine a cold browser container.
+                // After that, a strict native boundary surrounds final validation
+                // of the SAME editor and snapshot, all before microphone startup.
+                var unchanged = _beginCaptureGuard();
+                await OnWorker(() =>
+                {
+                    Check();
+                    if (!ready.Probe() || !target.IsPreparedSelectionCurrent)
+                        throw new InvalidOperationException("The prepared textbox or selection changed before dictation could start.");
+                    Check();
+                });
+                var confirmed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _confirmCapture(() =>
+                {
+                    try
+                    {
+                        Check();
+                        if (!unchanged()) throw new InvalidOperationException("The textbox or selection changed while dictation was preparing.");
+                        preparation.PreparedTarget = target;
+                        preparation.ConfirmedIntent = unchanged;
+                        confirmed.TrySetResult();
+                    }
+                    catch (Exception error) { confirmed.TrySetException(error); }
+                });
+                await confirmed.Task.WaitAsync(preparation.Token);
+            }
             DiagnosticTrace.Write("inline.preparation_ready");
         }
         catch (Exception error)
@@ -154,7 +183,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     {
         var preparation = Interlocked.Exchange(ref _preparation, null);
         EndSession();
-        if (preparation is not null && (preparation.Token.IsCancellationRequested || !preparation.Unchanged()))
+        if (preparation is not null && (preparation.Token.IsCancellationRequested || !preparation.Unchanged()
+            || preparation.ConfirmedIntent is { } confirmedIntent && !confirmedIntent()))
         {
             preparation.Dispose();
             throw new InvalidOperationException("The textbox or input changed before dictation could start.");
@@ -164,6 +194,18 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         Trace(session, "inline.capture_started");
         Volatile.Write(ref _session, session);
         SetPresentation(false, null);
+        if (preparation?.PreparedTarget is { } preparedTarget)
+        {
+            session.Target = preparedTarget;
+            session.Fallback = !preparedTarget.SupportsReplacement;
+            session.Ready = true;
+            Interlocked.Exchange(ref session.BusySince, 0);
+            Trace(session, "inline.prepared_target_adopted", new { session.Fallback });
+            preparation.Dispose();
+            SetPresentation(!session.Fallback, null);
+            _timer?.Start();
+            return;
+        }
         Func<bool> unchanged;
         try { unchanged = _beginCaptureGuard(); }
         catch (Exception ex)

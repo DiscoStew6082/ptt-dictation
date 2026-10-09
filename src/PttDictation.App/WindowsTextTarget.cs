@@ -79,13 +79,19 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     // The automation MTA reads identity and invokes this factory. The native
     // focus guard separately preserves the original hotkey boundary.
     public static Func<IWindowsTextTarget> CaptureFocusedIdentity(Func<long>? readFocusGeneration = null)
+        => CaptureIdentityCore(() => AutomationElement.FocusedElement, readFocusGeneration);
+
+    internal static Func<IWindowsTextTarget> CaptureIdentity(AutomationElement identity, Func<long> readFocusGeneration)
+        => CaptureIdentityCore(() => identity, readFocusGeneration);
+
+    private static Func<IWindowsTextTarget> CaptureIdentityCore(Func<AutomationElement?> readIdentity, Func<long>? readFocusGeneration)
     {
         var recordingId = DiagnosticTrace.CurrentRecordingId;
         var generation = readFocusGeneration?.Invoke();
         var foreground = GetForegroundWindow();
         GetWindowThreadProcessId(foreground, out var processId);
         AutomationElement? identity;
-        try { identity = AutomationElement.FocusedElement; }
+        try { identity = readIdentity(); }
         catch (Exception ex) when (IsProviderFailure(ex))
         {
             DiagnosticTrace.Write("target.identity_failed", error: ex, recordingId: recordingId);

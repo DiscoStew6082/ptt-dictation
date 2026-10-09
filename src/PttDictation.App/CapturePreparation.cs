@@ -10,6 +10,8 @@ internal sealed class CapturePreparation : IDisposable
     internal Func<bool> Unchanged { get; }
     internal CancellationToken Token { get; }
     internal Func<bool>? ValidateIdentity { get; set; }
+    internal IWindowsTextTarget? PreparedTarget { get; set; }
+    internal Func<bool>? ConfirmedIntent { get; set; }
 
     internal CapturePreparation(CancellationToken cancellationToken, Func<bool> unchanged, Action<IDisposable> release)
     {

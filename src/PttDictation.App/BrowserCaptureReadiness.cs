@@ -2,38 +2,56 @@ using System.Windows.Automation;
 
 namespace PttDictation.App;
 
+internal sealed record TextTargetReadiness(Func<bool> Probe, Func<IWindowsTextTarget?>? ReadTarget = null)
+{
+    internal IWindowsTextTarget? Target => ReadTarget?.Invoke();
+}
+
 // Preparation may refine an unavailable browser container, never a previously
 // identified editor into a different editor. It grants no permission to paste.
 internal static class BrowserCaptureReadiness
 {
-    internal static Func<bool> Create()
+    internal static TextTargetReadiness Create(Func<long> readFocusGeneration)
+        => CreatePrepared(() => AutomationElement.FocusedElement, (original, focused) =>
+            Related(original, focused),
+            focused => focused.Current.HasKeyboardFocus
+                ? WindowsTextTarget.CaptureIdentity(focused, readFocusGeneration)()
+                : null,
+            Automation.Compare);
+
+    internal static TextTargetReadiness CreatePrepared<T>(Func<T?> readFocused, Func<T, T, bool> related,
+        Func<T, IWindowsTextTarget?> capture, Func<T, T, bool> same) where T : class
     {
-        return Create(() => AutomationElement.FocusedElement, (original, focused) =>
+        IWindowsTextTarget? prepared = null;
+        var probe = Create(readFocused, related, focused =>
         {
-            if (focused.Current.ProcessId != original.Current.ProcessId) return false;
-            var type = original.Current.ControlType;
-            var canRefine = type == ControlType.Pane || type == ControlType.Group
-                || type == ControlType.Document || type == ControlType.Window;
-            var related = Automation.Compare(original, focused);
-            if (!related && canRefine)
-            {
-                var ancestor = focused;
-                for (var depth = 0; ancestor is not null && depth < 32; depth++)
-                {
-                    if (Automation.Compare(original, ancestor)) { related = true; break; }
-                    ancestor = TreeWalker.RawViewWalker.GetParent(ancestor);
-                }
-            }
-            return related;
-        }, focused =>
-        {
-            if (!focused.Current.HasKeyboardFocus) return false;
             // Use the same capability policy, including guarded legacy focus,
-            // as real capture. This is a disposable readiness observation only;
-            // the intent guard surrounds it and capture takes a fresh snapshot.
-            var target = WindowsTextTarget.CaptureFocusedIdentity(() => 0)();
-            return IsReady(target);
-        }, Automation.Compare);
+            // as real capture. Retain the original provider and live generation
+            // reader; handoff verifies its exact snapshot rather than bootstrapping
+            // a second target after recording has already started.
+            var target = capture(focused);
+            if (target is null || !IsReady(target)) return false;
+            prepared = target;
+            return true;
+        }, same);
+        return new(probe, () => prepared);
+    }
+
+    private static bool Related(AutomationElement original, AutomationElement focused)
+    {
+        if (focused.Current.ProcessId != original.Current.ProcessId) return false;
+        var type = original.Current.ControlType;
+        var canRefine = type == ControlType.Pane || type == ControlType.Group
+            || type == ControlType.Document || type == ControlType.Window;
+        if (Automation.Compare(original, focused)) return true;
+        if (!canRefine) return false;
+        var ancestor = focused;
+        for (var depth = 0; ancestor is not null && depth < 32; depth++)
+        {
+            if (Automation.Compare(original, ancestor)) return true;
+            ancestor = TreeWalker.RawViewWalker.GetParent(ancestor);
+        }
+        return false;
     }
 
     internal static Func<bool> Create<T>(Func<T?> readFocused, Func<T, T, bool> related,
