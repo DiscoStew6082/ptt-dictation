@@ -28,14 +28,23 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private int _queued;
 
     public LiveClipboardPaster(Func<IntPtr>? statusWindow = null)
-        : this(new ClipboardPaster(), statusWindow)
+        : this(CreateNativeClipboard(), statusWindow)
     { }
 
-    private LiveClipboardPaster(ClipboardPaster clipboard, Func<IntPtr>? statusWindow)
-        : this(WindowsTextTarget.Capture, clipboard.PasteToCurrentTarget,
+    private LiveClipboardPaster(NativeClipboard clipboard, Func<IntPtr>? statusWindow)
+        : this(WindowsTextTarget.Capture, clipboard.Paster.PasteToCurrentTarget,
             startTimer: true, canPaste: () => WindowsPasteInput.CanPasteNow, statusWindow: statusWindow,
-            pasteAwaitingAcknowledgement: clipboard.PasteToCurrentTargetAwaitingAcknowledgement)
+            pasteAwaitingAcknowledgement: clipboard.Paster.PasteToCurrentTargetAwaitingAcknowledgement,
+            clipboardWorker: clipboard.Worker)
     { }
+
+    private sealed record NativeClipboard(ClipboardPaster Paster, ApartmentWorker Worker);
+
+    private static NativeClipboard CreateNativeClipboard()
+    {
+        var worker = new ApartmentWorker(ApartmentState.STA, "Dictation clipboard");
+        return new(new ClipboardPaster(worker), worker);
+    }
 
     internal LiveClipboardPaster(Func<IWindowsTextTarget> capture, Action<string, Func<bool>> paste,
         bool startTimer = false, Func<bool>? canPaste = null, Func<Func<bool>>? beginCaptureGuard = null,
@@ -43,9 +52,10 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         Func<CancellationToken, Task<IDisposable>>? acquireCapture = null,
         Func<Func<bool>>? beginPreparation = null, Func<Func<bool>>? createReadiness = null,
         ApartmentWorker? automationWorker = null, Func<IntPtr>? statusWindow = null,
-        Func<string, Func<bool>, IPendingClipboardPaste>? pasteAwaitingAcknowledgement = null)
+        Func<string, Func<bool>, IPendingClipboardPaste>? pasteAwaitingAcknowledgement = null,
+        ApartmentWorker? clipboardWorker = null, Func<Func<IWindowsTextTarget>>? prepareCapture = null)
     {
-        _prepareCapture = () => capture;
+        _prepareCapture = prepareCapture ?? (() => capture);
         _beginCaptureGuard = beginCaptureGuard ?? (() => () => true);
         _confirmCapture = confirmCapture ?? (action => action());
         _tickCount = tickCount ?? (() => Environment.TickCount64);
@@ -56,6 +66,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         _beginPreparation = beginPreparation ?? (() => () => true);
         _createReadiness = createReadiness ?? (() => () => true);
         _automation = automationWorker;
+        _clipboard = clipboardWorker;
         if (startTimer)
         {
             var focusGuard = new WindowsFocusCaptureGuard(statusWindow);
@@ -66,13 +77,12 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             _createReadiness = BrowserCaptureReadiness.Create;
             focusGuard.FocusChanged += _accessibilityWarmup.Request;
             _beginCaptureGuard = focusGuard.BeginCapture;
-            // Resolve only the original focused identity before returning from
-            // the hotkey. All document/provider reads then happen on the worker.
+            // Native intent is captured on the UI thread. Identity and every
+            // provider read stay on the same serial automation MTA.
             _prepareCapture = () => WindowsTextTarget.CaptureFocusedIdentity(() => focusGuard.Generation);
             var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             _confirmCapture = confirmCapture ?? (action => ui.Post(_ => action(), null));
             _automation = new ApartmentWorker(ApartmentState.MTA, "Dictation text target");
-            _clipboard = new ApartmentWorker(ApartmentState.STA, "Dictation live paste");
             _timer = new System.Windows.Forms.Timer { Interval = 200 };
             _timer.Tick += (_, _) => Pump();
         }
@@ -149,8 +159,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         Volatile.Write(ref _session, session);
         SetPresentation(false, null);
         Func<bool> unchanged;
-        Func<IWindowsTextTarget> capture;
-        try { unchanged = _beginCaptureGuard(); capture = _prepareCapture(); }
+        try { unchanged = _beginCaptureGuard(); }
         catch (Exception ex)
         {
             preparation?.Dispose();
@@ -166,6 +175,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             if (!IsCurrent(session)) return;
             try
             {
+                var capture = _prepareCapture();
                 if (preparation?.ValidateIdentity is { } validate && !validate())
                     throw new InvalidOperationException("The prepared textbox is no longer available.");
                 session.Target = capture();
@@ -397,8 +407,9 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             else _paste(text, CanWrite);
             Trace(session, "inline.clipboard_returned");
         }
-        if (_clipboard is null) Write();
-        else _clipboard.InvokeAsync(Write).GetAwaiter().GetResult();
+        // ClipboardPaster dispatches only clipboard APIs to its STA backend.
+        // Its target callback must execute here, on the automation MTA.
+        Write();
     }
 
     private bool IsCurrent(Session session) => session.Active && ReferenceEquals(Volatile.Read(ref _session), session);
@@ -485,12 +496,47 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 internal sealed class ApartmentWorker : IDisposable
 {
     private readonly BlockingCollection<Action> _queue = new();
+    private Action? _wakeSta;
+    private Exception? _startupFailure;
 
     public ApartmentWorker(ApartmentState apartment, string name)
     {
         var thread = new Thread(() =>
         {
-            foreach (var work in _queue.GetConsumingEnumerable()) work();
+            try
+            {
+                if (apartment == ApartmentState.STA)
+                {
+                    using var context = new ApplicationContext();
+                    using var ui = new WindowsFormsSynchronizationContext();
+                    SynchronizationContext.SetSynchronizationContext(ui);
+                    var draining = false;
+                    void Drain()
+                    {
+                        // OLE can pump messages during a queued action. Nested
+                        // wake messages must not run the next action early.
+                        if (draining) return;
+                        draining = true;
+                        try
+                        {
+                            while (_queue.TryTake(out var work)) work();
+                            if (_queue.IsCompleted) context.ExitThread();
+                        }
+                        finally { draining = false; }
+                    }
+                    Volatile.Write(ref _wakeSta, () => ui.Post(_ => Drain(), null));
+                    ui.Post(_ => Drain(), null);
+                    Application.Run(context);
+                }
+                else foreach (var work in _queue.GetConsumingEnumerable()) work();
+            }
+            catch (Exception error)
+            {
+                _startupFailure = error;
+                _queue.CompleteAdding();
+                while (_queue.TryTake(out var work)) work();
+            }
+            finally { Volatile.Write(ref _wakeSta, null); }
         })
         { IsBackground = true, Name = name };
         thread.SetApartmentState(apartment);
@@ -505,7 +551,11 @@ internal sealed class ApartmentWorker : IDisposable
         {
             _queue.Add(() =>
             {
-                try { action(); completion.TrySetResult(); }
+                try
+                {
+                    if (_startupFailure is not null) throw new InvalidOperationException("Apartment worker failed to initialize.", _startupFailure);
+                    action(); completion.TrySetResult();
+                }
                 catch (Exception ex)
                 {
                     DiagnosticTrace.Write("inline.worker_failed", error: ex, recordingId: recordingId);
@@ -518,8 +568,22 @@ internal sealed class ApartmentWorker : IDisposable
             DiagnosticTrace.Write("inline.worker_queue_closed", error: ex, recordingId: recordingId);
             completion.TrySetCanceled();
         }
+        // An accepted action keeps its completion even if its wake races STA
+        // shutdown: the draining loop may already have executed it.
+        WakeSta();
         return completion.Task;
     }
 
-    public void Dispose() => _queue.CompleteAdding();
+    public void Dispose()
+    {
+        _queue.CompleteAdding();
+        WakeSta();
+    }
+
+    private void WakeSta()
+    {
+        try { Volatile.Read(ref _wakeSta)?.Invoke(); }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.InvalidAsynchronousStateException) { }
+    }
 }

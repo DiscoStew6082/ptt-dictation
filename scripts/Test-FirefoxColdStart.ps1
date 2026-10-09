@@ -26,6 +26,7 @@ $firefoxFile = Get-Item -LiteralPath $firefoxPath
     runnerImageVersion = $env:ImageVersion
     commit = $env:GITHUB_SHA
     runId = $env:GITHUB_RUN_ID
+    runAttempt = $env:GITHUB_RUN_ATTEMPT
     startedUtc = [DateTimeOffset]::UtcNow.ToString('O')
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifactDirectory 'runner.json') -Encoding utf8
 

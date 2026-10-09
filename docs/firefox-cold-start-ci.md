@@ -37,6 +37,13 @@ The two-second write-acknowledgement budget starts when paste submission returns
 after clipboard preparation and target revalidation. Subsequent polls do not
 reset it; the separate preparation/worker deadlines still bound provider stalls.
 
+UI Automation identity capture and target validation run on the serialized,
+windowless MTA worker, following
+[Microsoft's UI Automation threading guidance](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading).
+Clipboard API calls run on a separate STA with a message loop. The clipboard
+thread never calls back into a textbox provider while the automation worker
+waits for it. The original native focus guard still starts at the hotkey boundary.
+
 The browser is cold at the process and profile level. This is not a reboot or a
 claim that the operating system file cache is empty. The test uses an isolated
 local page, not a signed-in ChatGPT account. Recognition output is deterministic;
@@ -67,9 +74,12 @@ masquerade as Firefox coverage. The dedicated job requires exactly two passed
 test cases, zero skipped cases, and a new TRX result. Missing Firefox, absent
 results, failed focus, or a test timeout fails the job.
 
-Every run uploads `firefox-cold-start-evidence` for 14 days, including its TRX
+Every attempt uploads `firefox-cold-start-evidence-<attempt>` for 14 days, including its TRX
 and the available browser evidence. `runner.json` records the Firefox version,
-runner image, source commit, and run identity. Firefox tracks the GitHub runner
+runner image, source commit, and run/attempt identity. Failed trials also retain
+the browser for ten seconds to collect DOM observations and bounded Windows
+wait-chain diagnostics before teardown. This observation never retries a
+dictation or changes a failed result. Firefox tracks the GitHub runner
 image instead of a pinned browser version; version metadata makes a runner or
 browser update visible when investigating a regression. The job runs on pushes
 and pull requests targeting `master` or `main`.

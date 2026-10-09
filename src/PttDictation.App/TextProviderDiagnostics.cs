@@ -57,14 +57,18 @@ internal static class TextProviderDiagnostics
         catch (Exception error) when (WindowsTextTarget.IsProviderFailure(error))
         {
             DiagnosticTrace.Write("target.provider_operation_failed",
-                new { operation, exceptionType = error.GetType().FullName, error.HResult });
+                new { operation, exceptionType = error.GetType().FullName, error.HResult,
+                    threadId = Environment.CurrentManagedThreadId,
+                    apartment = Thread.CurrentThread.GetApartmentState().ToString() });
             throw;
         }
         finally
         {
             var elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             if (elapsedMs >= 250)
-                DiagnosticTrace.Write("target.provider_operation_slow", new { operation, elapsedMs });
+                DiagnosticTrace.Write("target.provider_operation_slow", new { operation, elapsedMs,
+                    threadId = Environment.CurrentManagedThreadId,
+                    apartment = Thread.CurrentThread.GetApartmentState().ToString() });
         }
     }
 }

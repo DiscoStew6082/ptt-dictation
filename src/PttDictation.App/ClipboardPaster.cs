@@ -35,12 +35,16 @@ internal sealed class ClipboardPaster : IClipboardPaster
     {
     }
 
+    internal ClipboardPaster(ApartmentWorker clipboardWorker)
+        : this(new WindowsClipboardPasteBackend(), SharedRestoreQueue,
+            new WindowsForegroundWindowBackend(), clipboardWorker) { }
+
     internal ClipboardPaster(
         IClipboardPasteBackend clipboard,
         IClipboardRestoreQueue restoreQueue,
-        IForegroundWindowBackend foregroundWindow)
+        IForegroundWindowBackend foregroundWindow, ApartmentWorker? clipboardWorker = null)
     {
-        _clipboard = clipboard;
+        _clipboard = clipboardWorker is null ? clipboard : new ApartmentClipboardBackend(clipboard, clipboardWorker);
         _restoreQueue = restoreQueue;
         _foregroundWindow = foregroundWindow;
     }
@@ -111,7 +115,9 @@ internal sealed class ClipboardPaster : IClipboardPaster
                 {
                     throw new ClipboardReadUnavailableException();
                 }
-                if (!clipboardCurrent || !targetCurrent)
+                // Target validation can enter a slow external provider. A user
+                // copy during that call invalidates the earlier clipboard read.
+                if (!clipboardCurrent || !targetCurrent || !_clipboard.IsSequenceCurrent(clipboardSequence))
                 {
                     throw new InvalidOperationException("The paste target or clipboard changed. Nothing was pasted.");
                 }
@@ -174,6 +180,35 @@ internal sealed class ClipboardPaster : IClipboardPaster
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _completed, 1) == 0) abandoned();
+        }
+    }
+
+    // Clipboard/OLE calls belong to the pumped STA. Target validation and
+    // SendInput stay on the caller's automation MTA; no UIA reference crosses
+    // into the clipboard apartment and no STA callback waits on that MTA.
+    private sealed class ApartmentClipboardBackend(IClipboardPasteBackend backend, ApartmentWorker worker)
+        : IClipboardPasteBackend
+    {
+        private T Read<T>(Func<T> read)
+        {
+            T result = default!;
+            worker.InvokeAsync(() => result = read()).GetAwaiter().GetResult();
+            return result;
+        }
+
+        public IDataObject? GetDataObject() => Read(backend.GetDataObject);
+        public uint SetText(string text) => Read(() => backend.SetText(text));
+        public bool IsCurrent(uint sequence, string text) => Read(() => backend.IsCurrent(sequence, text));
+        public bool IsSequenceCurrent(uint sequence) => backend.IsSequenceCurrent(sequence);
+        public void SendPaste() => backend.SendPaste();
+        public void RestoreIfCurrent(uint sequence, IDataObject? previous)
+        {
+            // The restore queue owns an independent STA and can outlive this
+            // clipboard worker when an acknowledged session shuts down.
+            if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+                backend.RestoreIfCurrent(sequence, previous);
+            else
+                worker.InvokeAsync(() => backend.RestoreIfCurrent(sequence, previous)).GetAwaiter().GetResult();
         }
     }
 

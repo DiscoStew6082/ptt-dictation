@@ -73,8 +73,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 
     public static IWindowsTextTarget Capture() => new WindowsTextTarget(AutomationTextSurface.Capture());
 
-    // Only identity is read synchronously at the hotkey boundary. The returned
-    // factory performs all document/provider inspection on the automation worker.
+    // The automation MTA reads identity and invokes this factory. The native
+    // focus guard separately preserves the original hotkey boundary.
     public static Func<IWindowsTextTarget> CaptureFocusedIdentity(Func<long>? readFocusGeneration = null)
     {
         var recordingId = DiagnosticTrace.CurrentRecordingId;

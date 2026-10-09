@@ -95,6 +95,8 @@ public sealed class TextProviderDiagnosticsTests
         var recordingId = DiagnosticTrace.BeginRecording("test");
         const string secret = "private text from the focused document";
         var failure = new COMException(secret, unchecked((int)0x80040201));
+        var threadId = Environment.CurrentManagedThreadId;
+        var apartment = Thread.CurrentThread.GetApartmentState().ToString();
         Assert.ThrowsExactly<COMException>(() =>
             TextProviderDiagnostics.Observe<string>("selection.get_text", () => throw failure));
         await DiagnosticTrace.FlushAsync();
@@ -111,7 +113,9 @@ public sealed class TextProviderDiagnosticsTests
         Assert.AreEqual("selection.get_text", data.GetProperty("operation").GetString());
         Assert.AreEqual(typeof(COMException).FullName, data.GetProperty("exceptionType").GetString());
         Assert.AreEqual(failure.HResult, data.GetProperty("HResult").GetInt32());
-        Assert.AreEqual(3, data.EnumerateObject().Count());
+        Assert.AreEqual(threadId, data.GetProperty("threadId").GetInt32());
+        Assert.AreEqual(apartment, data.GetProperty("apartment").GetString());
+        Assert.AreEqual(5, data.EnumerateObject().Count());
         Assert.AreEqual(JsonValueKind.Null, root.GetProperty("exception").ValueKind);
         foreach (var file in Directory.EnumerateFiles(directory, "*.jsonl"))
             Assert.IsFalse(File.ReadAllText(file).Contains(secret), "Diagnostic files must not include provider exception messages.");

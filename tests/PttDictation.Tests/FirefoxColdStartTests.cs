@@ -164,6 +164,19 @@ public sealed class FirefoxColdStartTests
                 image.Save(Path.Combine(output, "failure.png"));
             }
             catch (Exception error) { TestContext.WriteLine($"Screenshot unavailable: {error.GetType().Name}"); }
+            try
+            {
+                // Preserve the failed outcome while observing whether the same
+                // browser/provider recovers before teardown. No retry or input.
+                var observationWindow = Task.Delay(TimeSpan.FromSeconds(10));
+                var uiThreadId = GetCurrentThreadId();
+                await FirefoxWaitChainDiagnostics.CaptureAsync(browser.WaitChainTarget, uiThreadId,
+                    Path.Combine(output, "wait-chains-at-failure.json"));
+                await observationWindow;
+                await FirefoxWaitChainDiagnostics.CaptureAsync(browser.WaitChainTarget, uiThreadId,
+                    Path.Combine(output, "wait-chains-after-observation.json"));
+            }
+            catch (Exception error) { TestContext.WriteLine($"Failure observation unavailable: {error}"); }
             throw;
         }
         finally
@@ -243,6 +256,10 @@ public sealed class FirefoxColdStartTests
         private IntPtr _window;
         private readonly string _profile = Path.Combine(Path.GetTempPath(), "ptt-firefox-" + Guid.NewGuid().ToString("N"));
         public int ProcessId { get; private set; }
+        private DateTime _boundStartedUtc;
+        private uint _boundThreadId;
+        public FirefoxWaitChainDiagnostics.ProcessTarget WaitChainTarget =>
+            new(ProcessId, _boundStartedUtc, _boundThreadId);
 
         public void Start()
         {
@@ -300,7 +317,7 @@ public sealed class FirefoxColdStartTests
             // Firefox replaces its initial startup window. Bind the real window
             // once after our page has painted; never retarget during dictation.
             var window = GetForegroundWindow();
-            GetWindowThreadProcessId(window, out var owner);
+            var windowThreadId = GetWindowThreadProcessId(window, out var owner);
             using var process = Process.GetProcessById((int)owner);
             Assert.AreEqual("firefox", process.ProcessName);
             Assert.IsTrue(process.StartTime.ToUniversalTime() >= _started);
@@ -309,6 +326,8 @@ public sealed class FirefoxColdStartTests
             StringAssert.Contains(title.ToString(), "PTT Firefox cold-start test");
             _window = window;
             ProcessId = process.Id;
+            _boundStartedUtc = process.StartTime.ToUniversalTime();
+            _boundThreadId = windowThreadId;
         }
 
         public void ClickEditor(FirefoxEditorFixture.State page)
@@ -369,6 +388,8 @@ public sealed class FirefoxColdStartTests
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr window);
