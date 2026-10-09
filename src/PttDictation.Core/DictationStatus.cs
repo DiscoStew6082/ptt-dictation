@@ -12,11 +12,18 @@ public enum DictationStatusKind
     Cancelled,
     EmptyTranscript,
     Error,
-    Preparing
+    Preparing,
+    WaitingForTextbox
 }
 
 public static class DictationStatusCatalog
 {
+    public static DictationStatus WaitingForTextbox { get; } = new(
+        DictationStatusKind.WaitingForTextbox,
+        "Waiting for textbox",
+        "Your transcript is waiting for the original textbox to respond. You can cancel dictation.",
+        AutoHide: false);
+
     public static DictationStatus Preparing { get; } = new(
         DictationStatusKind.Preparing,
         "Preparing textbox",

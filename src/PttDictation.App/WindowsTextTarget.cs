@@ -238,6 +238,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         if (_conflicted) { Trace("target.conflict", new { reason = "previous_conflict" }); return TextTargetUpdateResult.Conflict; }
         try
         {
+            var snapshotReadStarted = _clock();
             var snapshot = ReadOriginalSurface(_surface.Read);
             if (_unsentRetrySelection is { } retrySelection)
             {
@@ -260,7 +261,11 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 }
                 if (snapshot.Document != ExpectedDocument(pending))
                 {
-                    if (_clock() - _pendingSince < AcknowledgementTimeout)
+                    // A slow read can return a snapshot captured before the
+                    // deadline. Require an observation begun at/after it before
+                    // declaring the submitted write unacknowledged. The original
+                    // submission deadline stays fixed and input is never resent.
+                    if (snapshotReadStarted - _pendingSince < AcknowledgementTimeout)
                         return TextTargetUpdateResult.Pending;
                     TraceSnapshotDifference("target.write_acknowledgement_timeout",
                         new(ExpectedDocument(pending), Prefix + pending, "", Suffix), snapshot);

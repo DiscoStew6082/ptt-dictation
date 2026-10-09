@@ -8,6 +8,10 @@ namespace PttDictation.App;
 internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 {
     private const long FinalFocusWaitMilliseconds = 5000;
+    internal const long InitialCaptureTimeoutMilliseconds = 5000;
+    internal const long SlowOperationMilliseconds = 5000;
+    internal const long ReadyOperationTimeoutMilliseconds = 15000;
+    internal const string SlowProviderReason = "Waiting for textbox to respond.";
     private readonly Func<Func<IWindowsTextTarget>> _prepareCapture;
     private readonly Func<Func<bool>> _beginCaptureGuard;
     private readonly Action<Action> _confirmCapture;
@@ -25,6 +29,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private readonly ApartmentWorker? _automation;
     private readonly ApartmentWorker? _clipboard;
     private Session? _session;
+    private readonly object _presentationSync = new();
     private int _queued;
 
     public LiveClipboardPaster(Func<IntPtr>? statusWindow = null)
@@ -90,6 +95,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     public bool InlinePreview { get; private set; }
     public string? HoldingReason { get; private set; }
+    public bool WaitingForTargetResponse => HoldingReason == SlowProviderReason;
     public event Action? PresentationChanged;
     public event Action<Exception>? InsertionFailed;
     public LiveInsertionFailureDelivery? FailureDelivery => Volatile.Read(ref _session)?.FailureDelivery;
@@ -249,23 +255,38 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     {
         var session = Volatile.Read(ref _session);
         if (session is null || !session.Active) return;
-        // A timed-out external operation loses permission to write even if it
-        // returns later. Notify the workflow so capture cannot remain running.
-        if (Interlocked.Read(ref session.BusySince) is var started && started != 0
-            && _tickCount() - started > 5000)
+        lock (session)
         {
-            Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = _tickCount() - started });
-            TextProviderDiagnostics.WritePendingOperations(session.RecordingId);
-            FailInsertion(session, new InvalidOperationException("The original editor stopped responding."),
-                initialCaptureRejected: !session.Ready);
-            return;
+            // A verified editor may briefly stall inside native provider work.
+            // Keep one operation in flight and surface the wait, but revoke all
+            // write permission at the hard ceiling. Initial capture stays strict.
+            if (!CheckOperationDeadline(session)) return;
+            if (session.BusySince is var started && started != 0)
+            {
+                var elapsed = _tickCount() - started;
+                if (session.Ready && elapsed >= SlowOperationMilliseconds && !session.SlowOperationNotified)
+                {
+                    session.SlowOperationNotified = true;
+                    Trace(session, "inline.provider_waiting", new { elapsedMilliseconds = elapsed });
+                    SetSessionPresentation(session, false, SlowProviderReason);
+                }
+            }
         }
+        if (!IsCurrent(session)) return;
         if (Interlocked.Exchange(ref _queued, 1) != 0) return;
         Interlocked.Exchange(ref session.BusySince, _tickCount());
         Dispatch(() =>
         {
             try { if (IsCurrent(session)) PumpSession(session); }
-            finally { Interlocked.Exchange(ref session.BusySince, 0); Interlocked.Exchange(ref _queued, 0); }
+            finally
+            {
+                lock (session)
+                {
+                    Interlocked.Exchange(ref session.BusySince, 0);
+                    ClearProviderWait(session);
+                }
+                Interlocked.Exchange(ref _queued, 0);
+            }
         });
     }
 
@@ -303,7 +324,9 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             {
                 if (!finishing) return;
                 Paste(session, desired);
+                if (!CheckOperationDeadline(session)) return;
                 Trace(session, "inline.fallback_completed");
+                ClearProviderWait(session);
                 session.Completion.TrySetResult();
                 session.Active = false;
                 return;
@@ -311,7 +334,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             if (desired.Length == 0) return;
             lock (session) session.InFlight ??= desired;
             var result = target.TryReplace(session.Acknowledged, session.InFlight, text => Paste(session, text));
-            if (!IsCurrent(session)) return;
+            if (!CheckOperationDeadline(session)) return;
             Trace(session, "inline.replace_result", new { result = result.ToString(), acknowledgedLength = session.Acknowledged.Length, requestedLength = session.InFlight.Length, finishing });
             switch (result)
             {
@@ -325,6 +348,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                     if (finishing && session.Acknowledged == desired)
                     {
                         Trace(session, "inline.final_completed");
+                        ClearProviderWait(session);
                         session.Completion.TrySetResult();
                         session.Active = false;
                     }
@@ -393,7 +417,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             {
                 var prepared = session.Target!.IsPreparedSelectionCurrent;
                 var canPaste = prepared && _canPaste();
-                var current = canPaste && IsCurrent(session);
+                var current = canPaste && CheckOperationDeadline(session);
                 if (!current) Trace(session, "inline.prepared_selection_rejected", new { prepared, canPaste, current });
                 return current;
             }
@@ -415,6 +439,34 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     private bool IsCurrent(Session session) => session.Active && ReferenceEquals(Volatile.Read(ref _session), session);
 
+    private bool CheckOperationDeadline(Session session)
+    {
+        lock (session)
+        {
+            if (!IsCurrent(session)) return false;
+            var started = Interlocked.Read(ref session.BusySince);
+            var elapsed = _tickCount() - started;
+            if (started == 0 || !(session.Ready ? elapsed >= ReadyOperationTimeoutMilliseconds
+                : elapsed > InitialCaptureTimeoutMilliseconds)) return true;
+            Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = elapsed });
+            TextProviderDiagnostics.WritePendingOperations(session.RecordingId);
+            FailInsertion(session, new InvalidOperationException("The original editor stopped responding."),
+                initialCaptureRejected: !session.Ready);
+            return false;
+        }
+    }
+
+    private void ClearProviderWait(Session session)
+    {
+        lock (session)
+        {
+            if (!session.SlowOperationNotified || !IsCurrent(session)) return;
+            session.SlowOperationNotified = false;
+            Trace(session, "inline.provider_resumed");
+            if (WaitingForTargetResponse) SetSessionPresentation(session, !session.Fallback && !session.FocusPaused, null);
+        }
+    }
+
     private void Dispatch(Action action)
     {
         if (_automation is null) action();
@@ -424,17 +476,31 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     public void EndSession()
     {
         Interlocked.Exchange(ref _preparation, null)?.Dispose();
-        var session = Interlocked.Exchange(ref _session, null);
+        Session? session;
+        lock (_presentationSync)
+        {
+            session = Interlocked.Exchange(ref _session, null);
+            if (session is not null) session.Active = false;
+            _timer?.Stop();
+            SetPresentation(false, null);
+        }
         if (session is not null)
         {
             Trace(session, "inline.session_ended", new { session.Finishing, session.Conflicted, acknowledgedLength = session.Acknowledged.Length });
-            session.Active = false;
             AbandonClipboard(session);
             session.Preparation?.Dispose();
             session.Completion.TrySetCanceled();
         }
-        _timer?.Stop();
-        SetPresentation(false, null);
+    }
+
+    private void SetSessionPresentation(Session session, bool inline, string? reason)
+    {
+        // Retirement and publication share this small lock. A late worker must
+        // never clear a newer recording's status or restore its inline flag.
+        lock (_presentationSync)
+        {
+            if (IsCurrent(session)) SetPresentation(inline, reason);
+        }
     }
 
     private void SetPresentation(bool inline, string? reason)
@@ -483,6 +549,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         public bool Fallback;
         public string? Failure;
         public long BusySince;
+        public bool SlowOperationNotified;
         public int FailureNotified;
         public volatile LiveInsertionFailureDelivery? FailureDelivery;
     }

@@ -38,7 +38,7 @@ public sealed class LiveClipboardPasterTests
         LiveClipboardPaster? current = null;
         using var output = new LiveClipboardPaster(() => new Target(), (_, canPaste) =>
         {
-            now += 5001;
+            now += LiveClipboardPaster.ReadyOperationTimeoutMilliseconds;
             current!.Pump();
             Assert.IsFalse(canPaste(), "Timed-out insertion must lose permission to write.");
         }, tickCount: () => now);

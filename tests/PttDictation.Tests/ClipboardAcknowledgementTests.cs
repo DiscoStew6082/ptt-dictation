@@ -151,7 +151,7 @@ public sealed class ClipboardAcknowledgementTests
                 {
                     case "cancel": current!.EndSession(); break;
                     case "dispose": current!.Dispose(); break;
-                    case "watchdog": now += 5001; current!.Pump(); break;
+                    case "watchdog": now += LiveClipboardPaster.ReadyOperationTimeoutMilliseconds; current!.Pump(); break;
                 }
                 return lease;
             });

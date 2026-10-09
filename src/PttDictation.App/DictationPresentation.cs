@@ -13,7 +13,8 @@ internal sealed record DictationPresentationEnvironment(
     Action<StatusSound> PlayStatusSound,
     Func<TimeSpan, Task> DelayAsync,
     Func<bool>? IsInlinePreview = null,
-    Func<string?>? GetHoldingReason = null);
+    Func<string?>? GetHoldingReason = null,
+    Func<bool>? IsWaitingForTargetResponse = null);
 
 internal enum StatusSound
 {
@@ -102,7 +103,14 @@ internal sealed class DictationPresentation
         if (_environment.IsInlinePreview is not null
             && state.Phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing)
         {
-            _overlay.HideRecording();
+            if (_environment.IsWaitingForTargetResponse?.Invoke() == true)
+                _overlay.ShowStatus(state.Phase == DictationWorkflowPhase.Recording
+                    ? DictationStatusCatalog.WaitingForTextbox with
+                    {
+                        Message = "Recording continues. Text is waiting for the original textbox to respond. You can cancel dictation."
+                    }
+                    : DictationStatusCatalog.WaitingForTextbox);
+            else _overlay.HideRecording();
             if (phaseChanged)
                 _environment.PlayStatusSound(state.Phase == DictationWorkflowPhase.Recording
                     ? StatusSound.Listening : StatusSound.Transcribing);

@@ -260,6 +260,50 @@ public sealed class WindowsTextTargetTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void SlowPreDeadlineSnapshotRequiresOnePostDeadlineObservation(bool pasteAppears)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var surface = new FakeSurface("", "", "") { DelayPaste = true };
+        var target = new WindowsTextTarget(surface, () => now);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
+        now += TimeSpan.FromMilliseconds(150);
+        surface.AfterSnapshotRead = () =>
+        {
+            // The provider captured old text before waiting across the deadline.
+            // Its eventual return is not a fresh observation of the editor.
+            now += TimeSpan.FromMilliseconds(1903);
+            if (pasteAppears) surface.ApplyDelayedPaste();
+            surface.AfterSnapshotRead = null;
+        };
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(1, surface.Pastes);
+        var reads = surface.Reads;
+        Assert.AreEqual(pasteAppears ? TextTargetUpdateResult.Success : TextTargetUpdateResult.Conflict,
+            target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(reads + 1, surface.Reads);
+        Assert.AreEqual(1, surface.Pastes, "An acknowledgement poll must never resubmit input.");
+        if (!pasteAppears)
+        {
+            Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
+            Assert.AreEqual(reads + 1, surface.Reads, "A post-deadline mismatch is terminal.");
+        }
+    }
+
+    [TestMethod]
+    public void FirstStaleObservationAtExactAcknowledgementDeadlineIsTerminal()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var surface = new FakeSurface("", "", "") { DelayPaste = true };
+        var target = new WindowsTextTarget(surface, () => now);
+        target.TryReplace("", "words", surface.Paste);
+        now += TimeSpan.FromSeconds(2);
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
     public void LivePumpAcknowledgesSubmittedWriteWhileNewInputIsBlocked()
     {
         var surface = new FakeSurface("", "", "");
@@ -694,6 +738,7 @@ public sealed class WindowsTextTargetTests
         private bool _focused = true;
         public int FocusReads { get; private set; }
         public int Reads { get; private set; }
+        public Action? AfterSnapshotRead { get; set; }
         public bool IsFocused
         {
             get { FocusReads++; return AutomationAvailable ? _focused : throw new ElementNotAvailableException(); }
@@ -714,7 +759,9 @@ public sealed class WindowsTextTargetTests
         public TextTargetSnapshot Read()
         {
             Reads++;
-            return ReadAvailable ? new(Document, Prefix, Selection, Suffix) : throw ReadFailure;
+            var snapshot = ReadAvailable ? new TextTargetSnapshot(Document, Prefix, Selection, Suffix) : throw ReadFailure;
+            AfterSnapshotRead?.Invoke();
+            return snapshot;
         }
         public bool Select(string before, string owned, string after)
         {

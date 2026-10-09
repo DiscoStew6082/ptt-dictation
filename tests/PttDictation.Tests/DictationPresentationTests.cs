@@ -9,6 +9,54 @@ public sealed class DictationPresentationTests
 {
     [TestMethod]
     [VisibleUi]
+    public void SlowOriginalTextboxShowsCancelableWaitAndClearsOnResumeOrCancellation()
+    {
+        VisibleUiTestGate.RequireOptIn();
+        RunOnStaThread(async () =>
+        {
+            using var overlay = new StatusOverlayForm();
+            using var cancel = new ToolStripMenuItem();
+            var state = new DictationWorkflowState(DictationWorkflowPhase.Recording, DictationTriggerMode.Hold);
+            var waiting = false;
+            var sounds = new List<StatusSound>();
+            var environment = CreateEnvironment(() => AppSettings.Default, () => state,
+                playStatusSound: sounds.Add) with
+            {
+                IsInlinePreview = () => true,
+                IsWaitingForTargetResponse = () => waiting
+            };
+            var presentation = new DictationPresentation(overlay, cancel, environment);
+            await presentation.ApplyAsync(state);
+            Assert.IsFalse(overlay.Visible);
+            waiting = true;
+            await presentation.ApplyAsync(state);
+            await presentation.ApplyAsync(state);
+            Assert.IsTrue(overlay.Visible);
+            Assert.AreEqual("Waiting for textbox", overlay.TitleTextForTest);
+            StringAssert.Contains(overlay.MessageTextForTest, "Recording continues");
+            Assert.IsTrue(cancel.Enabled);
+            Assert.IsTrue(overlay.ShowWithoutActivationForTest);
+            Assert.IsFalse(overlay.AutoHideTimerEnabledForTest);
+            CollectionAssert.AreEqual(new[] { StatusSound.Listening }, sounds);
+            state = state with { Phase = DictationWorkflowPhase.Processing };
+            await presentation.ApplyAsync(state);
+            Assert.IsTrue(overlay.Visible);
+            Assert.IsFalse(overlay.MessageTextForTest.Contains("Recording continues"));
+            waiting = false;
+            await presentation.ApplyAsync(state);
+            Assert.IsFalse(overlay.Visible, "The wait indicator must clear when the same operation returns.");
+            waiting = true;
+            state = state with { Phase = DictationWorkflowPhase.Cancelled };
+            await presentation.ApplyAsync(state);
+            await presentation.ApplyAsync(state);
+            Assert.AreEqual("Dictation cancelled", overlay.TitleTextForTest,
+                "A queued wait notification must not replace the current terminal state.");
+            Assert.IsFalse(cancel.Enabled);
+        });
+    }
+
+    [TestMethod]
+    [VisibleUi]
     public void PreparingOverlayPreservesNativeForegroundFocusOnFirstAndSecondShow()
     {
         VisibleUiTestGate.RequireOptIn();
