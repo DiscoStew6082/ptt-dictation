@@ -225,6 +225,7 @@ public sealed class FirefoxColdStartTests
             // Suppress first-run chrome only. Never force/enable accessibility.
             File.WriteAllText(Path.Combine(_profile, "user.js"), """
                 user_pref("browser.aboutwelcome.enabled", false);
+                user_pref("browser.preonboarding.enabled", false);
                 user_pref("browser.shell.checkDefaultBrowser", false);
                 user_pref("browser.startup.homepage_override.mstone", "ignore");
                 user_pref("ui.systemUsesDarkTheme", 1);

@@ -25,6 +25,14 @@ configuration loading and tray wiring are outside this gate. This provides
 real Firefox integration evidence, not acceptance of
 the user's Firefox profile, extensions, website state, or physical keyboard.
 
+The disposable profile suppresses first-run onboarding using
+`browser.preonboarding.enabled=false`, matching
+[Mozilla's common test profile](https://github.com/mozilla-firefox/firefox/blob/main/testing/profiles/common/user.js).
+It does not force accessibility on or attach a browser automation protocol before
+the first dictation. The first CI execution correctly failed on Firefox's welcome
+modal before this profile setting was added; its saved screenshot identified the
+setup failure rather than allowing a skipped browser check.
+
 The entry point is `scripts/Test-FirefoxColdStart.ps1`. It refuses to run outside
 a GitHub-hosted Windows runner. The test additionally requires explicit opt-in
 and a valid Firefox executable. The ordinary test job excludes the
