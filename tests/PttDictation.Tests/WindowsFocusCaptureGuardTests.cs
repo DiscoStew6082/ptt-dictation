@@ -8,6 +8,25 @@ namespace PttDictation.Tests;
 public sealed class WindowsFocusCaptureGuardTests
 {
     [TestMethod]
+    public void PreparationIgnoresOldForegroundDeliveryButRejectsNewRedirection()
+    {
+        var events = new Events();
+        long now = 1000, input = 0;
+        using var guard = new WindowsFocusCaptureGuard(events, () => now);
+        var unchanged = guard.BeginPreparation(() => input);
+        now = 1080;
+        events.Raise(WindowsFocusCaptureGuard.ForegroundEvent, 1, timestamp: 990);
+        Assert.IsTrue(unchanged(), "A delayed pre-intent foreground event must not reject cold startup.");
+        events.Raise(WindowsFocusCaptureGuard.Ia2CaretEvent, 2, timestamp: 1001);
+        Assert.IsTrue(unchanged(), "Preparation permits provider initialization; capture has its own strict boundary.");
+        input++;
+        Assert.IsFalse(unchanged());
+        unchanged = guard.BeginPreparation(() => input);
+        events.Raise(WindowsFocusCaptureGuard.ForegroundEvent, 99, timestamp: 1080);
+        events.Raise(WindowsFocusCaptureGuard.ForegroundEvent, 1, timestamp: 1080);
+        Assert.IsFalse(unchanged(), "Switching away and back must retire preparation.");
+    }
+    [TestMethod]
     [DoNotParallelize]
     public async Task AbandonedCaptureStopsEventDiagnosticsButStillTracksRealChanges()
     {

@@ -91,9 +91,27 @@ a one-second fallback covers cold tabs without notifications, and coarse provide
 get at most three reads per cycle. Reads never inspect textbox text or selection,
 change focus, or supply a cached target to insertion. The existing hotkey capture,
 focus-generation, selection, and clipboard checks remain authoritative. Warmup
-does not wait on the UI/hotkey thread and stops starting reads during dictation;
-an in-flight provider call can still overlap startup and remains subject to the
-unchanged guards. An immediate hotkey can still precede warmup on a cold browser.
+does not wait on the UI/hotkey thread and stops starting reads during dictation.
+
+Startup now takes an exclusive provider lease before capture, waiting for an
+in-flight warmup read to finish. A bounded five-second preparation phase waits
+for a focused writable field with a verifiable selection, then takes a fresh
+capture under the existing strict guards. The lease covers deferred capture
+confirmation. No warmed target is reused for insertion. An initially missing
+UIA focus can become available; after its first identity is pinned, preparation
+cannot switch to an unrelated editor. Once writable readiness is stable across
+the provider read, that specific editor remains an identity constraint through
+fresh capture, including scripted focus changes with no physical input. Native foreground, control, process and
+input-generation checks reject window changes, typing, clicks or scrolling during
+preparation. Delayed native events predating preparation do not invalidate it.
+
+The non-activating Preparing textbox card makes clear that audio has not started.
+Releasing hold-to-talk, toggling again, or cancelling retires a pending start;
+it cannot start recording later. Timeout also leaves the microphone untouched.
+If a native provider read outlives cancellation, lease release is queued behind
+that read so another warmup cannot overlap it. `inline.preparation_ready` marks
+the handoff to fresh capture. These changes close the known warmup/capture race;
+they cannot make a hung or inaccessible external provider writable.
 
 `accessibility.listening_started` confirms the subscription; the deduplicated
 `accessibility.browser_warmed` records control type, pattern availability, and
@@ -107,6 +125,15 @@ coalescing, retry limits, active-session suppression, and recovery after a provi
 failure. These are code-path evidence; exact physical-hotkey browser acceptance is
 separate. Browser automation could inspect Bing but its simulated Right Ctrl did
 not reach PTT's native hook.
+
+Additional regressions force an in-flight warmup read and verify that neither
+capture nor the microphone starts until it returns, including deferred capture
+confirmation, blocked-read cancellation, timeout recovery, input redirection,
+missing initial focus, and hold/toggle cancellation. The forced-overlap test was
+red before the preparation lease and green afterward. On October 9, the prior
+warmup-only build also passed the user's first physical attempt in a newly
+started Chrome process on Bing; that successful baseline is not a live red
+reproduction of the remaining race.
 
 Upstream rationale: Chromium's [fragment root](https://raw.githubusercontent.com/chromium/chromium/main/ui/accessibility/platform/ax_fragment_root_win.cc)
 signals a UIA client, while [TextPattern requests](https://raw.githubusercontent.com/chromium/chromium/main/ui/accessibility/platform/ax_platform_node_win.cc)

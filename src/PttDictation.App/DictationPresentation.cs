@@ -111,6 +111,18 @@ internal sealed class DictationPresentation
 
         switch (state.Phase)
         {
+            case DictationWorkflowPhase.Preparing:
+                var settings = _environment.GetSettings();
+                var hint = state.TriggerMode == DictationTriggerMode.Toggle
+                    ? $"Press {DictationHotkeyCatalog.DisplayName(settings.ToggleHotkey)} again to cancel."
+                    : $"Keep holding {DictationHotkeyCatalog.DisplayName(settings.HoldHotkey)}.";
+                _overlay.ShowStatus(DictationStatusCatalog.Preparing with
+                {
+                    Message = DictationStatusCatalog.Preparing.Message + " " + hint
+                });
+                // Listening is signalled only after preparation and microphone
+                // startup. Do not play the listening sound for a pending start.
+                break;
             case DictationWorkflowPhase.Recording:
                 PresentRecording(state, phaseChanged);
                 break;

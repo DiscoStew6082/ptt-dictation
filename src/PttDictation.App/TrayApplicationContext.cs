@@ -282,13 +282,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 return Task.CompletedTask;
             }
 
-            var icon = state.Phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing
+            var icon = state.Phase is DictationWorkflowPhase.Preparing or DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing
                 ? _activeTrayIcon
                 : _trayIcon;
             if (!ReferenceEquals(_notifyIcon.Icon, icon))
             {
                 _notifyIcon.Icon = icon;
             }
+            if (state.Phase == DictationWorkflowPhase.Preparing)
+                _notifyIcon.Text = state.TriggerMode == DictationTriggerMode.Toggle
+                    ? "PTT Dictation - Preparing textbox; not recording yet"
+                    : "PTT Dictation - Preparing textbox; keep holding to start";
+            else UpdateTrayText();
 
             return _dictationPresentation.ApplyAsync(state);
         });

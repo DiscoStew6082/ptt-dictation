@@ -14,6 +14,10 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private readonly Func<long> _tickCount;
     private readonly WindowsFocusCaptureGuard? _focusGuard;
     private readonly WindowsAccessibilityWarmup? _accessibilityWarmup;
+    private readonly Func<CancellationToken, Task<IDisposable>>? _acquireCapture;
+    private readonly Func<Func<bool>> _beginPreparation;
+    private readonly Func<Func<bool>> _createReadiness;
+    private CapturePreparation? _preparation;
     private readonly Action<string, Func<bool>> _paste;
     private readonly Func<bool> _canPaste;
     private readonly System.Windows.Forms.Timer? _timer;
@@ -29,7 +33,10 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     internal LiveClipboardPaster(Func<IWindowsTextTarget> capture, Action<string, Func<bool>> paste,
         bool startTimer = false, Func<bool>? canPaste = null, Func<Func<bool>>? beginCaptureGuard = null,
-        Action<Action>? confirmCapture = null, Func<long>? tickCount = null)
+        Action<Action>? confirmCapture = null, Func<long>? tickCount = null,
+        Func<CancellationToken, Task<IDisposable>>? acquireCapture = null,
+        Func<Func<bool>>? beginPreparation = null, Func<Func<bool>>? createReadiness = null,
+        ApartmentWorker? automationWorker = null)
     {
         _prepareCapture = () => capture;
         _beginCaptureGuard = beginCaptureGuard ?? (() => () => true);
@@ -37,11 +44,18 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         _tickCount = tickCount ?? (() => Environment.TickCount64);
         _paste = paste;
         _canPaste = canPaste ?? (() => true);
+        _acquireCapture = acquireCapture;
+        _beginPreparation = beginPreparation ?? (() => () => true);
+        _createReadiness = createReadiness ?? (() => () => true);
+        _automation = automationWorker;
         if (startTimer)
         {
             var focusGuard = new WindowsFocusCaptureGuard();
             _focusGuard = focusGuard;
             _accessibilityWarmup = new WindowsAccessibilityWarmup(() => Volatile.Read(ref _session) is null);
+            _acquireCapture = _accessibilityWarmup.AcquireCaptureAsync;
+            _beginPreparation = () => focusGuard.BeginPreparation(() => GlobalHotkeySource.InputGeneration);
+            _createReadiness = BrowserCaptureReadiness.Create;
             focusGuard.FocusChanged += _accessibilityWarmup.Request;
             _beginCaptureGuard = focusGuard.BeginCapture;
             // Resolve only the original focused identity before returning from
@@ -62,18 +76,76 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     public event Action<Exception>? InsertionFailed;
     public LiveInsertionFailureDelivery? FailureDelivery => Volatile.Read(ref _session)?.FailureDelivery;
 
+    public async Task PrepareCaptureAsync(CancellationToken cancellationToken)
+    {
+        if (_acquireCapture is null) return;
+        EndSession();
+        var preparation = new CapturePreparation(cancellationToken, _beginPreparation(), lease =>
+        {
+            // A timed-out native call may still be running. Release only after
+            // the serial automation worker has finished it, never from the UI.
+            if (_automation is null) lease.Dispose();
+            else _ = _automation.InvokeAsync(lease.Dispose);
+        });
+        _preparation = preparation;
+        void Check()
+        {
+            preparation.Token.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(Volatile.Read(ref _preparation), preparation) || !preparation.Unchanged())
+                throw new InvalidOperationException("The textbox or input changed while dictation was preparing.");
+        }
+        async Task OnWorker(Action action)
+        {
+            if (_automation is null) action();
+            else await _automation.InvokeAsync(action).WaitAsync(preparation.Token);
+        }
+        try
+        {
+            preparation.SetLease(await _acquireCapture(preparation.Token));
+            Check();
+            Func<bool>? ready = null;
+            await OnWorker(() => { Check(); ready = _createReadiness(); });
+            while (true)
+            {
+                var available = false;
+                await OnWorker(() => { Check(); available = ready!(); Check(); });
+                Check();
+                if (available) break;
+                await Task.Delay(50, preparation.Token);
+            }
+            preparation.ValidateIdentity = ready;
+            DiagnosticTrace.Write("inline.preparation_ready");
+        }
+        catch (Exception error)
+        {
+            Interlocked.CompareExchange(ref _preparation, null, preparation);
+            preparation.Dispose();
+            if (error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+                throw new InvalidOperationException("The textbox did not become ready for dictation. No recording was started.", error);
+            throw;
+        }
+    }
+
     public void CaptureTarget()
     {
+        var preparation = Interlocked.Exchange(ref _preparation, null);
         EndSession();
-        var session = new Session { BusySince = _tickCount(), RecordingId = DiagnosticTrace.CurrentRecordingId };
+        if (preparation is not null && (preparation.Token.IsCancellationRequested || !preparation.Unchanged()))
+        {
+            preparation.Dispose();
+            throw new InvalidOperationException("The textbox or input changed before dictation could start.");
+        }
+        var session = new Session { BusySince = _tickCount(), RecordingId = DiagnosticTrace.CurrentRecordingId,
+            Preparation = preparation };
         Trace(session, "inline.capture_started");
         Volatile.Write(ref _session, session);
         SetPresentation(false, null);
-        var unchanged = _beginCaptureGuard();
+        Func<bool> unchanged;
         Func<IWindowsTextTarget> capture;
-        try { capture = _prepareCapture(); }
+        try { unchanged = _beginCaptureGuard(); capture = _prepareCapture(); }
         catch (Exception ex)
         {
+            preparation?.Dispose();
             Trace(session, "inline.identity_capture_failed", error: ex);
             session.Ready = true;
             Interlocked.Exchange(ref session.BusySince, 0);
@@ -86,6 +158,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             if (!IsCurrent(session)) return;
             try
             {
+                if (preparation?.ValidateIdentity is { } validate && !validate())
+                    throw new InvalidOperationException("The prepared textbox is no longer available.");
                 session.Target = capture();
                 session.Fallback = !session.Target.SupportsReplacement;
                 session.Conflicted = session.Fallback && !session.Target.CanPasteFallback;
@@ -104,12 +178,14 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                 _confirmCapture(() =>
                 {
                     if (!IsCurrent(session)) return;
-                    if (!unchanged())
+                    if (!unchanged() || preparation is not null
+                        && (preparation.Token.IsCancellationRequested || !preparation.Unchanged()))
                     {
                         Trace(session, "inline.capture_rejected", new { reason = "focus_or_selection_changed" });
                         session.Conflicted = true;
                         session.Failure = "The textbox or selection changed while dictation was starting.";
                     }
+                    preparation?.Dispose();
                     session.Ready = true;
                     Trace(session, "inline.capture_ready", new { session.Conflicted, session.Fallback });
                     Interlocked.Exchange(ref session.BusySince, 0);
@@ -314,11 +390,13 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     public void EndSession()
     {
+        Interlocked.Exchange(ref _preparation, null)?.Dispose();
         var session = Interlocked.Exchange(ref _session, null);
         if (session is not null)
         {
             Trace(session, "inline.session_ended", new { session.Finishing, session.Conflicted, acknowledgedLength = session.Acknowledged.Length });
             session.Active = false;
+            session.Preparation?.Dispose();
             session.Completion.TrySetCanceled();
         }
         _timer?.Stop();
@@ -354,6 +432,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     private sealed class Session
     {
+        public CapturePreparation? Preparation;
         public string? RecordingId;
         public bool FocusPaused;
         public IWindowsTextTarget? Target;

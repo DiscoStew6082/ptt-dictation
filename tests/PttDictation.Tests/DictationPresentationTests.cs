@@ -7,6 +7,43 @@ namespace PttDictation.Tests;
 public sealed class DictationPresentationTests
 {
     [TestMethod]
+    [DataRow(DictationTriggerMode.Hold, "Keep holding")]
+    [DataRow(DictationTriggerMode.Toggle, "Press F9 again to cancel")]
+    [VisibleUi]
+    public void PreparingShowsNonActivatingWaitUntilRecordingStarts(DictationTriggerMode mode, string expectedHint)
+    {
+        VisibleUiTestGate.RequireOptIn();
+        RunOnStaThread(async () =>
+        {
+            using var overlay = new StatusOverlayForm();
+            using var cancel = new ToolStripMenuItem();
+            var sounds = new List<StatusSound>();
+            var state = new DictationWorkflowState(DictationWorkflowPhase.Preparing, mode);
+            var environment = CreateEnvironment(
+                () => AppSettings.Default with { ToggleHotkey = DictationHotkey.F9 },
+                () => state, playStatusSound: sounds.Add) with { IsInlinePreview = () => false };
+            var presentation = new DictationPresentation(overlay, cancel, environment);
+
+            await presentation.ApplyAsync(state);
+            Assert.IsTrue(overlay.Visible, "Cold-start waiting must be visible before microphone startup.");
+            Assert.AreEqual("Preparing textbox", overlay.TitleTextForTest);
+            StringAssert.Contains(overlay.MessageTextForTest, "Not recording yet");
+            StringAssert.Contains(overlay.MessageTextForTest, expectedHint);
+            Assert.IsTrue(overlay.ShowWithoutActivationForTest);
+            Assert.AreNotEqual(0, overlay.ExtendedWindowStyleForTest & StatusOverlayForm.NoActivateExtendedStyleForTest);
+            Assert.IsFalse(overlay.ActivityMeterVisibleForTest);
+            Assert.IsFalse(overlay.AutoHideTimerEnabledForTest);
+            Assert.AreEqual(0, sounds.Count);
+            Assert.IsTrue(cancel.Enabled);
+
+            state = state with { Phase = DictationWorkflowPhase.Recording };
+            await presentation.ApplyAsync(state);
+            Assert.IsFalse(overlay.Visible);
+            CollectionAssert.AreEqual(new[] { StatusSound.Listening }, sounds);
+        });
+    }
+
+    [TestMethod]
     [VisibleUi]
     public void LiveTextboxRecordingAndProcessingNeverShowFloatingOverlay()
     {

@@ -41,6 +41,8 @@ public interface IDictationSession
 
 public interface IClipboardPaster
 {
+    Task PrepareCaptureAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
     void CaptureTarget();
 
     Task PasteAsync(string text, CancellationToken cancellationToken);

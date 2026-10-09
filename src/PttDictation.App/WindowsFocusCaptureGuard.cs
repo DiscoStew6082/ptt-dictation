@@ -18,6 +18,8 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
     private readonly IFocusCaptureEvents _events;
     private readonly Func<long> _tickCount;
     private long _generation;
+    private long _foregroundGeneration;
+    private long _preparationStartedAt = -1;
     private long _captureStartedAt = -1;
     private string? _captureRecordingId;
     private bool _confirmationPending;
@@ -30,6 +32,18 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
     // Subscribers may only enqueue work; never call an accessibility provider
     // from this native-event callback on the UI thread.
     internal event Action? FocusChanged;
+
+    internal Func<bool> BeginPreparation(Func<long> readInputGeneration)
+    {
+        Interlocked.Exchange(ref _preparationStartedAt, _tickCount());
+        var position = _events.ReadFocus();
+        var input = readInputGeneration();
+        var foreground = Interlocked.Read(ref _foregroundGeneration);
+        return () => !_disposed && _events.Available && position.Foreground != IntPtr.Zero
+            && position.Focused != IntPtr.Zero && input == readInputGeneration()
+            && foreground == Interlocked.Read(ref _foregroundGeneration)
+            && position == _events.ReadFocus() && input == readInputGeneration();
+    }
 
     internal WindowsFocusCaptureGuard(IFocusCaptureEvents events, Func<long>? tickCount = null)
     {
@@ -96,6 +110,11 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
         // Native timestamps wrap every 2^32 ms. Resolve a recent event against
         // the 64-bit delivery clock. Ambiguous/future timestamps remain changes.
         var age = unchecked((uint)deliveredAt - timestamp);
+        var preparationStartedAt = Interlocked.Read(ref _preparationStartedAt);
+        var beforePreparation = preparationStartedAt >= 0 && deliveredAt >= preparationStartedAt
+            && age <= int.MaxValue && age > deliveredAt - preparationStartedAt;
+        if (eventType == ForegroundEvent && !beforePreparation)
+            Interlocked.Increment(ref _foregroundGeneration);
         var beforeCapture = captureStartedAt >= 0 && deliveredAt >= captureStartedAt
             && age <= int.MaxValue && age > deliveredAt - captureStartedAt;
         if (!beforeCapture) Interlocked.Increment(ref _generation);

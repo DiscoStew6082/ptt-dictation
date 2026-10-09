@@ -12,6 +12,7 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
     private readonly object _gate = new();
     private readonly AutoResetEvent _requested = new(false);
     private readonly ManualResetEvent _stopped = new(false);
+    private readonly SemaphoreSlim _providerGate = new(0, 1);
     private readonly Func<Action, IDisposable> _subscribe;
     private readonly Func<bool> _probe;
     private readonly Func<bool> _isIdle;
@@ -41,6 +42,23 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
         lock (_gate) { if (!_disposed) _requested.Set(); }
     }
 
+    internal async Task<IDisposable> AcquireCaptureAsync(CancellationToken cancellationToken)
+    {
+        await _providerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        lock (_gate)
+        {
+            if (!_disposed) return new CaptureLease(_providerGate);
+        }
+        _providerGate.Release();
+        throw new ObjectDisposedException(nameof(WindowsAccessibilityWarmup));
+    }
+
+    private sealed class CaptureLease(SemaphoreSlim gate) : IDisposable
+    {
+        private int _released;
+        public void Dispose() { if (Interlocked.Exchange(ref _released, 1) == 0) gate.Release(); }
+    }
+
     public void Dispose()
     {
         // Provider calls cannot be cancelled. Shutdown must not wait on one.
@@ -59,15 +77,14 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
         {
             try { subscription = _subscribe(Request); }
             catch (Exception error) { TraceFailure("subscribe", error); }
+            finally { _providerGate.Release(); }
             var signals = new WaitHandle[] { _stopped, _requested };
             string? lastFailure = null;
             while (!_stopped.WaitOne(0))
             {
                 for (var attempt = 0; attempt < 3 && !_stopped.WaitOne(0); attempt++)
                 {
-                    // Do not start another read while dictation is active. An
-                    // in-flight call may finish later; capture guards still apply.
-                    if (!_isIdle()) break;
+                    if (!_isIdle() || !_providerGate.Wait(0)) break;
                     try
                     {
                         var ready = _probe();
@@ -81,6 +98,7 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
                         lastFailure = failure;
                         break;
                     }
+                    finally { _providerGate.Release(); }
                     if (_stopped.WaitOne(TimeSpan.FromMilliseconds(50))) break;
                 }
                 // Coalesce event bursts without losing a request received during

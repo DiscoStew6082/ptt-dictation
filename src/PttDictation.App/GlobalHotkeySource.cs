@@ -13,6 +13,10 @@ internal sealed class GlobalHotkeySource : IDisposable
     private const int WmSysKeyUp = 0x0105;
 
     private readonly LowLevelKeyboardProc _callback;
+    private readonly LowLevelKeyboardProc _mouseCallback;
+    private IntPtr _mouseHookId;
+    private static long _inputGeneration;
+    internal static long InputGeneration => Interlocked.Read(ref _inputGeneration);
     private readonly object _lifecycleGate = new();
     private KeyboardHookThread? _hookThread;
     private bool _disposed;
@@ -38,6 +42,7 @@ internal sealed class GlobalHotkeySource : IDisposable
     internal GlobalHotkeySource(DictationHotkey holdHotkey, DictationHotkey toggleHotkey)
     {
         _callback = HookCallback;
+        _mouseCallback = MouseHookCallback;
         Configure(holdHotkey, toggleHotkey);
     }
 
@@ -58,6 +63,12 @@ internal sealed class GlobalHotkeySource : IDisposable
         if (_hookId == IntPtr.Zero)
         {
             throw new InvalidOperationException("Could not install the global dictation keyboard hook.");
+        }
+        _mouseHookId = SetWindowsHookEx(14, _mouseCallback, GetModuleHandle(module?.ModuleName), 0);
+        if (_mouseHookId == IntPtr.Zero)
+        {
+            RemoveHook();
+            throw new InvalidOperationException("Could not track pointer changes during dictation startup.");
         }
         var configuration = Volatile.Read(ref _configuration);
         DiagnosticTrace.Write("hotkey.started", new { configuration.Hold, configuration.Toggle,
@@ -90,11 +101,29 @@ internal sealed class GlobalHotkeySource : IDisposable
 
     private void RemoveHook()
     {
+        if (_mouseHookId != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHookId);
+            _mouseHookId = IntPtr.Zero;
+        }
         if (_hookId != IntPtr.Zero)
         {
             UnhookWindowsHookEx(_hookId);
             _hookId = IntPtr.Zero;
         }
+    }
+
+    private IntPtr MouseHookCallback(int code, IntPtr message, IntPtr data)
+    {
+        // Buttons and wheel can redirect the pending intent. Pointer motion alone
+        // does not. No coordinates, key values, or input contents are retained.
+        ObservePointerEvent(code, message.ToInt32());
+        return CallNextHookEx(_mouseHookId, code, message, data);
+    }
+
+    internal static void ObservePointerEvent(int code, int message)
+    {
+        if (code >= 0 && message != 0x0200) Interlocked.Increment(ref _inputGeneration);
     }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -123,6 +152,8 @@ internal sealed class GlobalHotkeySource : IDisposable
         // This is the state before Windows processes this event, not a physical-key assertion.
         var windowsDownBeforeEvent = trace && isHotkey && (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
         var ownInput = key.ExtraInfo == WindowsPasteInput.InputMarker;
+        if (!ownInput && !isHotkey && message is WmKeyDown or WmSysKeyDown)
+            Interlocked.Increment(ref _inputGeneration);
         var swallowed = !ownInput && ProcessKeyEvent(virtualKey, message);
         if (trace && isHotkey)
             DiagnosticTrace.Write("hotkey.input", new { virtualKey, message, injected = (key.Flags & 0x10) != 0,

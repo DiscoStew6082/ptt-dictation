@@ -8,6 +8,27 @@ namespace PttDictation.Tests;
 public sealed class PasteInputTests
 {
     [TestMethod]
+    [DoNotParallelize]
+    public void PreparationInputGuardIgnoresHotkeysOwnPasteAndMotionButTracksRedirection()
+    {
+        using var source = new GlobalHotkeySource(DictationHotkey.RightControl, DictationHotkey.RightShift);
+        var generation = GlobalHotkeySource.InputGeneration;
+        HookEvent(source, 0xA3, false, 0);
+        HookEvent(source, 0xA3, false, 0);
+        HookEvent(source, 0xA3, true, 0);
+        HookEvent(source, 0x56, false, WindowsPasteInput.InputMarker);
+        HookEvent(source, 0x56, true, 0);
+        GlobalHotkeySource.ObservePointerEvent(0, 0x0200);
+        GlobalHotkeySource.ObservePointerEvent(-1, 0x0201);
+        Assert.AreEqual(generation, GlobalHotkeySource.InputGeneration);
+        HookEvent(source, 0x41, false, 0);
+        Assert.AreEqual(++generation, GlobalHotkeySource.InputGeneration);
+        GlobalHotkeySource.ObservePointerEvent(0, 0x0201);
+        Assert.AreEqual(++generation, GlobalHotkeySource.InputGeneration);
+        GlobalHotkeySource.ObservePointerEvent(0, 0x020A);
+        Assert.AreEqual(++generation, GlobalHotkeySource.InputGeneration);
+    }
+    [TestMethod]
     public void PasteInjectsOnlyTaggedControlVAndPreservesAlreadyHeldControl()
     {
         var backend = new RecordingInputBackend();

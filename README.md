@@ -18,6 +18,7 @@ It is named for the workflow rather than a particular AI vendor or model. Parake
 ## Features
 
 - Independently configurable hold-to-talk and toggle-to-talk keys.
+- A cold browser may briefly show **Preparing textbox** before audio starts. Wait for that message to clear before speaking. Releasing the hold key or pressing the toggle key again cancels preparation without starting a delayed recording.
 - Live text in supported destination textboxes, without a floating recording or processing overlay. Existing audible state feedback and tray cancellation remain available.
 - When a browser exposes only a container through UI Automation, PTT can use Windows legacy accessibility to verify the actual focused writable text control. Those fields receive one final paste after Stop; password, read-only, and unverified controls remain rejected.
 - Focus changes pause insertion while recording continues. Return to the original textbox to resume. After stopping, PTT waits up to five seconds for focus to return before ending with an error and keeping the completed transcript in Session History. The app does not switch windows for you.

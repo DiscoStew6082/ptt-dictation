@@ -96,6 +96,7 @@ public sealed class DictationWorkflow
 
     private async Task ToggleAsync(CancellationToken cancellationToken)
     {
+        if (TryCancelStarting(DictationTriggerMode.Toggle)) return;
         DictationWorkflowPhase phase;
         DictationTriggerMode? mode;
         lock (_gate)
@@ -147,17 +148,27 @@ public sealed class DictationWorkflow
             }
         }
 
+        var sessionStartAttempted = false;
         try
         {
             using var traceScope = DiagnosticTrace.EnterRecording(_recordingId ?? string.Empty);
+            operation.Token.ThrowIfCancellationRequested();
+            var preparation = _clipboardPaster.PrepareCaptureAsync(operation.Token);
+            if (!preparation.IsCompleted)
+                Publish(new DictationWorkflowState(DictationWorkflowPhase.Preparing, mode), operation);
+            await preparation.WaitAsync(operation.Token);
+            operation.Token.ThrowIfCancellationRequested();
             Trace("workflow.capture_target");
             _clipboardPaster.CaptureTarget();
+            operation.Token.ThrowIfCancellationRequested();
+            sessionStartAttempted = true;
             await session.StartAsync(operation.Token);
             operation.Token.ThrowIfCancellationRequested();
-            Publish(new DictationWorkflowState(DictationWorkflowPhase.Recording, mode));
+            Publish(new DictationWorkflowState(DictationWorkflowPhase.Recording, mode), operation);
             bool insertionFailed;
             lock (_gate)
             {
+                operation.Token.ThrowIfCancellationRequested();
                 _starting = false;
                 insertionFailed = _insertionFailure is not null;
             }
@@ -166,7 +177,7 @@ public sealed class DictationWorkflow
         catch (OperationCanceledException ex) when (operation.IsCancellationRequested)
         {
             Trace("workflow.start_cancelled", error: ex);
-            await TryCancelSessionAsync(session);
+            if (sessionStartAttempted) await TryCancelSessionAsync(session);
             Publish(new DictationWorkflowState(
                 DictationWorkflowPhase.Cancelled,
                 CleanupWarningPath: session.CleanupWarningPath));
@@ -192,6 +203,7 @@ public sealed class DictationWorkflow
 
     private async Task FinishAsync(DictationTriggerMode mode, CancellationTokenSource? expectedOperation = null)
     {
+        if (TryCancelStarting(mode, expectedOperation)) return;
         IDictationSession? session;
         CancellationTokenSource? operation;
         CancellationTokenSource finalization;
@@ -332,6 +344,23 @@ public sealed class DictationWorkflow
         {
             CompleteSession(session, operation);
         }
+    }
+
+    private bool TryCancelStarting(DictationTriggerMode mode, CancellationTokenSource? expectedOperation = null)
+    {
+        CancellationTokenSource? operation;
+        lock (_gate)
+        {
+            if (!_starting || _state.Phase == DictationWorkflowPhase.Recording
+                || _activeTriggerMode != mode || _operation is null
+                || expectedOperation is not null && !ReferenceEquals(_operation, expectedOperation))
+                return false;
+            operation = _operation;
+            operation.Cancel();
+            (_clipboardPaster as ILiveClipboardPaster)?.EndSession();
+        }
+        Publish(new DictationWorkflowState(DictationWorkflowPhase.Cancelled), operation);
+        return true;
     }
 
     private bool TryCompleteAcknowledgedPreview(TranscriptComparison? comparison,
@@ -508,7 +537,7 @@ public sealed class DictationWorkflow
 
     private static bool IsActive(DictationWorkflowPhase phase)
     {
-        return phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing;
+        return phase is DictationWorkflowPhase.Preparing or DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing;
     }
 
     private void Publish(DictationWorkflowState state, CancellationTokenSource? expectedOperation = null,
@@ -519,7 +548,8 @@ public sealed class DictationWorkflow
         {
             if ((expectedOperation is not null && !ReferenceEquals(_operation, expectedOperation))
                 || (expectedPhase is not null && _state.Phase != expectedPhase)
-                || (state.Phase == DictationWorkflowPhase.Recording && _finishing)) return;
+                || (state.Phase is DictationWorkflowPhase.Preparing or DictationWorkflowPhase.Recording
+                    && (_finishing || _operation?.IsCancellationRequested == true))) return;
             _state = state;
             stateChanged = StateChanged;
         }
@@ -598,6 +628,7 @@ public enum DictationTriggerMode
 public enum DictationWorkflowPhase
 {
     Idle,
+    Preparing,
     Recording,
     Processing,
     Pasted,
@@ -617,7 +648,7 @@ public sealed record DictationWorkflowState(
 {
     public static DictationWorkflowState Idle { get; } = new(DictationWorkflowPhase.Idle);
 
-    public bool CanCancel => Phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing;
+    public bool CanCancel => Phase is DictationWorkflowPhase.Preparing or DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing;
 }
 
 internal sealed class BatchDictationSessionFactory(IAudioRecorder recorder, ITranscriber transcriber) : IDictationSessionFactory
