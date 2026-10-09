@@ -48,11 +48,15 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private readonly IWindowsTextSurface _surface;
     private readonly Func<DateTimeOffset> _clock;
     private readonly Func<long>? _readFocusGeneration;
+    private readonly Func<long>? _readInputGeneration;
     private readonly TextTargetSnapshot? _initial;
     private readonly TextTargetSnapshot? _capturedSelection;
     private TextTargetSnapshot? _preparedSelection;
     private TextTargetSnapshot? _selectionBeforeRequest;
     private bool _selectionPatternRequeryAttempted;
+    private bool _selectionPatternRefreshed;
+    private bool _selectionRequestRetried;
+    private long? _selectionInputGenerationAtRequest;
     private DateTimeOffset _selectionSince;
     private long _selectionRequestOrdinal;
     private long? _selectionGenerationAtRequest;
@@ -102,7 +106,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 {
                     var surface = AutomationTextSurface.Capture(element);
                     var target = new WindowsTextTarget(surface, recordingId: recordingId,
-                        readFocusGeneration: readFocusGeneration);
+                        readFocusGeneration: readFocusGeneration,
+                        readInputGeneration: () => GlobalHotkeySource.InputGeneration);
                     if (firstInspection)
                     {
                         firstInspection = false;
@@ -150,12 +155,13 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private static extern uint GetWindowThreadProcessId(IntPtr window, out int processId);
 
     internal WindowsTextTarget(IWindowsTextSurface surface, Func<DateTimeOffset>? clock = null, string? recordingId = null,
-        Func<long>? readFocusGeneration = null)
+        Func<long>? readFocusGeneration = null, Func<long>? readInputGeneration = null)
     {
         _recordingId = recordingId ?? DiagnosticTrace.CurrentRecordingId;
         _surface = surface;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _readFocusGeneration = readFocusGeneration;
+        _readInputGeneration = readInputGeneration;
         try
         {
             if (surface.IsFocused)
@@ -288,6 +294,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             {
                 _selectionRequestOrdinal++;
                 _selectionGenerationAtRequest = ReadFocusGenerationForDiagnostics();
+                _selectionInputGenerationAtRequest = ReadInputGeneration();
                 // The initial caret already identifies the insertion point. Some
                 // empty Chromium editors expose their label through TextPattern,
                 // and reselecting this unchanged caret corrupts the provider range.
@@ -301,6 +308,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     return Conflict("select_owned_range_failed");
                 _selectionBeforeRequest = snapshot;
                 _selectionPatternRequeryAttempted = false;
+                _selectionPatternRefreshed = false;
+                _selectionRequestRetried = false;
                 _selectionSince = _clock();
                 selected = ReadOriginalSurface(_surface.Read);
             }
@@ -310,8 +319,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 && !_selectionPatternRequeryAttempted && _clock() - _selectionSince < AcknowledgementTimeout)
             {
                 // A provider can keep returning its pre-Select caret. Query the
-                // SAME element's pattern once; never repeat Select or extend its
-                // deadline. A new pattern is not proof of success: the exact
+                // SAME element's pattern once without extending its deadline.
+                // A new pattern is not proof of success: the exact
                 // original document partition and focus still govern the paste.
                 _selectionPatternRequeryAttempted = true;
                 TraceSelectionObservation("target.selection_requery_requested", currentOwned,
@@ -325,6 +334,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 }
                 if (requery == TextPatternRequeryResult.Refreshed)
                 {
+                    _selectionPatternRefreshed = true;
                     // Do not recursively refresh an unavailable query/read.
                     selected = _surface.Read();
                     var elapsed = _clock() - _selectionSince;
@@ -335,11 +345,37 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     if (!IsFocused) return TextTargetUpdateResult.Unfocused;
                 }
             }
+            if (!MatchesOwnedSelection(selected, currentOwned) && selected == _selectionBeforeRequest
+                && _selectionPatternRefreshed && !_selectionRequestRetried
+                && _clock() - _selectionSince >= TimeSpan.FromMilliseconds(200)
+                && _clock() - _selectionSince < AcknowledgementTimeout && SelectionIntentUnchanged())
+            {
+                // Select is an absolute, idempotent request, not a write. Some
+                // providers report success without applying it. Resend at most
+                // once, only while the original snapshot and native intent are
+                // unchanged; never extend the deadline or retry clipboard input.
+                var beforeRetry = _surface.Read();
+                if (_clock() - _selectionSince >= AcknowledgementTimeout)
+                    return Conflict("selection_acknowledgement_timeout");
+                if (MatchesOwnedSelection(beforeRetry, currentOwned)) selected = beforeRetry;
+                else if (beforeRetry != _selectionBeforeRequest) return Conflict("selection_retry_snapshot_changed");
+                else if (IsFocused && SelectionIntentUnchanged() && _clock() - _selectionSince < AcknowledgementTimeout)
+                {
+                    _selectionRequestRetried = true;
+                    TraceSelectionObservation("target.selection_request_retried", currentOwned,
+                        beforeRetry, _selectionBeforeRequest!, _clock() - _selectionSince);
+                    if (!_surface.Select(Prefix, currentOwned, Suffix)) return Conflict("selection_retry_rejected");
+                    selected = _surface.Read();
+                    if (_clock() - _selectionSince >= AcknowledgementTimeout)
+                        return Conflict("selection_acknowledgement_timeout");
+                    if (!IsFocused) return TextTargetUpdateResult.Unfocused;
+                }
+            }
             if (!MatchesOwnedSelection(selected, currentOwned))
             {
                 // Chromium can return the old caret briefly after Select succeeds.
-                // Wait only for an unchanged pre-request snapshot; never reselect
-                // or paste while the requested range is still unacknowledged.
+                // Wait only for an unchanged pre-request snapshot. A resend above
+                // cannot authorize paste until the exact range is acknowledged.
                 if (selected == _selectionBeforeRequest)
                 {
                     var elapsed = _clock() - _selectionSince;
@@ -359,6 +395,10 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 return Conflict("selected_range_validation_failed");
             }
             if (!IsFocused) return TextTargetUpdateResult.Unfocused;
+            // An acknowledgement can arrive between pump calls as well as
+            // during a provider read. Both paths share the original deadline.
+            if (_clock() - _selectionSince >= AcknowledgementTimeout)
+                return Conflict("selection_acknowledgement_timeout");
             TraceSelectionObservation("target.selection_acknowledged", currentOwned, selected, _selectionBeforeRequest!,
                 _clock() - _selectionSince);
             _selectionBeforeRequest = null;
@@ -486,12 +526,23 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         try { return _readFocusGeneration?.Invoke(); }
         catch (Exception error)
         {
-            // A diagnostic source must not change selection, paste, or failure
-            // decisions. Exception messages may contain provider/editor text.
+            // Missing telemetry disables selection resends. It does not grant
+            // permission to paste or invalidate an otherwise acknowledged range.
             Trace("target.selection_generation_failed", new { exceptionType = error.GetType().FullName, error.HResult });
             return null;
         }
     }
+
+    private long? ReadInputGeneration()
+    {
+        try { return _readInputGeneration?.Invoke(); }
+        catch { return null; }
+    }
+
+    private bool SelectionIntentUnchanged() =>
+        _selectionInputGenerationAtRequest is { } input && ReadInputGeneration() == input
+        && _selectionGenerationAtRequest is { } focus && ReadFocusGenerationForDiagnostics() == focus
+        && ReadInputGeneration() == input;
 
     private TextTargetUnavailableException Unavailable(string operation, ElementNotAvailableException error)
     {

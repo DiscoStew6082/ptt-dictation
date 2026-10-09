@@ -159,7 +159,7 @@ Three distinct sequences were present in the local trace; they should not be tre
 
 - An unusable target was rejected while microphone startup was still finishing. Automatic Stop followed Start by roughly 3 ms, then timed out after five seconds. NAudio 3.1.0 can overwrite its early `Stopping` state with `Capturing` in its startup thread. The recorder now repeats Stop if that state reappears, within the existing five-second deadline. It uses the same handshake during disposal. This does not add a fixed startup delay or change target eligibility.
 - A captured UI Automation reference became unavailable while the final Qwen request was running. The trace proves a provider-reference failure, not why the visible editor became inaccessible. The transcript was preserved; adopting a newly focused textbox would not be safe.
-- A replacement selection was not acknowledged within two seconds. The observed document and focus generation were unchanged, but the selection was still the original caret. The provider may have ignored Select or returned stale selection data. This evidence does not justify pasting anyway, extending the timeout, or automatically retrying the selection.
+- A replacement selection was not acknowledged within two seconds. The observed document and focus generation were unchanged, but the selection was still the original caret. The provider may have ignored Select or returned stale selection data. This evidence does not justify pasting anyway or extending the timeout. The bounded recovery below additionally requires unchanged native input before resending a selection request.
 
 If automatic finalization also fails after a textbox error, the workflow now reports the original insertion failure followed by the finalization failure. Previously the later microphone error could conceal the first cause.
 
@@ -171,10 +171,21 @@ To repeat this microphone lifecycle check deliberately, build `tools/PttDictatio
 
 ## Bounded selection recovery and remaining evidence
 
-If the first read after Select still reports exactly the pre-request caret, the app can re-query TextPattern on the same captured AutomationElement once for that selection request. It does not issue another Select, discover a replacement textbox, or extend the two-second acknowledgement deadline. The re-read must still match the complete original document partition, exact owned text, and original focus before paste is authorized. A changed document or different selection is a conflict; focus loss pauses insertion. A native read cannot be cancelled mid-call, but recovery returned after the original deadline does not authorize a paste. The existing insertion watchdog also remains in place.
+If the first read after Select still reports exactly the pre-request caret, the app can re-query TextPattern on the same captured AutomationElement once for that selection request. After 200 ms, one resend of the absolute selection request is allowed only when that re-query succeeded, the complete snapshot remains unchanged, and both native input and focus generations are available and unchanged. A final snapshot check accepts an acknowledgement that arrived meanwhile without resending. Neither operation discovers a replacement textbox or extends the original two-second deadline.
 
-The new trace records whether the re-query was supported, rejected, or returned a pattern, and the resulting snapshot comparisons. Success means a validated selection was observed after re-query; it cannot prove whether the old wrapper was stale or the provider simply finished acknowledging Select during that time. Failed or ignored selections still produce a safe refusal.
+The re-read must still match the complete original document partition, exact owned text, and original focus before paste is authorized. A changed document or different selection is a conflict; focus loss pauses insertion. A native read cannot be cancelled mid-call, but recovery returned after the original deadline does not authorize a paste. Missing generation telemetry disables resends. Clipboard input with an uncertain outcome is never repeated. The existing insertion watchdog also remains in place.
+
+The trace records whether the re-query was supported, rejected, or returned a pattern, and the resulting snapshot comparisons. `target.selection_request_retried` identifies the single resend. Success means a validated selection was observed; it cannot prove whether the old wrapper was stale or the provider simply finished acknowledging Select during that time. A second ignored request still produces a safe refusal.
 
 Unavailable references keep their existing single same-reference recovery attempt per recording. Provider-stage diagnostics now identify which required operation failed without adding diagnostic-only UIA reads. The app never treats an accessible window handle, identical text, or a reused runtime ID as proof that a replacement editor is the original target.
 
-Headless regressions cover these recovery boundaries. The original intermittent editor failures have not been reproduced under the new build; these tests establish the bounded recovery behavior, not a claim that both real provider failures are eliminated. Ordinary use will supply the relevant provider-stage evidence if either recurs.
+The 2026-10-09 20:42:58 UTC failure in the ChatGPT desktop app occurred after two acknowledged preview writes. The final selection remained the original caret for the entire deadline despite a successful same-element pattern re-query; document and focus generation stayed unchanged. This is separate from initial browser capture. Fault-injection regressions reproduce an ignored first selection, verify one acknowledged resend, and reject changed or unavailable intent, late acknowledgements, expired deadlines, and ambiguous writes. They establish the recovery contract, not the underlying reason that the real provider ignored or delayed the request.
+
+`NativeDictationPipelineTests` provides a reusable dark native editor fixture with two synthetic hold/preview/final cycles through the real workflow and UIA capture/selection. Run in PowerShell:
+
+```powershell
+$env:PTT_RUN_VISIBLE_UI_TESTS = '1'
+dotnet test tests/PttDictation.Tests -c Release --filter FullyQualifiedName~NativeDictationPipelineTests
+```
+
+The fixture must own foreground focus and skips safely otherwise. Hotkey parsing, recognizer output, and the owned-control write transport are synthetic: this does not verify physical hotkeys, microphone capture, clipboard injection, or a cold Firefox/Chrome process. Local execution was blocked by foreground activation; do not count its skip as a pass.
