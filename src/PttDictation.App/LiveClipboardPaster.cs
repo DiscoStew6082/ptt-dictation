@@ -19,6 +19,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private readonly Func<Func<bool>> _createReadiness;
     private CapturePreparation? _preparation;
     private readonly Action<string, Func<bool>> _paste;
+    private readonly Func<string, Func<bool>, IPendingClipboardPaste>? _pasteAwaitingAcknowledgement;
     private readonly Func<bool> _canPaste;
     private readonly System.Windows.Forms.Timer? _timer;
     private readonly ApartmentWorker? _automation;
@@ -27,8 +28,13 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private int _queued;
 
     public LiveClipboardPaster(Func<IntPtr>? statusWindow = null)
-        : this(WindowsTextTarget.Capture, new ClipboardPaster().PasteToCurrentTarget,
-            startTimer: true, canPaste: () => WindowsPasteInput.CanPasteNow, statusWindow: statusWindow)
+        : this(new ClipboardPaster(), statusWindow)
+    { }
+
+    private LiveClipboardPaster(ClipboardPaster clipboard, Func<IntPtr>? statusWindow)
+        : this(WindowsTextTarget.Capture, clipboard.PasteToCurrentTarget,
+            startTimer: true, canPaste: () => WindowsPasteInput.CanPasteNow, statusWindow: statusWindow,
+            pasteAwaitingAcknowledgement: clipboard.PasteToCurrentTargetAwaitingAcknowledgement)
     { }
 
     internal LiveClipboardPaster(Func<IWindowsTextTarget> capture, Action<string, Func<bool>> paste,
@@ -36,13 +42,15 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         Action<Action>? confirmCapture = null, Func<long>? tickCount = null,
         Func<CancellationToken, Task<IDisposable>>? acquireCapture = null,
         Func<Func<bool>>? beginPreparation = null, Func<Func<bool>>? createReadiness = null,
-        ApartmentWorker? automationWorker = null, Func<IntPtr>? statusWindow = null)
+        ApartmentWorker? automationWorker = null, Func<IntPtr>? statusWindow = null,
+        Func<string, Func<bool>, IPendingClipboardPaste>? pasteAwaitingAcknowledgement = null)
     {
         _prepareCapture = () => capture;
         _beginCaptureGuard = beginCaptureGuard ?? (() => () => true);
         _confirmCapture = confirmCapture ?? (action => action());
         _tickCount = tickCount ?? (() => Environment.TickCount64);
         _paste = paste;
+        _pasteAwaitingAcknowledgement = pasteAwaitingAcknowledgement;
         _canPaste = canPaste ?? (() => true);
         _acquireCapture = acquireCapture;
         _beginPreparation = beginPreparation ?? (() => () => true);
@@ -295,6 +303,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             switch (result)
             {
                 case TextTargetUpdateResult.Success:
+                    Interlocked.Exchange(ref session.ClipboardRestore, null)?.Acknowledge();
                     lock (session)
                     {
                         session.Acknowledged = session.InFlight;
@@ -345,6 +354,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         session.Conflicted = true;
         session.Failure = error.Message;
         session.Active = false;
+        AbandonClipboard(session);
         session.Completion.TrySetException(error);
         // Preview failures may never have a PasteAsync waiter. Observe the task
         // while preserving the same exception for any existing/future waiter.
@@ -366,14 +376,23 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         {
             using var traceScope = DiagnosticTrace.EnterRecording(session.RecordingId ?? string.Empty);
             Trace(session, "inline.clipboard_dispatch", new { text });
-            _paste(text, () =>
+            bool CanWrite()
             {
                 var prepared = session.Target!.IsPreparedSelectionCurrent;
                 var canPaste = prepared && _canPaste();
                 var current = canPaste && IsCurrent(session);
                 if (!current) Trace(session, "inline.prepared_selection_rejected", new { prepared, canPaste, current });
                 return current;
-            });
+            }
+            if (!session.Fallback && _pasteAwaitingAcknowledgement is not null)
+            {
+                var lease = _pasteAwaitingAcknowledgement(text, CanWrite);
+                Interlocked.Exchange(ref session.ClipboardRestore, lease)?.Dispose();
+                // Cancellation can retire the session while native SendInput or
+                // clipboard validation is returning. Do not strand a late lease.
+                if (!IsCurrent(session)) AbandonClipboard(session);
+            }
+            else _paste(text, CanWrite);
             Trace(session, "inline.clipboard_returned");
         }
         if (_clipboard is null) Write();
@@ -396,6 +415,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         {
             Trace(session, "inline.session_ended", new { session.Finishing, session.Conflicted, acknowledgedLength = session.Acknowledged.Length });
             session.Active = false;
+            AbandonClipboard(session);
             session.Preparation?.Dispose();
             session.Completion.TrySetCanceled();
         }
@@ -432,6 +452,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     private sealed class Session
     {
+        public IPendingClipboardPaste? ClipboardRestore;
         public CapturePreparation? Preparation;
         public string? RecordingId;
         public bool FocusPaused;
@@ -454,6 +475,9 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     private static void Trace(Session session, string stage, object? data = null, Exception? error = null)
         => DiagnosticTrace.Write(stage, data, error, session.RecordingId);
+
+    private static void AbandonClipboard(Session session)
+        => Interlocked.Exchange(ref session.ClipboardRestore, null)?.Dispose();
 }
 
 internal sealed class ApartmentWorker : IDisposable

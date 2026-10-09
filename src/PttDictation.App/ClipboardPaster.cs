@@ -10,6 +10,13 @@ internal sealed class ClipboardReadUnavailableException : InvalidOperationExcept
     public ClipboardReadUnavailableException() : base("The dictation clipboard could not be read yet. No paste was sent.") { }
 }
 
+internal interface IPendingClipboardPaste : IDisposable
+{
+    // Exact target readback proves consumption. Dispose abandons an uncertain
+    // paste without putting unrelated clipboard contents beneath queued input.
+    void Acknowledge();
+}
+
 internal sealed class ClipboardPaster : IClipboardPaster
 {
     private static readonly IClipboardRestoreQueue SharedRestoreQueue =
@@ -65,6 +72,12 @@ internal sealed class ClipboardPaster : IClipboardPaster
     }
 
     internal void PasteToCurrentTarget(string text, Func<bool> targetIsCurrent)
+        => PasteToCurrentTargetCore(text, targetIsCurrent, awaitAcknowledgement: false);
+
+    internal IPendingClipboardPaste PasteToCurrentTargetAwaitingAcknowledgement(string text, Func<bool> targetIsCurrent)
+        => PasteToCurrentTargetCore(text, targetIsCurrent, awaitAcknowledgement: true)!;
+
+    private IPendingClipboardPaste? PasteToCurrentTargetCore(string text, Func<bool> targetIsCurrent, bool awaitAcknowledgement)
     {
         var recordingId = DiagnosticTrace.CurrentRecordingId;
         DiagnosticTrace.Write("clipboard.paste_started", new { text }, recordingId: recordingId);
@@ -76,6 +89,7 @@ internal sealed class ClipboardPaster : IClipboardPaster
 
         IDataObject? previous = null;
         var clipboardChanged = false;
+        var sendAttempted = false;
         uint clipboardSequence = 0;
         var stage = "snapshot";
         try
@@ -103,13 +117,31 @@ internal sealed class ClipboardPaster : IClipboardPaster
                 }
 
                 stage = "send_paste";
+                sendAttempted = true;
                 _clipboard.SendPaste();
                 DiagnosticTrace.Write("clipboard.paste_sent", new { clipboardSequence }, recordingId: recordingId);
             }
 
+            Action restore = () => RestoreOwnedClipboard(clipboardSequence, previous, recordingId);
+            if (awaitAcknowledgement)
+            {
+                // SendInput only queues a paste. A slow browser can read the
+                // clipboard after the legacy timer would already restore it.
+                // Only exact text readback can restore. Cancellation/failure
+                // abandons restoration because queued input may still consume
+                // this payload; the original snapshot remains chained for the
+                // next acknowledged write. Never resend an uncertain paste.
+                var lease = new PendingRestore(
+                    () => _restoreQueue.EnqueueImmediate(restore),
+                    () => DiagnosticTrace.Write("clipboard.restore_abandoned",
+                        new { clipboardSequence, reason = "paste_unacknowledged" }, recordingId: recordingId));
+                clipboardChanged = false;
+                return lease;
+            }
             stage = "queue_restore";
-            _restoreQueue.Enqueue(() => RestoreOwnedClipboard(clipboardSequence, previous, recordingId));
+            _restoreQueue.Enqueue(restore);
             clipboardChanged = false;
+            return null;
         }
         catch (Exception ex)
         {
@@ -118,10 +150,30 @@ internal sealed class ClipboardPaster : IClipboardPaster
         }
         finally
         {
-            if (clipboardChanged)
+            if (clipboardChanged && !sendAttempted)
             {
                 _restoreQueue.EnqueueImmediate(() => RestoreOwnedClipboard(clipboardSequence, previous, recordingId));
             }
+            else if (clipboardChanged)
+            {
+                // SendInput may have accepted a prefix containing Ctrl+V before
+                // throwing. Restoring here could paste the user's old clipboard.
+                DiagnosticTrace.Write("clipboard.restore_abandoned",
+                    new { clipboardSequence, reason = "paste_submission_uncertain" }, recordingId: recordingId);
+            }
+        }
+    }
+
+    private sealed class PendingRestore(Action restore, Action abandoned) : IPendingClipboardPaste
+    {
+        private int _completed;
+        public void Acknowledge()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) == 0) restore();
+        }
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) == 0) abandoned();
         }
     }
 

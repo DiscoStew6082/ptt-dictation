@@ -19,6 +19,16 @@ three trusted paste events per dictation. The second dictation must preserve
 the first one's text through preview and final replacement. The actual
 nonactivating preparation overlay participates in each recording.
 
+Live replacement keeps its clipboard payload until exact target readback
+acknowledges the insertion, then restores the original clipboard only if its
+sequence is still owned. Cancellation or failure after input submission leaves
+the dictation payload in place: delivery is uncertain, and restoring unrelated
+clipboard data beneath a queued paste would be unsafe. The next acknowledged
+write can restore the saved original; a newer user copy always takes precedence.
+No uncertain paste is resubmitted. Firefox's disconnected text-range error can
+refresh the pattern on the original captured element once per recording; all
+existing focus, text-partition, selection, and deadline checks still apply.
+
 The browser is cold at the process and profile level. This is not a reboot or a
 claim that the operating system file cache is empty. The test uses an isolated
 local page, not a signed-in ChatGPT account. Recognition output is deterministic;
