@@ -194,7 +194,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             {{editor}}
             <script>
             const editor = document.getElementById('editor');
-            let sequence = 0, firstFocusedAt = null, sending = false;
+            let sequence = 0, firstFocusedAt = null, sending = false, ready = false;
             let trustedInputEvents = 0, trustedPasteEvents = 0;
             function observe() {
               const focused = document.activeElement === editor && document.hasFocus();
@@ -203,7 +203,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
                 text: (editor instanceof HTMLTextAreaElement ? editor.value : editor.innerText)
                   .replace(/\r\n?/g, '\n'),
                 focused, sequence: ++sequence, userAgent: navigator.userAgent,
-                timestamp: performance.now(), firstFocusedAt, ready: true,
+                timestamp: performance.now(), firstFocusedAt, ready,
                 trustedInputEvents, trustedPasteEvents
               };
             }
@@ -229,7 +229,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             editor.addEventListener('focus', () => void report());
             editor.addEventListener('blur', () => void report());
             document.addEventListener('selectionchange', () => void report());
-            focusEditor();
+            requestAnimationFrame(() => requestAnimationFrame(() => { ready = true; focusEditor(); }));
             setInterval(() => void report(), 50);
             </script></html>
             """;

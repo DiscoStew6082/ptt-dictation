@@ -81,7 +81,8 @@ public sealed class FirefoxColdStartTests
             await Until(() => browser.TryActivate(), "Firefox native foreground window", 20000);
             // Only the page's DOM reports readiness. No test UIA query, WebDriver
             // attachment, provider probing, or arbitrary warmup delay precedes PTT.
-            await Until(() => fixture.Latest is { Focused: true }, "Firefox editor DOM focus", 20000);
+            await Until(() => fixture.Latest is { Focused: true, Ready: true }, "Firefox editor DOM focus", 20000);
+            browser.BindReadyWindow();
             Assert.IsTrue(fixture.Latest!.UserAgent.Contains("Firefox/", StringComparison.Ordinal));
             Assert.AreEqual("", fixture.Latest.Text);
             for (var dictation = 1; dictation <= 2; dictation++)
@@ -226,6 +227,7 @@ public sealed class FirefoxColdStartTests
             File.WriteAllText(Path.Combine(_profile, "user.js"), """
                 user_pref("browser.aboutwelcome.enabled", false);
                 user_pref("browser.preonboarding.enabled", false);
+                user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
                 user_pref("browser.shell.checkDefaultBrowser", false);
                 user_pref("browser.startup.homepage_override.mstone", "ignore");
                 user_pref("ui.systemUsesDarkTheme", 1);
@@ -265,6 +267,22 @@ public sealed class FirefoxColdStartTests
             Assert.AreEqual(_window, GetForegroundWindow(), "Refusing input outside this trial's Firefox window.");
             GetWindowThreadProcessId(_window, out var owner);
             Assert.AreEqual((uint)ProcessId, owner);
+        }
+
+        public void BindReadyWindow()
+        {
+            // Firefox replaces its initial startup window. Bind the real window
+            // once after our page has painted; never retarget during dictation.
+            var window = GetForegroundWindow();
+            GetWindowThreadProcessId(window, out var owner);
+            using var process = Process.GetProcessById((int)owner);
+            Assert.AreEqual("firefox", process.ProcessName);
+            Assert.IsTrue(process.StartTime.ToUniversalTime() >= _started);
+            var title = new System.Text.StringBuilder(512);
+            GetWindowText(window, title, title.Capacity);
+            StringAssert.Contains(title.ToString(), "PTT Firefox cold-start test");
+            _window = window;
+            ProcessId = process.Id;
         }
 
         public void Dispose()
@@ -316,6 +334,8 @@ public sealed class FirefoxColdStartTests
     private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder title, int length);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, [In] WindowsPasteInput.NativeInput[] inputs, int size);
 }
