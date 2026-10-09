@@ -17,6 +17,7 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
     internal const int CaretObject = -8;
     private readonly IFocusCaptureEvents _events;
     private readonly Func<long> _tickCount;
+    private readonly Func<IntPtr> _statusWindow;
     private long _generation;
     private long _foregroundGeneration;
     private long _preparationStartedAt = -1;
@@ -25,7 +26,8 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
     private bool _confirmationPending;
     private volatile bool _disposed;
 
-    public WindowsFocusCaptureGuard() : this(new NativeFocusCaptureEvents()) { }
+    public WindowsFocusCaptureGuard(Func<IntPtr>? statusWindow = null)
+        : this(new NativeFocusCaptureEvents(), statusWindow: statusWindow) { }
 
     public long Generation => Interlocked.Read(ref _generation);
 
@@ -39,16 +41,37 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
         var position = _events.ReadFocus();
         var input = readInputGeneration();
         var foreground = Interlocked.Read(ref _foregroundGeneration);
-        return () => !_disposed && _events.Available && position.Foreground != IntPtr.Zero
-            && position.Focused != IntPtr.Zero && input == readInputGeneration()
-            && foreground == Interlocked.Read(ref _foregroundGeneration)
-            && position == _events.ReadFocus() && input == readInputGeneration();
+        var recordingId = DiagnosticTrace.CurrentRecordingId;
+        var reported = 0;
+        return () =>
+        {
+            var current = _events.ReadFocus();
+            var currentInput = readInputGeneration();
+            var currentForeground = Interlocked.Read(ref _foregroundGeneration);
+            var accepted = !_disposed && _events.Available && position.Foreground != IntPtr.Zero
+                && position.Focused != IntPtr.Zero && input == currentInput
+                && foreground == currentForeground && position == current
+                && input == readInputGeneration();
+            if (!accepted && Interlocked.Exchange(ref reported, 1) == 0)
+                DiagnosticTrace.Write("focus_guard.preparation_rejected", new
+                {
+                    available = _events.Available, disposed = _disposed,
+                    originalForeground = position.Foreground.ToInt64(), currentForeground = current.Foreground.ToInt64(),
+                    originalFocused = position.Focused.ToInt64(), currentFocused = current.Focused.ToInt64(),
+                    originalProcess = position.ProcessId, currentProcess = current.ProcessId,
+                    initialInput = input, currentInput, initialForegroundGeneration = foreground,
+                    currentForegroundGeneration = currentForeground
+                }, recordingId: recordingId);
+            return accepted;
+        };
     }
 
-    internal WindowsFocusCaptureGuard(IFocusCaptureEvents events, Func<long>? tickCount = null)
+    internal WindowsFocusCaptureGuard(IFocusCaptureEvents events, Func<long>? tickCount = null,
+        Func<IntPtr>? statusWindow = null)
     {
         _events = events;
         _tickCount = tickCount ?? (() => Environment.TickCount64);
+        _statusWindow = statusWindow ?? (() => IntPtr.Zero);
         _events.Changed += OnChanged;
     }
 
@@ -100,6 +123,11 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
     {
         var (eventType, window, objectId, childId, timestamp) = change;
         if (_disposed) return;
+        // WinForms Show emits a foreground WinEvent for our WS_EX_NOACTIVATE
+        // status overlay even though Windows keeps the editor foreground. Ignore
+        // only that known overlay's synthetic event, never an actual activation.
+        if (eventType == ForegroundEvent && window != IntPtr.Zero
+            && window == _statusWindow() && _events.ReadFocus().Foreground != window) return;
         var selection = eventType is TextSelectionEvent or Ia2CaretEvent or Ia2SelectionEvent
             || eventType == LocationEvent && objectId == CaretObject;
         if (eventType != ForegroundEvent
@@ -114,7 +142,15 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
         var beforePreparation = preparationStartedAt >= 0 && deliveredAt >= preparationStartedAt
             && age <= int.MaxValue && age > deliveredAt - preparationStartedAt;
         if (eventType == ForegroundEvent && !beforePreparation)
+        {
+            if (preparationStartedAt >= 0 && deliveredAt - preparationStartedAt <= 5000)
+                DiagnosticTrace.Write("focus_guard.preparation_foreground", new
+                {
+                    eventWindow = window.ToInt64(), timestamp, deliveredAt, preparationStartedAt,
+                    actualForeground = _events.ReadFocus().Foreground.ToInt64()
+                });
             Interlocked.Increment(ref _foregroundGeneration);
+        }
         var beforeCapture = captureStartedAt >= 0 && deliveredAt >= captureStartedAt
             && age <= int.MaxValue && age > deliveredAt - captureStartedAt;
         if (!beforeCapture) Interlocked.Increment(ref _generation);

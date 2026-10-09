@@ -1,11 +1,51 @@
 using PttDictation.App;
 using PttDictation.Core;
+using System.Runtime.InteropServices;
 
 namespace PttDictation.Tests;
 
 [TestClass]
 public sealed class DictationPresentationTests
 {
+    [TestMethod]
+    [VisibleUi]
+    public void PreparingOverlayPreservesNativeForegroundFocusOnFirstAndSecondShow()
+    {
+        VisibleUiTestGate.RequireOptIn();
+        RunOnStaThread(async () =>
+        {
+            var diagnosticsDirectory = Path.Combine(AppContext.BaseDirectory, "overlay-focus-" + Guid.NewGuid().ToString("N"));
+            using var diagnostics = DiagnosticTrace.Configure(diagnosticsDirectory, "preparing-overlay-native-focus");
+            using var overlay = new StatusOverlayForm();
+            using var guard = new WindowsFocusCaptureGuard(() => overlay.IsHandleCreated ? overlay.Handle : IntPtr.Zero);
+            Application.DoEvents();
+            using var cancel = new ToolStripMenuItem();
+            var state = new DictationWorkflowState(DictationWorkflowPhase.Preparing, DictationTriggerMode.Hold);
+            var presentation = new DictationPresentation(overlay, cancel,
+                CreateEnvironment(() => AppSettings.Default, () => state) with { IsInlinePreview = () => false });
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var foreground = GetForegroundWindow();
+                var unchanged = guard.BeginPreparation(() => 0);
+                if (!unchanged()) Assert.Inconclusive("No stable native foreground target is available for the overlay focus test.");
+                await presentation.ApplyAsync(state);
+                Application.DoEvents();
+                Assert.IsTrue(overlay.Visible);
+                Assert.AreEqual(foreground, GetForegroundWindow(), $"Preparing show {attempt + 1} changed foreground.");
+                var accepted = unchanged();
+                DiagnosticTrace.FlushAsync().GetAwaiter().GetResult();
+                Assert.IsTrue(accepted, $"Preparing show {attempt + 1} invalidated native preparation guard. "
+                    + $"Overlay HWND={overlay.Handle}. "
+                    + File.ReadAllText(Path.Combine(diagnosticsDirectory, "events.jsonl")));
+                overlay.HideRecording();
+                Application.DoEvents();
+            }
+        });
+    }
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
     [TestMethod]
     [DataRow(DictationTriggerMode.Hold, "Keep holding")]
     [DataRow(DictationTriggerMode.Toggle, "Press F9 again to cancel")]

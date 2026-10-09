@@ -54,7 +54,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _finalTranscriber = new ConfiguredFinalTranscriber(_transcriber, () => _settings,
             AppPaths.RootDirectory, message => workflow?.ReportProcessingDetail(message));
         _qwenPreloader = new SelectedQwenPreloader(_finalTranscriber.WarmUpAsync, _lifetime.Token);
-        _livePaster = new LiveClipboardPaster();
+        _livePaster = new LiveClipboardPaster(() => _statusOverlay.IsHandleCreated ? _statusOverlay.Handle : IntPtr.Zero);
         workflow = new DictationWorkflow(
             new ChunkedTranscribingDictationSessionFactory(_recorder, _transcriber, () => _finalTranscriber.CreateSessionTranscriber()),
             _livePaster,

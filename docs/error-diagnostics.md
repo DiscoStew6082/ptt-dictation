@@ -135,6 +135,16 @@ warmup-only build also passed the user's first physical attempt in a newly
 started Chrome process on Bing; that successful baseline is not a live red
 reproduction of the remaining race.
 
+The first post-repair cold Chrome attempt then failed before microphone startup:
+showing the Preparing overlay emitted `EVENT_SYSTEM_FOREGROUND` naming the
+overlay even though Windows retained the editor's native foreground and focus.
+An isolated native overlay regression reproduced this rejection. The guard now
+ignores only an event naming PTT's exact known non-activating overlay when that
+window is not actually foreground. Actual overlay activation, other windows,
+and genuine switch-away-and-back events remain invalidating. Metadata-only
+`focus_guard.preparation_rejected` distinguishes window, input-counter and
+foreground-generation changes; no typed input is retained.
+
 Upstream rationale: Chromium's [fragment root](https://raw.githubusercontent.com/chromium/chromium/main/ui/accessibility/platform/ax_fragment_root_win.cc)
 signals a UIA client, while [TextPattern requests](https://raw.githubusercontent.com/chromium/chromium/main/ui/accessibility/platform/ax_platform_node_win.cc)
 activate web-text capabilities through [accessibility mode selection](https://raw.githubusercontent.com/chromium/chromium/main/content/browser/accessibility/browser_accessibility_state_impl.cc).

@@ -8,6 +8,32 @@ namespace PttDictation.Tests;
 public sealed class WindowsFocusCaptureGuardTests
 {
     [TestMethod]
+    public void OnlySyntheticKnownOverlayForegroundEventsAreIgnored()
+    {
+        var events = new Events();
+        using var guard = new WindowsFocusCaptureGuard(events, () => 1000, statusWindow: () => new IntPtr(77));
+        var prepared = guard.BeginPreparation(() => 0);
+        var captured = guard.BeginCapture();
+        events.Raise(WindowsFocusCaptureGuard.ForegroundEvent, 77, timestamp: 1000);
+        Assert.IsTrue(prepared());
+        Assert.IsTrue(captured());
+
+        prepared = guard.BeginPreparation(() => 0);
+        captured = guard.BeginCapture();
+        events.Raise(WindowsFocusCaptureGuard.ForegroundEvent, 99, timestamp: 1000);
+        events.Raise(WindowsFocusCaptureGuard.ForegroundEvent, 1, timestamp: 1000);
+        Assert.IsFalse(prepared(), "A real switch away and back must remain rejected.");
+        Assert.IsFalse(captured());
+
+        prepared = guard.BeginPreparation(() => 0);
+        captured = guard.BeginCapture();
+        events.Position = new(77, 77);
+        events.Raise(WindowsFocusCaptureGuard.ForegroundEvent, 77, timestamp: 1000);
+        events.Position = new(1, 2);
+        Assert.IsFalse(prepared(), "The known overlay must not be exempt if it actually becomes foreground.");
+        Assert.IsFalse(captured());
+    }
+    [TestMethod]
     public void PreparationIgnoresOldForegroundDeliveryButRejectsNewRedirection()
     {
         var events = new Events();

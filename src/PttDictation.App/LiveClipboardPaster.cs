@@ -26,9 +26,9 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private Session? _session;
     private int _queued;
 
-    public LiveClipboardPaster()
+    public LiveClipboardPaster(Func<IntPtr>? statusWindow = null)
         : this(WindowsTextTarget.Capture, new ClipboardPaster().PasteToCurrentTarget,
-            startTimer: true, canPaste: () => WindowsPasteInput.CanPasteNow)
+            startTimer: true, canPaste: () => WindowsPasteInput.CanPasteNow, statusWindow: statusWindow)
     { }
 
     internal LiveClipboardPaster(Func<IWindowsTextTarget> capture, Action<string, Func<bool>> paste,
@@ -36,7 +36,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         Action<Action>? confirmCapture = null, Func<long>? tickCount = null,
         Func<CancellationToken, Task<IDisposable>>? acquireCapture = null,
         Func<Func<bool>>? beginPreparation = null, Func<Func<bool>>? createReadiness = null,
-        ApartmentWorker? automationWorker = null)
+        ApartmentWorker? automationWorker = null, Func<IntPtr>? statusWindow = null)
     {
         _prepareCapture = () => capture;
         _beginCaptureGuard = beginCaptureGuard ?? (() => () => true);
@@ -50,7 +50,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         _automation = automationWorker;
         if (startTimer)
         {
-            var focusGuard = new WindowsFocusCaptureGuard();
+            var focusGuard = new WindowsFocusCaptureGuard(statusWindow);
             _focusGuard = focusGuard;
             _accessibilityWarmup = new WindowsAccessibilityWarmup(() => Volatile.Read(ref _session) is null);
             _acquireCapture = _accessibilityWarmup.AcquireCaptureAsync;
