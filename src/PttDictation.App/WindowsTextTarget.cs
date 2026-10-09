@@ -403,11 +403,15 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             var previouslyAttemptedWrite = HasAttemptedWrite;
             HasAttemptedWrite = true;
             _pendingText = replacementText;
-            _pendingSince = _clock();
             Trace("target.write_pending", new { replacementLength = replacementText.Length });
             try
             {
                 paste(replacementText);
+                // Clipboard preparation revalidates the original target and can
+                // block in a cold provider. The browser cannot acknowledge input
+                // until it has actually been submitted. This timestamp is set
+                // once, never by subsequent acknowledgement polls.
+                _pendingSince = _clock();
                 _unsentRetrySelection = null;
             }
             catch (ClipboardReadUnavailableException)

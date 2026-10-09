@@ -33,6 +33,9 @@ again. Focus and held-modifier checks gate new writes, not readback of submitted
 input. Native paste handles caret visibility; an additional accessibility
 focus/scroll request is not part of acknowledgement, where it could block the
 browser from processing the paste being observed.
+The two-second write-acknowledgement budget starts when paste submission returns,
+after clipboard preparation and target revalidation. Subsequent polls do not
+reset it; the separate preparation/worker deadlines still bound provider stalls.
 
 The browser is cold at the process and profile level. This is not a reboot or a
 claim that the operating system file cache is empty. The test uses an isolated

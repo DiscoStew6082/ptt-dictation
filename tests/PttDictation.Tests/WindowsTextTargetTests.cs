@@ -223,6 +223,43 @@ public sealed class WindowsTextTargetTests
     }
 
     [TestMethod]
+    public void WriteAcknowledgementBudgetStartsAfterPasteSubmission()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var surface = new FakeSurface("", "", "") { DelayPaste = true };
+        var target = new WindowsTextTarget(surface, () => now);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", text =>
+        {
+            // Real Firefox held pre-send focus validation for 3.5 seconds.
+            now += TimeSpan.FromMilliseconds(3500);
+            surface.Paste(text);
+        }));
+        now += TimeSpan.FromMilliseconds(100);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
+        surface.ApplyDelayedPaste();
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void SlowSubmissionDoesNotExtendThePostSubmissionAcknowledgementDeadline()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var surface = new FakeSurface("", "", "") { DelayPaste = true };
+        var target = new WindowsTextTarget(surface, () => now);
+        target.TryReplace("", "words", text =>
+        {
+            now += TimeSpan.FromMilliseconds(3500);
+            surface.Paste(text);
+        });
+        now += TimeSpan.FromMilliseconds(1999);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
+        now += TimeSpan.FromMilliseconds(1);
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
     public void LivePumpAcknowledgesSubmittedWriteWhileNewInputIsBlocked()
     {
         var surface = new FakeSurface("", "", "");
