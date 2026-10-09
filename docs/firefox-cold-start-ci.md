@@ -78,8 +78,12 @@ Every attempt uploads `firefox-cold-start-evidence-<attempt>` for 14 days, inclu
 and the available browser evidence. `runner.json` records the Firefox version,
 runner image, source commit, and run/attempt identity. Failed trials also retain
 the browser for ten seconds to collect DOM observations and bounded Windows
-wait-chain diagnostics before teardown. This observation never retries a
-dictation or changes a failed result. Firefox tracks the GitHub runner
+wait-chain diagnostics before teardown. Native diagnostics run in a separate,
+bounded process and save minimal Firefox/testhost stack dumps before querying
+wait chains. A failure-only CI step installs Microsoft's debugger tools on the
+disposable runner and resolves stacks using Microsoft and Mozilla symbols;
+raw dumps and partial analysis remain available if symbols time out. This
+observation never retries a dictation or changes a failed result. Firefox tracks the GitHub runner
 image instead of a pinned browser version; version metadata makes a runner or
 browser update visible when investigating a regression. The job runs on pushes
 and pull requests targeting `master` or `main`.

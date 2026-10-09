@@ -155,6 +155,9 @@ public sealed class FirefoxColdStartTests
         }
         catch
         {
+            // Persist the browser history before any optional native diagnostics.
+            try { File.WriteAllText(Path.Combine(output, "dom-at-failure.json"), JsonSerializer.Serialize(fixture.Snapshots)); }
+            catch (Exception error) { TestContext.WriteLine($"Initial DOM evidence unavailable: {error}"); }
             // Evidence comes from the isolated CI desktop and generated page only.
             try
             {
@@ -164,20 +167,21 @@ public sealed class FirefoxColdStartTests
                 image.Save(Path.Combine(output, "failure.png"));
             }
             catch (Exception error) { TestContext.WriteLine($"Screenshot unavailable: {error.GetType().Name}"); }
-            try
-            {
-                // Preserve the failed outcome while observing whether the same
-                // browser/provider recovers before teardown. No retry or input.
-                var observationWindow = Task.Delay(TimeSpan.FromSeconds(10));
-                var uiThreadId = GetCurrentThreadId();
-                await FirefoxWaitChainDiagnostics.CaptureAsync(browser.WaitChainTarget, uiThreadId,
-                    Path.Combine(output, "wait-chains-at-failure.json"));
-                await observationWindow;
-                await FirefoxWaitChainDiagnostics.CaptureAsync(browser.WaitChainTarget, uiThreadId,
-                    Path.Combine(output, "wait-chains-after-observation.json"));
-            }
-            catch (Exception error) { TestContext.WriteLine($"Failure observation unavailable: {error}"); }
+            // Preserve the failed outcome while observing whether the same
+            // browser/provider recovers before teardown. No retry or input.
+            var observationWindow = Task.Delay(TimeSpan.FromSeconds(10));
+            var uiThreadId = GetCurrentThreadId();
+            await CaptureFailureEvidence("wait-chains-at-failure.json", dump: true);
+            await observationWindow;
+            await CaptureFailureEvidence("wait-chains-after-observation.json", dump: false);
             throw;
+
+            async Task CaptureFailureEvidence(string name, bool dump)
+            {
+                try { await FirefoxWaitChainDiagnostics.CaptureAsync(browser.WaitChainTarget, uiThreadId,
+                    Path.Combine(output, name), dumpFirefox: dump); }
+                catch (Exception error) { TestContext.WriteLine($"Failure observation unavailable: {error}"); }
+            }
         }
         finally
         {

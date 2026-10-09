@@ -1,11 +1,24 @@
 using PttDictation.Core;
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Windows.Automation;
 
 namespace PttDictation.App;
 
 internal static class TextProviderDiagnostics
 {
+    private sealed record Operation(string Name, long Started, string Apartment);
+    private static readonly ConcurrentDictionary<int, Operation> Active = new();
+
+    internal static void WritePendingOperations(string? recordingId)
+    {
+        foreach (var (threadId, operation) in Active)
+            DiagnosticTrace.Write("target.provider_operation_pending", new {
+                operation = operation.Name, threadId, apartment = operation.Apartment,
+                elapsedMs = Stopwatch.GetElapsedTime(operation.Started).TotalMilliseconds
+            }, recordingId: recordingId);
+    }
+
     // Read only the provider's selected range and its ancestors. This is evidence
     // for rejected captures, never permission to adopt or write another editor.
     internal static void InspectUnsupportedSelection(AutomationElement element, TextPattern? pattern)
@@ -50,6 +63,9 @@ internal static class TextProviderDiagnostics
     internal static T Observe<T>(string operation, Func<T> read)
     {
         var started = Stopwatch.GetTimestamp();
+        var threadId = Environment.CurrentManagedThreadId;
+        Active.TryGetValue(threadId, out var previous);
+        Active[threadId] = new(operation, started, Thread.CurrentThread.GetApartmentState().ToString());
         try
         {
             return read();
@@ -64,6 +80,8 @@ internal static class TextProviderDiagnostics
         }
         finally
         {
+            if (previous is null) Active.TryRemove(threadId, out _);
+            else Active[threadId] = previous;
             var elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             if (elapsedMs >= 250)
                 DiagnosticTrace.Write("target.provider_operation_slow", new { operation, elapsedMs,

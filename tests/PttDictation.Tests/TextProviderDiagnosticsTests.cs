@@ -89,6 +89,38 @@ public sealed class TextProviderDiagnosticsTests
     }
 
     [TestMethod]
+    public async Task WatchdogCanIdentifyBlockedProviderWithoutCallingItAgain()
+    {
+        using var configured = DiagnosticTrace.Configure(directory, "provider-test");
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var calls = 0;
+        var read = Task.Run(() => TextProviderDiagnostics.Observe("snapshot.document_range", () =>
+        {
+            calls++;
+            entered.Set();
+            release.Wait();
+            return 1;
+        }));
+        try
+        {
+            Assert.IsTrue(entered.Wait(TimeSpan.FromSeconds(2)));
+            TextProviderDiagnostics.WritePendingOperations("blocked-recording");
+            Assert.IsFalse(read.IsCompleted);
+        }
+        finally { release.Set(); }
+        Assert.AreEqual(1, await read);
+        TextProviderDiagnostics.WritePendingOperations("after-return");
+        await DiagnosticTrace.FlushAsync();
+        var entries = File.ReadAllLines(Path.Combine(directory, "events.jsonl"))
+            .Where(line => line.Contains("target.provider_operation_pending")).ToArray();
+        Assert.HasCount(1, entries);
+        StringAssert.Contains(entries[0], "snapshot.document_range");
+        StringAssert.Contains(entries[0], "blocked-recording");
+        Assert.AreEqual(1, calls);
+    }
+
+    [TestMethod]
     public async Task ErrorIndexContainsOperationTypeAndCodeWithoutProviderMessageOrText()
     {
         using var configured = DiagnosticTrace.Configure(directory, "provider-test");

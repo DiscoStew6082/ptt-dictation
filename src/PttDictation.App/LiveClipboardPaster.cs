@@ -255,6 +255,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             && _tickCount() - started > 5000)
         {
             Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = _tickCount() - started });
+            TextProviderDiagnostics.WritePendingOperations(session.RecordingId);
             FailInsertion(session, new InvalidOperationException("The original editor stopped responding."),
                 initialCaptureRejected: !session.Ready);
             return;
