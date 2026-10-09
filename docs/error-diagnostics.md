@@ -18,6 +18,7 @@ For textbox incidents, inspect the first specific event rather than only the fin
 | `target.surface_capabilities` / `inline.capture_result` | Whether Windows exposed a usable editable target at capture time. |
 | `focus_guard.event` | During pending capture, records the native event kind, object/child IDs, occurrence timestamp, delivery tick, age, and whether it predates capture. No textbox text is read. |
 | `target.legacy_capture_detail` | Explains MSAA fallback rejection: missing root/focus, cycle/depth limit, wrong process/role/state, changed identity/context, or provider exception type. |
+| `target.unsupported_provider` / `target.unsupported_selection*` | For rejected Document/Window targets, records provider framework, focus, selection count and read-only state, and up to eight enclosing ancestors. Never authorizes insertion or logs text/name/value content. |
 | `target.unavailable` | The captured UI Automation reference stopped working; this alone does not prove the visible textbox disappeared. |
 | `target.provider_operation_failed` | Names the exact failing native operation, such as `focus.original_element`, `capture.text_pattern`, or `snapshot.selection`, with exception type and HRESULT only. |
 | `target.provider_refresh_rejected` | Explains why refreshing the original element was refused, including lost focus or unavailable capabilities. |
@@ -60,8 +61,19 @@ selection changes, switching away and back, container recovery, and deferred
 confirmation followed by paste. They do not establish that the historic incident
 was caused by a stale event or that all recurring browser failures are fixed.
 The added event and MSAA metadata are needed to distinguish any next failure.
-Direct Firefox interaction could not be exercised because Windows Computer Use
-access was denied; physical-hotkey acceptance remains a separate live check.
+Agent-driven Firefox interaction could not be exercised because Windows Computer
+Use access was denied. User-operated physical-hotkey attempts on the installed
+repair still failed. The new trace established unchanged capture focus, native
+Gecko Document focus, a read-only document, zero selected ranges, and an MSAA focus
+chain ending at ROLE_SYSTEM_DOCUMENT (15), rejected as `role_not_text`. The user
+confirmed ordinary keyboard input works in the same ChatGPT web composer.
+The recorded Firefox failure is therefore not repaired by the timestamp change.
+
+The saved Firefox profile said caret browsing was enabled, but the user's live F7
+comparison offered to turn it on: that saved preference was stale and is not
+evidence that caret browsing caused the failure. Likewise, use host-live log reads
+when reconciling user actions; a stale sandbox file view initially omitted the
+newest failure. Do not diagnose a missing hotkey from that snapshot.
 
 ## September 23 investigation
 

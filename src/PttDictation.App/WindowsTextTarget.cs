@@ -575,6 +575,8 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
                 controlType == ControlType.Edit, valueReadOnly, textReadOnly);
             DiagnosticTrace.Write("target.surface_capabilities", new { canPaste, controlType = controlType.ProgrammaticName,
                 hasTextPattern = pattern is not null, valueReadOnly, textReadOnly = textReadOnly is bool readOnly ? (bool?)readOnly : null });
+            if (!canPaste && (controlType == ControlType.Document || controlType == ControlType.Window))
+                TextProviderDiagnostics.InspectUnsupportedSelection(element, pattern);
             if (canPaste && pattern is not null && textReadOnly is false
                 && TextProviderDiagnostics.Observe("capture.selection_support", () => pattern.SupportedTextSelection) != SupportedTextSelection.None)
                 return new AutomationTextSurface(element, pattern, canPasteFallback: true, supportsReplacement: true);
