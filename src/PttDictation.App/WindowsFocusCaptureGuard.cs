@@ -16,27 +16,37 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
     internal const uint Ia2SelectionEvent = 0x0121;
     internal const int CaretObject = -8;
     private readonly IFocusCaptureEvents _events;
+    private readonly Func<long> _tickCount;
     private long _generation;
+    private long _captureStartedAt = -1;
+    private string? _captureRecordingId;
+    private bool _confirmationPending;
     private volatile bool _disposed;
 
     public WindowsFocusCaptureGuard() : this(new NativeFocusCaptureEvents()) { }
 
     public long Generation => Interlocked.Read(ref _generation);
 
-    internal WindowsFocusCaptureGuard(IFocusCaptureEvents events)
+    internal WindowsFocusCaptureGuard(IFocusCaptureEvents events, Func<long>? tickCount = null)
     {
         _events = events;
+        _tickCount = tickCount ?? (() => Environment.TickCount64);
         _events.Changed += OnChanged;
     }
 
     public Func<bool> BeginCapture()
     {
         var recordingId = DiagnosticTrace.CurrentRecordingId;
+        // WinEvent callbacks are queued on this UI thread. Compare their native
+        // occurrence time with this boundary, not the time the queue is drained.
+        Interlocked.Exchange(ref _captureStartedAt, _tickCount());
+        _captureRecordingId = recordingId;
+        _confirmationPending = true;
         var generation = Interlocked.Read(ref _generation);
         var focus = _events.ReadFocus();
         var valid = !_disposed && _events.Available && focus.Foreground != IntPtr.Zero
             && focus.Focused != IntPtr.Zero && generation == Interlocked.Read(ref _generation);
-        DiagnosticTrace.Write("focus_guard.begin", new { valid, generation,
+        DiagnosticTrace.Write("focus_guard.begin", new { valid, generation, captureStartedAt = _captureStartedAt,
             hasForeground = focus.Foreground != IntPtr.Zero, hasFocusedControl = focus.Focused != IntPtr.Zero,
             targetProcessId = focus.ProcessId, foregroundWindow = focus.Foreground.ToInt64(),
             focusedWindow = focus.Focused.ToInt64() }, recordingId: recordingId);
@@ -62,23 +72,38 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
                 focus.Foreground == current.Foreground && focus.Focused == current.Focused;
             var accepted = valid && !_disposed && generation == Interlocked.Read(ref _generation)
                 && SamePosition(_events.ReadFocus()) && generation == Interlocked.Read(ref _generation);
+            _confirmationPending = false;
             DiagnosticTrace.Write("focus_guard.confirm", new { accepted, valid, disposed = _disposed, initialGeneration = generation, currentGeneration = Interlocked.Read(ref _generation) }, recordingId: recordingId);
             return accepted;
         };
     }
 
-    private void OnChanged(uint eventType, IntPtr window, int objectId)
+    private void OnChanged(FocusCaptureEvent change)
     {
+        var (eventType, window, objectId, childId, timestamp) = change;
         if (_disposed) return;
-        if (eventType == ForegroundEvent)
-        {
-            Interlocked.Increment(ref _generation);
-            return;
-        }
         var selection = eventType is TextSelectionEvent or Ia2CaretEvent or Ia2SelectionEvent
             || eventType == LocationEvent && objectId == CaretObject;
-        if (eventType != FocusEvent && !selection) return;
-        if (_events.IsInFocusedHierarchy(window)) Interlocked.Increment(ref _generation);
+        if (eventType != ForegroundEvent
+            && (eventType != FocusEvent && !selection || !_events.IsInFocusedHierarchy(window))) return;
+
+        var deliveredAt = _tickCount();
+        var captureStartedAt = Interlocked.Read(ref _captureStartedAt);
+        // Native timestamps wrap every 2^32 ms. Resolve a recent event against
+        // the 64-bit delivery clock. Ambiguous/future timestamps remain changes.
+        var age = unchecked((uint)deliveredAt - timestamp);
+        var beforeCapture = captureStartedAt >= 0 && deliveredAt >= captureStartedAt
+            && age <= int.MaxValue && age > deliveredAt - captureStartedAt;
+        if (!beforeCapture) Interlocked.Increment(ref _generation);
+        // A cancelled/watchdog-expired session may never confirm. Do not keep
+        // attributing unrelated editor activity to that abandoned recording.
+        if (_confirmationPending && deliveredAt - captureStartedAt > 5000)
+            _confirmationPending = false;
+        if (_confirmationPending)
+            DiagnosticTrace.Write("focus_guard.event", new { eventType, window = window.ToInt64(),
+                objectId, childId, timestamp, deliveredAt, captureStartedAt,
+                ageMilliseconds = age, ignoredBeforeCapture = beforeCapture,
+                generation = Interlocked.Read(ref _generation) }, recordingId: _captureRecordingId);
     }
 
     public void Dispose()
@@ -93,12 +118,13 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
         private readonly WinEventCallback _callback;
         private readonly List<IntPtr> _hooks = [];
         private GCHandle _callbackRoot;
-        public event Action<uint, IntPtr, int>? Changed;
+        public event Action<FocusCaptureEvent>? Changed;
         public bool Available { get; }
 
         public NativeFocusCaptureEvents()
         {
-            _callback = (_, eventType, window, objectId, _, _, _) => Changed?.Invoke(eventType, window, objectId);
+            _callback = (_, eventType, window, objectId, childId, _, eventTime) =>
+                Changed?.Invoke(new(eventType, window, objectId, childId, eventTime));
             _callbackRoot = GCHandle.Alloc(_callback);
             foreach (var eventType in new[] { ForegroundEvent, FocusEvent, LocationEvent, TextSelectionEvent, Ia2CaretEvent, Ia2SelectionEvent })
             {
@@ -170,10 +196,13 @@ internal readonly record struct FocusCapturePosition(IntPtr Foreground, IntPtr F
     public uint ProcessId { get; init; }
 }
 
+internal readonly record struct FocusCaptureEvent(uint EventType, IntPtr Window, int ObjectId,
+    int ChildId, uint Timestamp);
+
 internal interface IFocusCaptureEvents : IDisposable
 {
     bool Available { get; }
-    event Action<uint, IntPtr, int>? Changed;
+    event Action<FocusCaptureEvent>? Changed;
     FocusCapturePosition ReadFocus();
     bool IsInFocusedHierarchy(IntPtr window);
 }

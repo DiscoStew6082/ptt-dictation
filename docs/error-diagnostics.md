@@ -16,6 +16,8 @@ For textbox incidents, inspect the first specific event rather than only the fin
 | Event/reason | Meaning |
 | --- | --- |
 | `target.surface_capabilities` / `inline.capture_result` | Whether Windows exposed a usable editable target at capture time. |
+| `focus_guard.event` | During pending capture, records the native event kind, object/child IDs, occurrence timestamp, delivery tick, age, and whether it predates capture. No textbox text is read. |
+| `target.legacy_capture_detail` | Explains MSAA fallback rejection: missing root/focus, cycle/depth limit, wrong process/role/state, changed identity/context, or provider exception type. |
 | `target.unavailable` | The captured UI Automation reference stopped working; this alone does not prove the visible textbox disappeared. |
 | `target.provider_operation_failed` | Names the exact failing native operation, such as `focus.original_element`, `capture.text_pattern`, or `snapshot.selection`, with exception type and HRESULT only. |
 | `target.provider_refresh_rejected` | Explains why refreshing the original element was refused, including lost focus or unavailable capabilities. |
@@ -33,6 +35,33 @@ Recognition and insertion are separate: a `qwen.final_completed` event followed 
 `recognition.preview_empty_warning` is also retained in the error index. It means at least two successful, non-cancelled preview responses were all empty or whitespace, no assembled preview contained text, and final recognition returned nonempty text. Failed previews, incomplete worker settlement, cancelled final recognition, empty final text, and insufficient preview samples do not trigger this comparison. The event contains counts, audio/processing durations, and final character count only. It changes no notifications, recognition, retries, insertion, or audio retention. It proves a preview/final discrepancy, not its acoustic or model cause.
 
 The [controlled empty-preview investigation](research/parakeet-empty-preview-2026-09-23.md) records the observed incident and the limits of replay evidence.
+
+## October 9 initial-capture investigation
+
+The running October 1 package recorded repeated initial-capture failures. Firefox
+exposed read-only Document or Window elements and its MSAA fallback was rejected.
+A ChatGPT attempt exposed a Pane without a text pattern, then its focus generation
+changed during the first recovery wait. Subsequent attempts exposed Edit elements
+immediately and completed insertion. A successful retry did not resolve the
+recurring failure, and the old metadata cannot identify the source of that change
+or the reason MSAA rejected the Firefox target.
+
+A reproducible guard defect was isolated: out-of-context Windows accessibility
+events can be delivered after capture even when they were generated before it.
+The guard discarded the native event timestamp and treated delivery as a new
+change. Regression tests reproduced the resulting false rejection. The guard now
+compares event occurrence against capture start, resolving the native 32-bit tick
+against the 64-bit delivery tick. Only unambiguously older events are ignored;
+same-tick, later, future/ambiguous events and changed native focus remain rejected.
+Both worker recovery and deferred UI confirmation use the same generation.
+
+Code-path tests cover delayed delivery, timestamp wraparound, genuine focus and
+selection changes, switching away and back, container recovery, and deferred
+confirmation followed by paste. They do not establish that the historic incident
+was caused by a stale event or that all recurring browser failures are fixed.
+The added event and MSAA metadata are needed to distinguish any next failure.
+Direct Firefox interaction could not be exercised because Windows Computer Use
+access was denied; physical-hotkey acceptance remains a separate live check.
 
 ## September 23 investigation
 

@@ -156,6 +156,99 @@ public sealed class LegacyAccessibleTextTargetTests
         Assert.IsNull(Capture(root));
     }
 
+    [TestMethod]
+    public void CaptureDiagnosticsDistinguishMissingFocusProcessAndUnsafeField()
+    {
+        var cases = new (Node? Root, string Reason, string Phase)[]
+        {
+            (null, "root_unavailable", "resolve"),
+            (new Node { FocusValue = null }, "focus_unavailable", "resolve"),
+            (new Node { ProcessId = 99 }, "process_mismatch", "resolve"),
+            (new Node { RoleValue = 15 }, "role_not_text", "writable"),
+            (new Node { StateValue = null }, "state_unavailable", "writable"),
+            (new Node { StateValue = 0 }, "not_focused", "writable"),
+            (new Node { StateValue = 4 | 64 }, "forbidden_state", "writable")
+        };
+        foreach (var (root, reason, phase) in cases)
+        {
+            var diagnostics = new List<LegacyFocusDiagnostic>();
+            Assert.IsNull(LegacyAccessibleTextTarget.TryCapture(() => root, 7,
+                () => true, () => true, diagnostics.Add));
+            Assert.AreEqual(reason, diagnostics[^1].Reason);
+            Assert.AreEqual(phase, diagnostics[^1].Phase);
+        }
+    }
+
+    [TestMethod]
+    public void CaptureDiagnosticsRetainOnlyRoleStateProcessAndExceptionTypeMetadata()
+    {
+        var diagnostics = new List<LegacyFocusDiagnostic>();
+        Assert.IsNull(LegacyAccessibleTextTarget.TryCapture(() => new Node { StateValue = 68 }, 7,
+            () => true, () => true, diagnostics.Add));
+        Assert.AreEqual(new LegacyFocusDiagnostic("writable", "forbidden_state",
+            ProcessId: 7, Role: 42, State: 68), diagnostics[^1]);
+
+        diagnostics.Clear();
+        Assert.IsNull(LegacyAccessibleTextTarget.TryCapture(() => new Node { ThrowState = true }, 7,
+            () => true, () => true, diagnostics.Add));
+        Assert.AreEqual(new LegacyFocusDiagnostic("capture", "provider_exception",
+            ExceptionType: typeof(COMException).FullName), diagnostics[^1]);
+    }
+
+    [TestMethod]
+    public void CaptureDiagnosticsDistinguishCyclesAndDepthLimit()
+    {
+        var root = new Node();
+        root.FocusValue = root;
+        var diagnostics = new List<LegacyFocusDiagnostic>();
+        Assert.IsNull(LegacyAccessibleTextTarget.TryCapture(() => root, 7,
+            () => true, () => true, diagnostics.Add));
+        Assert.AreEqual("focus_cycle", diagnostics[^1].Reason);
+        Assert.AreEqual(1, diagnostics[^1].Depth);
+
+        root = new Node();
+        for (var depth = 0; depth < 16; depth++) root = new Node { FocusValue = root };
+        diagnostics.Clear();
+        Assert.IsNull(LegacyAccessibleTextTarget.TryCapture(() => root, 7,
+            () => true, () => true, diagnostics.Add));
+        Assert.AreEqual("depth_exhausted", diagnostics[^1].Reason);
+        Assert.AreEqual(16, diagnostics[^1].Depth);
+    }
+
+    [TestMethod]
+    public void CaptureDiagnosticsIdentifyContextChangesAtTheirValidationBoundary()
+    {
+        foreach (var failAt in new[] { 1, 2, 3 })
+        {
+            var root = new Node();
+            var checks = 0;
+            var diagnostics = new List<LegacyFocusDiagnostic>();
+            Assert.IsNull(LegacyAccessibleTextTarget.TryCapture(() => root, 7,
+                () => ++checks != failAt, () => true, diagnostics.Add));
+            Assert.AreEqual("capture_changed", diagnostics[^1].Reason);
+            Assert.AreEqual(failAt switch { 1 => "begin", 2 => "resolved", _ => "confirmed" }, diagnostics[^1].Phase);
+        }
+
+        var finalDiagnostics = new List<LegacyFocusDiagnostic>();
+        Assert.IsNull(LegacyAccessibleTextTarget.TryCapture(() => new Node(), 7,
+            () => true, () => true, finalDiagnostics.Add));
+        Assert.AreEqual(new LegacyFocusDiagnostic("confirm", "identity_changed"), finalDiagnostics[^1]);
+    }
+
+    [TestMethod]
+    public void SuccessfulCaptureDiagnosticsDescribeFocusedIdentityWithoutChangingFallback()
+    {
+        var root = new Node { FocusValue = new Node() };
+        var diagnostics = new List<LegacyFocusDiagnostic>();
+        var target = LegacyAccessibleTextTarget.TryCapture(() => root, 7,
+            () => true, () => true, diagnostics.Add);
+        Assert.IsNotNull(target);
+        Assert.IsTrue(target.CanPasteFallback);
+        Assert.IsFalse(target.SupportsReplacement);
+        Assert.AreEqual(new LegacyFocusDiagnostic("confirmed", "accepted"), diagnostics[^1]);
+        Assert.IsTrue(diagnostics.Any(item => item.Reason == "self" && item.Depth == 1));
+    }
+
     private static IWindowsTextTarget? Capture(Node root)
         => LegacyAccessibleTextTarget.TryCapture(() => root, 7, () => true, () => true);
 
