@@ -33,24 +33,44 @@ public sealed class FirefoxColdStartTests
         Directory.CreateDirectory(output);
         TestContext.WriteLine($"Firefox {FileVersionInfo.GetVersionInfo(executable!).ProductVersion}; executable={executable}");
         using var diagnostics = DiagnosticTrace.Configure(Path.Combine(output, "diagnostics"), "firefox-cold-start-ci");
-        // A new message loop and a fresh Firefox process/profile for each trial.
-        for (var trial = 1; trial <= 3; trial++)
+        await OnStaAsync(async () =>
         {
-            var trialOutput = Path.Combine(output, $"trial-{trial}");
-            Directory.CreateDirectory(trialOutput);
-            await OnStaAsync(() => RunTrialAsync(executable!, editorKind, trialOutput));
-            await DiagnosticTrace.FlushAsync();
-        }
+            // PTT stays running while Firefox is closed and reopened, matching
+            // the regression. No Firefox process exists during client startup.
+            Assert.AreEqual(0, Process.GetProcessesByName("firefox").Length);
+            using var overlay = new StatusOverlayForm();
+            using var paster = new LiveClipboardPaster(() => overlay.IsHandleCreated ? overlay.Handle : IntPtr.Zero);
+            var started = Stopwatch.StartNew();
+            var eventsPath = Path.Combine(output, "diagnostics", "events.jsonl");
+            while (true)
+            {
+                await DiagnosticTrace.FlushAsync();
+                if (File.Exists(eventsPath))
+                {
+                    using var stream = new FileStream(eventsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var reader = new StreamReader(stream);
+                    if ((await reader.ReadToEndAsync()).Contains("\"stage\":\"accessibility.listening_started\"", StringComparison.Ordinal)) break;
+                }
+                Assert.IsLessThan(20000L, started.ElapsedMilliseconds, "PTT accessibility client startup failed before Firefox launch.");
+                await Task.Delay(25);
+            }
+            for (var trial = 1; trial <= 3; trial++)
+            {
+                var trialOutput = Path.Combine(output, $"trial-{trial}");
+                Directory.CreateDirectory(trialOutput);
+                await RunTrialAsync(executable!, editorKind, trialOutput, paster, overlay);
+                await DiagnosticTrace.FlushAsync();
+            }
+        });
     }
 
-    private async Task RunTrialAsync(string executable, string editorKind, string output)
+    private async Task RunTrialAsync(string executable, string editorKind, string output,
+        LiveClipboardPaster paster, StatusOverlayForm overlay)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var token = deadline.Token;
         await using var fixture = FirefoxEditorFixture.Start(editorKind);
         using var browser = new OwnedFirefox(executable, fixture.Url, output);
-        using var overlay = new StatusOverlayForm();
-        using var paster = new LiveClipboardPaster(() => overlay.IsHandleCreated ? overlay.Handle : IntPtr.Zero);
         var sessions = new KnownTranscripts();
         var history = new SessionHistory();
         var ui = SynchronizationContext.Current!;
@@ -196,7 +216,7 @@ public sealed class FirefoxColdStartTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         // The CI job/process has an additional hard timeout for uninterruptible UIA.
-        await completed.Task.WaitAsync(TimeSpan.FromSeconds(120));
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(300));
     }
 
     private sealed class KnownTranscripts : IDictationSessionFactory

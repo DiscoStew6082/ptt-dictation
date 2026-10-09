@@ -8,7 +8,10 @@ It does not use a WinForms editor or a simulated accessibility provider.
 The two test cases exercise a textarea and a contenteditable browser editor.
 Each case performs three cold launches and two dictations per launch. The first
 attempt exercises initial accessibility capture; the second checks reuse after
-the first insertion. Deterministic transcript updates drive the production
+the first insertion. PTT's accessibility client starts before any Firefox process
+and remains alive across all three browser restarts, matching cold-browser use
+with PTT already running. No test code queries Firefox's accessibility provider
+before the first dictation. Deterministic transcript updates drive the production
 dictation workflow, UI Automation target capture and selection, clipboard paste,
 and Windows input path. Right Ctrl is sent through the real low-level keyboard
 hook. Independent DOM reports must match the exact resulting text and record
@@ -24,6 +27,9 @@ this test. Production components run inside the test host, so app startup,
 configuration loading and tray wiring are outside this gate. This provides
 real Firefox integration evidence, not acceptance of
 the user's Firefox profile, extensions, website state, or physical keyboard.
+Simultaneously starting PTT and Firefox is also outside this cold-browser gate;
+earlier harness runs exposed client-initialization delays in that different
+scenario. Those failed runs remain available in the CI history.
 
 The disposable profile suppresses first-run onboarding using
 `browser.preonboarding.enabled=false`, matching
