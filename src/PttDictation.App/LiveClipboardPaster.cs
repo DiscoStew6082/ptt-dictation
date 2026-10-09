@@ -13,6 +13,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private readonly Action<Action> _confirmCapture;
     private readonly Func<long> _tickCount;
     private readonly WindowsFocusCaptureGuard? _focusGuard;
+    private readonly WindowsAccessibilityWarmup? _accessibilityWarmup;
     private readonly Action<string, Func<bool>> _paste;
     private readonly Func<bool> _canPaste;
     private readonly System.Windows.Forms.Timer? _timer;
@@ -40,6 +41,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         {
             var focusGuard = new WindowsFocusCaptureGuard();
             _focusGuard = focusGuard;
+            _accessibilityWarmup = new WindowsAccessibilityWarmup(() => Volatile.Read(ref _session) is null);
+            focusGuard.FocusChanged += _accessibilityWarmup.Request;
             _beginCaptureGuard = focusGuard.BeginCapture;
             // Resolve only the original focused identity before returning from
             // the hotkey. All document/provider reads then happen on the worker.
@@ -337,6 +340,11 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
 
     public void Dispose()
     {
+        if (_accessibilityWarmup is not null)
+        {
+            if (_focusGuard is not null) _focusGuard.FocusChanged -= _accessibilityWarmup.Request;
+            _accessibilityWarmup.Dispose();
+        }
         EndSession();
         _timer?.Dispose();
         _automation?.Dispose();

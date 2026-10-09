@@ -75,6 +75,47 @@ evidence that caret browsing caused the failure. Likewise, use host-live log rea
 when reconciling user actions; a stale sandbox file view initially omitted the
 newest failure. Do not diagnose a missing hotkey from that snapshot.
 
+The subsequent Chrome/Bing reproduction at 19:37:32 UTC captured a Pane without
+TextPattern. Native caret and focus events for the same child arrived 63 ms after
+capture began, so recovery and deferred confirmation correctly rejected the
+changed generation. At 19:38:43 UTC, a physical-hotkey attempt captured the editor
+and completed insertion, without another app update. Browser-tool inspection
+between those attempts had accessed the accessibility tree. This supports cold
+accessibility initialization as a cause, but does not prove the Firefox case has
+the same cause or rule out a real focus change in the earlier Chrome attempt.
+
+PTT now maintains a UIA focus subscription on a dedicated MTA worker and requests
+the foreground browser's focused TextPattern while idle, before recording. Native
+foreground/focus changes and UIA focus changes enqueue coalesced warmup requests;
+a one-second fallback covers cold tabs without notifications, and coarse providers
+get at most three reads per cycle. Reads never inspect textbox text or selection,
+change focus, or supply a cached target to insertion. The existing hotkey capture,
+focus-generation, selection, and clipboard checks remain authoritative. Warmup
+does not wait on the UI/hotkey thread and stops starting reads during dictation;
+an in-flight provider call can still overlap startup and remains subject to the
+unchanged guards. An immediate hotkey can still precede warmup on a cold browser.
+
+`accessibility.listening_started` confirms the subscription; the deduplicated
+`accessibility.browser_warmed` records control type, pattern availability, and
+process ID, without text. `accessibility.warmup_failed` records operation and
+exception type. Subscription removal runs on its owning MTA without blocking Quit.
+
+The regression model reproduces a cold provider's caret/focus notifications before
+versus during capture. Warmup makes the former pass while genuine post-boundary
+changes still reject. Lifecycle tests cover disposal during blocked registration,
+coalescing, retry limits, active-session suppression, and recovery after a provider
+failure. These are code-path evidence; exact physical-hotkey browser acceptance is
+separate. Browser automation could inspect Bing but its simulated Right Ctrl did
+not reach PTT's native hook.
+
+Upstream rationale: Chromium's [fragment root](https://raw.githubusercontent.com/chromium/chromium/main/ui/accessibility/platform/ax_fragment_root_win.cc)
+signals a UIA client, while [TextPattern requests](https://raw.githubusercontent.com/chromium/chromium/main/ui/accessibility/platform/ax_platform_node_win.cc)
+activate web-text capabilities through [accessibility mode selection](https://raw.githubusercontent.com/chromium/chromium/main/content/browser/accessibility/browser_accessibility_state_impl.cc).
+Firefox's [UIA event bridge](https://raw.githubusercontent.com/mozilla-firefox/firefox/main/accessible/windows/uia/uiaRawElmProvider.cpp)
+checks whether UIA clients are listening. These current upstream sources explain
+the design, not the exact installed browser builds. Subscription threading follows
+[Microsoft's guidance](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading).
+
 ## September 23 investigation
 
 Three distinct sequences were present in the local trace; they should not be treated as one generic "textbox changed" failure:

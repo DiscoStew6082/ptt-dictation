@@ -27,6 +27,10 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
 
     public long Generation => Interlocked.Read(ref _generation);
 
+    // Subscribers may only enqueue work; never call an accessibility provider
+    // from this native-event callback on the UI thread.
+    internal event Action? FocusChanged;
+
     internal WindowsFocusCaptureGuard(IFocusCaptureEvents events, Func<long>? tickCount = null)
     {
         _events = events;
@@ -95,6 +99,7 @@ internal sealed class WindowsFocusCaptureGuard : IDisposable
         var beforeCapture = captureStartedAt >= 0 && deliveredAt >= captureStartedAt
             && age <= int.MaxValue && age > deliveredAt - captureStartedAt;
         if (!beforeCapture) Interlocked.Increment(ref _generation);
+        if (eventType is ForegroundEvent or FocusEvent) FocusChanged?.Invoke();
         // A cancelled/watchdog-expired session may never confirm. Do not keep
         // attributing unrelated editor activity to that abandoned recording.
         if (_confirmationPending && deliveredAt - captureStartedAt > 5000)
