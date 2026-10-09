@@ -1,4 +1,5 @@
 using PttDictation.Core;
+using System.Diagnostics;
 using System.Windows.Automation;
 
 namespace PttDictation.App;
@@ -48,6 +49,7 @@ internal static class TextProviderDiagnostics
 
     internal static T Observe<T>(string operation, Func<T> read)
     {
+        var started = Stopwatch.GetTimestamp();
         try
         {
             return read();
@@ -57,6 +59,12 @@ internal static class TextProviderDiagnostics
             DiagnosticTrace.Write("target.provider_operation_failed",
                 new { operation, exceptionType = error.GetType().FullName, error.HResult });
             throw;
+        }
+        finally
+        {
+            var elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            if (elapsedMs >= 250)
+                DiagnosticTrace.Write("target.provider_operation_slow", new { operation, elapsedMs });
         }
     }
 }

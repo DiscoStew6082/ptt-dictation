@@ -436,10 +436,16 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private T ReadOriginalSurface<T>(Func<T> read)
     {
         try { return read(); }
-        catch (ElementNotAvailableException) when (!_originalReferenceRefreshAttempted)
+        catch (Exception error) when (!_originalReferenceRefreshAttempted
+            && (error is ElementNotAvailableException
+                || error is COMException { HResult: unchecked((int)0x800401FD) }))
         {
             // Retry a read once, never selection or clipboard input. Do not
             // acquire a new focused element: even UIA runtime IDs can be reused.
+            // Firefox can disconnect a TextPattern range while applying a
+            // replacement (CO_E_OBJNOTCONNECTED), with the element still valid.
+            // Requery that original element; the caller still verifies the
+            // entire document partition before acknowledging or sending input.
             _originalReferenceRefreshAttempted = true;
             Trace("target.original_reference_refresh_requested");
             try
@@ -452,10 +458,10 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 }
                 Trace("target.original_reference_refresh_rejected");
             }
-            catch (Exception error) when (IsProviderFailure(error))
+            catch (Exception refreshError) when (IsProviderFailure(refreshError))
             {
                 Trace("target.original_reference_refresh_failed",
-                    new { exceptionType = error.GetType().FullName, error.HResult });
+                    new { exceptionType = refreshError.GetType().FullName, refreshError.HResult });
             }
             // Preserve the original unavailable-reference error if refresh or
             // its read fails. A secondary provider error must not mask it.

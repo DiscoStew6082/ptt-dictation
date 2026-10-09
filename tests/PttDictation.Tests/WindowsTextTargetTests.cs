@@ -429,15 +429,89 @@ public sealed class WindowsTextTargetTests
     }
 
     [TestMethod]
-    public void OriginalReferenceRefreshDoesNotDuplicatePendingWrite()
+    [DataRow(false)]
+    [DataRow(true)]
+    public void OriginalReferenceRefreshDoesNotDuplicatePendingWrite(bool disconnectedComRange)
     {
-        var surface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var surface = new FakeSurface("", "", "")
+        {
+            RefreshOriginalReference = true,
+            ReadFailure = disconnectedComRange
+                ? new System.Runtime.InteropServices.COMException("Disconnected Firefox range", unchecked((int)0x800401FD))
+                : new ElementNotAvailableException()
+        };
         var target = new WindowsTextTarget(surface);
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "final", surface.Paste));
         surface.ReadAvailable = false;
         Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "final", surface.Paste));
         Assert.AreEqual(1, surface.Pastes);
         Assert.AreEqual(1, surface.RefreshCalls);
+    }
+
+    [TestMethod]
+    public void DisconnectedRangeRefreshStillRejectsChangedSurroundings()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var surface = new FakeSurface("prefix ", "", " suffix")
+        {
+            RefreshOriginalReference = true,
+            ReadFailure = new System.Runtime.InteropServices.COMException("Disconnected range", unchecked((int)0x800401FD))
+        };
+        var target = new WindowsTextTarget(surface, () => now);
+        target.TryReplace("", "preview", surface.Paste);
+        surface.Suffix = " user edit";
+        surface.ReadAvailable = false;
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "preview", surface.Paste));
+        now += TimeSpan.FromSeconds(2);
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "preview", surface.Paste));
+        Assert.AreEqual(1, surface.RefreshCalls);
+        Assert.AreEqual(1, surface.Pastes);
+        Assert.AreEqual("prefix preview user edit", surface.Document);
+    }
+
+    [TestMethod]
+    public void OtherComFailuresNeverRefreshOrResendPendingPaste()
+    {
+        var surface = new FakeSurface("", "", "")
+        {
+            RefreshOriginalReference = true,
+            ReadFailure = new System.Runtime.InteropServices.COMException("Unexpected provider failure", unchecked((int)0x8000FFFF))
+        };
+        var target = new WindowsTextTarget(surface);
+        target.TryReplace("", "preview", surface.Paste);
+        surface.ReadAvailable = false;
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "preview", surface.Paste));
+        Assert.AreEqual(0, surface.RefreshCalls);
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void DisconnectedRangeRecoveryIsBoundedAndNeverRetriesPaste()
+    {
+        var surface = new FakeSurface("", "", "")
+        {
+            RefreshOriginalReference = true,
+            ReadFailure = new System.Runtime.InteropServices.COMException("Disconnected range", unchecked((int)0x800401FD))
+        };
+        var target = new WindowsTextTarget(surface);
+        target.TryReplace("", "preview", surface.Paste);
+        surface.ReadAvailable = false;
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "preview", surface.Paste));
+        surface.ReadAvailable = false;
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("preview", "final", surface.Paste));
+        Assert.AreEqual(1, surface.RefreshCalls);
+        Assert.AreEqual(1, surface.Pastes);
+
+        var otherSurface = new FakeSurface("", "", "") { RefreshOriginalReference = true };
+        var otherTarget = new WindowsTextTarget(otherSurface);
+        var calls = 0;
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, otherTarget.TryReplace("", "final", _ =>
+        {
+            calls++;
+            throw new System.Runtime.InteropServices.COMException("Ambiguous paste", unchecked((int)0x800401FD));
+        }));
+        Assert.AreEqual(1, calls);
+        Assert.AreEqual(0, otherSurface.RefreshCalls);
     }
 
     [TestMethod]
@@ -533,6 +607,7 @@ public sealed class WindowsTextTargetTests
         }
         public bool AutomationAvailable { get; set; } = true;
         public bool ReadAvailable { get; set; } = true;
+        public Exception ReadFailure { get; init; } = new ElementNotAvailableException();
         public bool SelectionAvailable { get; set; } = true;
         private bool _focused = true;
         public bool IsFocused
@@ -554,7 +629,7 @@ public sealed class WindowsTextTargetTests
         private (string Before, string Owned, string After)? _delayedSelection;
         public TextTargetSnapshot Read() => ReadAvailable
             ? new(Document, Prefix, Selection, Suffix)
-            : throw new ElementNotAvailableException();
+            : throw ReadFailure;
         public bool Select(string before, string owned, string after)
         {
             if (!SelectionAvailable) throw new ElementNotAvailableException();

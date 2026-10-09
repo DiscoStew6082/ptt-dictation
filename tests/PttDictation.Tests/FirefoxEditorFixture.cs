@@ -12,7 +12,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
         string UserAgent, double Timestamp, double? FirstFocusedAt, bool Ready,
         long TrustedInputEvents, long TrustedPasteEvents, double ClickX, double ClickY,
         double PixelRatio, long TrustedClicks, int SelectionRangeCount, string? SelectionAnchor,
-        int? SelectionOffset)
+        int? SelectionOffset, double? LastTrustedPasteAt, double? LastTrustedInputAt)
     {
         public DateTimeOffset ReceivedUtc { get; init; }
     }
@@ -205,6 +205,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             const editor = document.getElementById('editor');
             let sequence = 0, firstFocusedAt = null, sending = false, ready = false;
             let trustedInputEvents = 0, trustedPasteEvents = 0, trustedClicks = 0;
+            let lastTrustedPasteAt = null, lastTrustedInputAt = null;
             function observe() {
               const focused = document.activeElement === editor && document.hasFocus();
               if (focused && firstFocusedAt === null) firstFocusedAt = performance.now();
@@ -217,6 +218,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
                 focused, sequence: ++sequence, userAgent: navigator.userAgent,
                 timestamp: performance.now(), firstFocusedAt, ready,
                 trustedInputEvents, trustedPasteEvents,
+                lastTrustedPasteAt, lastTrustedInputAt,
                 clickX: window.mozInnerScreenX + rect.left + Math.min(24, rect.width / 2),
                 clickY: window.mozInnerScreenY + rect.top + Math.min(24, rect.height / 2),
                 pixelRatio: window.devicePixelRatio, trustedClicks,
@@ -237,11 +239,17 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             window.addEventListener('focus', focusEditor);
             window.addEventListener('blur', () => void report());
             editor.addEventListener('input', event => {
-              if (event.isTrusted) trustedInputEvents++;
+              if (event.isTrusted) {
+                trustedInputEvents++;
+                lastTrustedInputAt = performance.now();
+              }
               void report();
             });
             editor.addEventListener('paste', event => {
-              if (event.isTrusted) trustedPasteEvents++;
+              if (event.isTrusted) {
+                trustedPasteEvents++;
+                lastTrustedPasteAt = performance.now();
+              }
               void report();
             });
             editor.addEventListener('click', event => {
