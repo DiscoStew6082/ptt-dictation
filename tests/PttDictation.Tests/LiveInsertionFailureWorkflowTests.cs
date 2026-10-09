@@ -365,7 +365,9 @@ public sealed class LiveInsertionFailureWorkflowTests
         public bool IsFocused => Accessible ? true : throw new ElementNotAvailableException();
         public bool SupportsReplacement => true;
         public bool CanPasteFallback => true;
-        public TextTargetSnapshot Read() => new(Document, _prefix, _selection, "");
+        public TextTargetSnapshot Read() => Accessible
+            ? new(Document, _prefix, _selection, "")
+            : throw new ElementNotAvailableException();
         public bool Select(string prefix, string ownedText, string suffix)
         {
             if (Document != prefix + ownedText + suffix) return false;

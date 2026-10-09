@@ -28,6 +28,11 @@ write can restore the saved original; a newer user copy always takes precedence.
 No uncertain paste is resubmitted. Firefox's disconnected text-range error can
 refresh the pattern on the original captured element once per recording; all
 existing focus, text-partition, selection, and deadline checks still apply.
+Acknowledgement reads the original document without asking permission to paste
+again. Focus and held-modifier checks gate new writes, not readback of submitted
+input. Native paste handles caret visibility; an additional accessibility
+focus/scroll request is not part of acknowledgement, where it could block the
+browser from processing the paste being observed.
 
 The browser is cold at the process and profile level. This is not a reboot or a
 claim that the operating system file cache is empty. The test uses an isolated

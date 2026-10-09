@@ -19,6 +19,7 @@ internal interface IWindowsTextTarget
     bool CanPasteFallback { get; }
     bool IsPreparedSelectionCurrent { get; }
     bool HasAttemptedWrite { get; }
+    bool IsAwaitingWriteAcknowledgement => false;
     TextTargetUpdateResult TryReplace(string previousText, string replacementText, Action<string> paste);
 }
 
@@ -36,7 +37,6 @@ internal interface IWindowsTextSurface
     bool CanPasteFallback { get; }
     TextTargetSnapshot Read();
     bool Select(string prefix, string ownedText, string suffix);
-    void RevealCaret();
     // Refresh only the original provider reference; never adopt another editor.
     bool TryRefreshOriginalReference() => false;
     TextPatternRequeryResult RequerySelectionPattern() => TextPatternRequeryResult.NotSupported;
@@ -198,6 +198,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     public bool SupportsReplacement => _initial is not null;
     public bool CanPasteFallback => _surface.CanPasteFallback;
     public bool HasAttemptedWrite { get; private set; }
+    public bool IsAwaitingWriteAcknowledgement => _pendingText is not null;
     public bool IsPreparedSelectionCurrent
     {
         get
@@ -229,7 +230,10 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 
     public TextTargetUpdateResult TryReplace(string previousText, string replacementText, Action<string> paste)
     {
-        if (!IsFocused) return TextTargetUpdateResult.Unfocused;
+        // Observing an already-submitted write grants no permission for new
+        // input. A focus query here can block Firefox's queued paste processing.
+        // Read only the captured original document until that write is settled.
+        if (_pendingText is null && !IsFocused) return TextTargetUpdateResult.Unfocused;
         if (_initial is null) return TextTargetUpdateResult.Unsupported;
         if (_conflicted) { Trace("target.conflict", new { reason = "previous_conflict" }); return TextTargetUpdateResult.Conflict; }
         try
@@ -268,13 +272,6 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 _pendingText = null;
                 _preparedSelection = null;
                 Trace("target.write_acknowledged", new { ownedLength = _ownedText.Length });
-                try { _surface.RevealCaret(); }
-                catch (Exception ex) when (IsProviderFailure(ex))
-                {
-                    Trace("target.reveal_failed", error: ex);
-                    // Scrolling is presentation only. A provider without scrolling
-                    // must not turn an acknowledged insertion into a failed write.
-                }
                 // The caller still holds the last acknowledged text while a paste
                 // is pending. Acknowledge that update before accepting another one.
                 return TextTargetUpdateResult.Success;
@@ -740,13 +737,4 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
         => TextProviderDiagnostics.Observe("selection.request", () =>
             TextRangeSelector.Select(new AutomationTextRange(_pattern!.DocumentRange), prefix, ownedText, suffix, () => IsFocused));
 
-    public void RevealCaret()
-    {
-        if (!IsFocused) return;
-        var selected = _pattern!.GetSelection();
-        if (selected.Length != 1) return;
-        var caret = selected[0].Clone();
-        caret.MoveEndpointByRange(TextPatternRangeEndpoint.Start, caret, TextPatternRangeEndpoint.End);
-        caret.ScrollIntoView(alignToTop: false);
-    }
 }

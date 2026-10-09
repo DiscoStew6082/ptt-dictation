@@ -218,6 +218,27 @@ public sealed class ClipboardAcknowledgementTests
     private static ClipboardPaster Create(ClipboardBackend clipboard, RestoreQueue queue) =>
         new(clipboard, queue, new Foreground());
 
+    [TestMethod]
+    public void CancellationDuringAcknowledgementAbandonsClipboardAndStopsFurtherWrites()
+    {
+        var clipboard = new ClipboardBackend();
+        var queue = new RestoreQueue();
+        var target = new Target();
+        using var output = Live(target, Create(clipboard, queue));
+        output.CaptureTarget();
+        output.UpdatePreview("words");
+        output.Pump();
+        target.OnAcknowledgement = output.EndSession;
+        target.Acknowledged = true;
+        output.Pump();
+        queue.RunAll();
+        Assert.AreEqual("words", clipboard.Text);
+        Assert.AreEqual(0, clipboard.Restores);
+        Assert.AreEqual(1, clipboard.Sends);
+        output.Pump();
+        Assert.AreEqual(1, clipboard.Sends);
+    }
+
     private static LiveClipboardPaster Live(Target target, ClipboardPaster clipboard) =>
         new(() => target, clipboard.PasteToCurrentTarget,
             pasteAwaitingAcknowledgement: clipboard.PasteToCurrentTargetAwaitingAcknowledgement);
@@ -268,6 +289,7 @@ public sealed class ClipboardAcknowledgementTests
     private sealed class Target : IWindowsTextTarget
     {
         public bool Acknowledged;
+        public Action? OnAcknowledgement;
         public bool Conflict;
         public bool IsFocused => true;
         public bool SupportsReplacement { get; init; } = true;
@@ -277,7 +299,11 @@ public sealed class ClipboardAcknowledgementTests
         public TextTargetUpdateResult TryReplace(string previous, string replacement, Action<string> paste)
         {
             if (Conflict) return TextTargetUpdateResult.Conflict;
-            if (HasAttemptedWrite) return Acknowledged ? TextTargetUpdateResult.Success : TextTargetUpdateResult.Pending;
+            if (HasAttemptedWrite)
+            {
+                OnAcknowledgement?.Invoke();
+                return Acknowledged ? TextTargetUpdateResult.Success : TextTargetUpdateResult.Pending;
+            }
             HasAttemptedWrite = true;
             paste(replacement);
             return TextTargetUpdateResult.Pending;

@@ -201,10 +201,55 @@ public sealed class WindowsTextTargetTests
         surface.IsFocused = true;
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "held words", surface.Paste));
         surface.IsFocused = false;
-        Assert.AreEqual(TextTargetUpdateResult.Unfocused, target.TryReplace("", "held words", surface.Paste));
-        surface.IsFocused = true;
         Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "held words", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Unfocused, target.TryReplace("held words", "final words", surface.Paste));
+        surface.IsFocused = true;
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("held words", "final words", surface.Paste));
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("held words", "final words", surface.Paste));
+        Assert.AreEqual(2, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void PendingWriteAcknowledgementDoesNotProbeFocus()
+    {
+        var surface = new FakeSurface("before ", "", " after");
+        var target = new WindowsTextTarget(surface);
+        target.TryReplace("", "words", surface.Paste);
+        var reads = surface.FocusReads;
+        surface.IsFocused = false;
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(reads, surface.FocusReads);
         Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
+    public void LivePumpAcknowledgesSubmittedWriteWhileNewInputIsBlocked()
+    {
+        var surface = new FakeSurface("", "", "");
+        var target = new WindowsTextTarget(surface);
+        var canPaste = true;
+        using var output = new LiveClipboardPaster(() => target, (text, guard) =>
+        {
+            Assert.IsTrue(guard());
+            surface.Paste(text);
+        }, canPaste: () => canPaste);
+        output.CaptureTarget();
+        output.UpdatePreview("first");
+        output.Pump();
+        canPaste = false;
+        surface.IsFocused = false;
+        var reads = surface.Reads;
+        output.UpdatePreview("second");
+        output.Pump();
+        Assert.IsGreaterThan(reads, surface.Reads, "Observe the original write even while input is blocked.");
+        Assert.AreEqual(1, surface.Pastes);
+        output.Pump();
+        Assert.AreEqual(1, surface.Pastes, "A new write must still require original focus.");
+        surface.IsFocused = true;
+        canPaste = true;
+        output.Pump();
+        Assert.AreEqual("second", surface.Document, "First pump after focus returns must submit the revision; prior paste was already acknowledged.");
+        Assert.AreEqual(2, surface.Pastes);
     }
 
     [TestMethod]
@@ -610,9 +655,11 @@ public sealed class WindowsTextTargetTests
         public Exception ReadFailure { get; init; } = new ElementNotAvailableException();
         public bool SelectionAvailable { get; set; } = true;
         private bool _focused = true;
+        public int FocusReads { get; private set; }
+        public int Reads { get; private set; }
         public bool IsFocused
         {
-            get => AutomationAvailable ? _focused : throw new ElementNotAvailableException();
+            get { FocusReads++; return AutomationAvailable ? _focused : throw new ElementNotAvailableException(); }
             set => _focused = value;
         }
         public bool SupportsReplacement { get; set; } = true;
@@ -627,9 +674,11 @@ public sealed class WindowsTextTargetTests
         public int SelectCalls { get; private set; }
         private string? _delayed;
         private (string Before, string Owned, string After)? _delayedSelection;
-        public TextTargetSnapshot Read() => ReadAvailable
-            ? new(Document, Prefix, Selection, Suffix)
-            : throw ReadFailure;
+        public TextTargetSnapshot Read()
+        {
+            Reads++;
+            return ReadAvailable ? new(Document, Prefix, Selection, Suffix) : throw ReadFailure;
+        }
         public bool Select(string before, string owned, string after)
         {
             if (!SelectionAvailable) throw new ElementNotAvailableException();
@@ -670,6 +719,5 @@ public sealed class WindowsTextTargetTests
             Prefix += text;
             Selection = "";
         }
-        public void RevealCaret() { }
     }
 }

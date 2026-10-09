@@ -271,7 +271,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                 return;
             }
             var target = session.Target!;
-            if (!target.IsFocused)
+            var awaitingWrite = target.IsAwaitingWriteAcknowledgement;
+            if (!awaitingWrite && !target.IsFocused)
             {
                 if (session.Finishing && _tickCount() - session.FinishingSince >= FinalFocusWaitMilliseconds)
                     throw new InvalidOperationException("The original textbox did not regain focus after dictation stopped.");
@@ -286,7 +287,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             bool finishing;
             lock (session) { desired = session.Desired; finishing = session.Finishing; }
             SetPresentation(!session.Fallback, null);
-            if (!_canPaste()) return;
+            if (!awaitingWrite && !_canPaste()) return;
             if (session.Fallback)
             {
                 if (!finishing) return;
@@ -299,6 +300,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             if (desired.Length == 0) return;
             lock (session) session.InFlight ??= desired;
             var result = target.TryReplace(session.Acknowledged, session.InFlight, text => Paste(session, text));
+            if (!IsCurrent(session)) return;
             Trace(session, "inline.replace_result", new { result = result.ToString(), acknowledgedLength = session.Acknowledged.Length, requestedLength = session.InFlight.Length, finishing });
             switch (result)
             {
