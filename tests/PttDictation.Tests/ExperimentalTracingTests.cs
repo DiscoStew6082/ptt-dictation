@@ -134,13 +134,17 @@ public sealed class ExperimentalTracingTests
         var conflict = target.TryReplace("spoken words", "revised words", _ => Assert.Fail("Conflicting text must not paste."));
         var stale = new WindowsTextTarget(new Surface(), () => time);
         stale.TryReplace("", "unacknowledged", _ => { });
+        var submittedAt = time;
         time += TimeSpan.FromSeconds(3);
+        var delayed = stale.TryReplace("", "unacknowledged", _ => Assert.Fail("Waiting must not paste again."));
+        time = submittedAt + WindowsTextTarget.WriteAcknowledgementTimeout;
         var timeout = stale.TryReplace("", "unacknowledged", _ => Assert.Fail("Timeout must not paste again."));
         Assert.AreEqual(TextTargetUpdateResult.Pending, pending);
         Assert.AreEqual(TextTargetUpdateResult.Success, success);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, conflict);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, delayed);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, timeout);
-        return [pending, success, conflict, timeout];
+        return [pending, success, conflict, delayed, timeout];
     }
 
     private static async Task<string> RunInsertionFailureAsync()
