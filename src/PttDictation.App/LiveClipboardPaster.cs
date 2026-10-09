@@ -10,7 +10,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     private const long FinalFocusWaitMilliseconds = 5000;
     internal const long InitialCaptureTimeoutMilliseconds = 5000;
     internal const long SlowOperationMilliseconds = 5000;
-    internal const long ReadyOperationTimeoutMilliseconds = 15000;
+    internal const long ReadyOperationTimeoutMilliseconds = WindowsTextTarget.ResponseTimeoutMilliseconds;
     internal const string SlowProviderReason = "Waiting for textbox to respond.";
     private readonly Func<Func<IWindowsTextTarget>> _prepareCapture;
     private readonly Func<Func<bool>> _beginCaptureGuard;

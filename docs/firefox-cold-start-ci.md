@@ -33,9 +33,22 @@ again. Focus and held-modifier checks gate new writes, not readback of submitted
 input. Native paste handles caret visibility; an additional accessibility
 focus/scroll request is not part of acknowledgement, where it could block the
 browser from processing the paste being observed.
-The two-second write-acknowledgement budget starts when paste submission returns,
-after clipboard preparation and target revalidation. Subsequent polls do not
-reset it; the separate preparation/worker deadlines still bound provider stalls.
+Passive selection and write acknowledgement allow fifteen seconds for the
+provider to respond. The write budget starts when paste submission returns,
+after clipboard preparation and target revalidation. Polls never reset either
+phase's deadline. Active selection recovery and unsent clipboard-read retries
+retain their two-second limits. Exact document and selection checks remain
+mandatory, and uncertain paste input is never resent.
+
+Native stacks from the isolated runner showed Firefox's main thread blocked in
+`StartupCache::GetBuffer` while a background `StartupCache::WriteToDisk` held the
+same mutex during disk I/O. Accessibility snapshots could remain stale briefly
+after that pause ended. An already captured target now shows a nonactivating
+waiting status after a single operation blocks for five seconds; recording and
+cancellation remain responsive. A fifteen-second operation ceiling is checked
+by the timer and again before writing or acknowledging a late result. Initial
+capture/preparation and focus-return limits remain five seconds. These are
+separate phase limits, not a total dictation deadline.
 
 UI Automation identity capture and target validation run on the serialized,
 windowless MTA worker, following

@@ -143,7 +143,7 @@ public sealed class WindowsTextTargetTests
         surface.Prefix = prefix + (selection.Length == 0 ? "first words" : "");
         surface.Selection = selection;
         surface.Suffix = suffix;
-        now += TimeSpan.FromSeconds(3);
+        now += WindowsTextTarget.WriteAcknowledgementTimeout;
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "first words", surface.Paste));
         Assert.AreEqual(1, surface.Pastes);
     }
@@ -155,7 +155,7 @@ public sealed class WindowsTextTargetTests
         var target = new WindowsTextTarget(surface, () => now);
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "first words", surface.Paste));
         Assert.AreEqual("first words", surface.Document);
-        now += TimeSpan.FromSeconds(3);
+        now += WindowsTextTarget.WriteAcknowledgementTimeout;
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "first words", surface.Paste));
         Assert.AreEqual(1, surface.Pastes);
     }
@@ -171,7 +171,7 @@ public sealed class WindowsTextTargetTests
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("first words", "revised words", surface.Paste));
         surface.Prefix = "revised words";
         surface.Suffix = "";
-        now += TimeSpan.FromSeconds(3);
+        now += WindowsTextTarget.WriteAcknowledgementTimeout;
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("first words", "revised words", surface.Paste));
         Assert.AreEqual(2, surface.Pastes);
     }
@@ -242,6 +242,29 @@ public sealed class WindowsTextTargetTests
     }
 
     [TestMethod]
+    public void BrowserPasteCanCatchUpAfterNativePauseWithoutResubmission()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var submitted = now;
+        var surface = new FakeSurface("", "", "") { DelayPaste = true };
+        var target = new WindowsTextTarget(surface, () => now);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
+        now = submitted.AddMilliseconds(150);
+        surface.AfterSnapshotRead = () =>
+        {
+            now = submitted.AddMilliseconds(2600);
+            surface.AfterSnapshotRead = null;
+        };
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
+        now = submitted.AddMilliseconds(2650);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
+        now = submitted.AddMilliseconds(2800);
+        surface.ApplyDelayedPaste();
+        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(1, surface.Pastes);
+    }
+
+    [TestMethod]
     public void SlowSubmissionDoesNotExtendThePostSubmissionAcknowledgementDeadline()
     {
         var now = DateTimeOffset.UtcNow;
@@ -252,7 +275,7 @@ public sealed class WindowsTextTargetTests
             now += TimeSpan.FromMilliseconds(3500);
             surface.Paste(text);
         });
-        now += TimeSpan.FromMilliseconds(1999);
+        now += WindowsTextTarget.WriteAcknowledgementTimeout - TimeSpan.FromMilliseconds(1);
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
         now += TimeSpan.FromMilliseconds(1);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
@@ -262,45 +285,29 @@ public sealed class WindowsTextTargetTests
     [TestMethod]
     [DataRow(true)]
     [DataRow(false)]
-    public void SlowPreDeadlineSnapshotRequiresOnePostDeadlineObservation(bool pasteAppears)
+    public void StaleWriteAcknowledgementExpiresAtFixedDeadlineDespitePolling(bool readCrossesDeadline)
     {
         var now = DateTimeOffset.UtcNow;
+        var submitted = now;
         var surface = new FakeSurface("", "", "") { DelayPaste = true };
         var target = new WindowsTextTarget(surface, () => now);
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
-        now += TimeSpan.FromMilliseconds(150);
-        surface.AfterSnapshotRead = () =>
+        foreach (var seconds in new[] { 3, 8, 14 })
         {
-            // The provider captured old text before waiting across the deadline.
-            // Its eventual return is not a fresh observation of the editor.
-            now += TimeSpan.FromMilliseconds(1903);
-            if (pasteAppears) surface.ApplyDelayedPaste();
-            surface.AfterSnapshotRead = null;
-        };
-        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
-        Assert.AreEqual(1, surface.Pastes);
-        var reads = surface.Reads;
-        Assert.AreEqual(pasteAppears ? TextTargetUpdateResult.Success : TextTargetUpdateResult.Conflict,
-            target.TryReplace("", "words", surface.Paste));
-        Assert.AreEqual(reads + 1, surface.Reads);
-        Assert.AreEqual(1, surface.Pastes, "An acknowledgement poll must never resubmit input.");
-        if (!pasteAppears)
-        {
-            Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
-            Assert.AreEqual(reads + 1, surface.Reads, "A post-deadline mismatch is terminal.");
+            now = submitted.AddSeconds(seconds);
+            Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", surface.Paste));
         }
-    }
-
-    [TestMethod]
-    public void FirstStaleObservationAtExactAcknowledgementDeadlineIsTerminal()
-    {
-        var now = DateTimeOffset.UtcNow;
-        var surface = new FakeSurface("", "", "") { DelayPaste = true };
-        var target = new WindowsTextTarget(surface, () => now);
-        target.TryReplace("", "words", surface.Paste);
-        now += TimeSpan.FromSeconds(2);
+        now = submitted + WindowsTextTarget.WriteAcknowledgementTimeout;
+        if (readCrossesDeadline)
+        {
+            now -= TimeSpan.FromMilliseconds(1);
+            surface.AfterSnapshotRead = () => now += TimeSpan.FromMilliseconds(1);
+        }
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
         Assert.AreEqual(1, surface.Pastes);
+        var reads = surface.Reads;
+        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
+        Assert.AreEqual(reads, surface.Reads, "A timed-out write is terminal, not another polling budget.");
     }
 
     [TestMethod]
@@ -404,7 +411,7 @@ public sealed class WindowsTextTargetTests
         target.TryReplace("", "first words", surface.Paste);
         target.TryReplace("", "first words", surface.Paste);
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("first words", "revised words", surface.Paste));
-        now += TimeSpan.FromSeconds(3);
+        now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("first words", "revised words", surface.Paste));
         Assert.AreEqual(1, surface.Pastes);
     }
@@ -444,7 +451,7 @@ public sealed class WindowsTextTargetTests
         var surface = new FakeSurface("", "", "") { DelayPaste = true };
         var target = new WindowsTextTarget(surface, () => now);
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "speech", surface.Paste));
-        now += TimeSpan.FromSeconds(3);
+        now += WindowsTextTarget.WriteAcknowledgementTimeout;
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "speech", surface.Paste));
         Assert.IsTrue(target.HasAttemptedWrite);
         Assert.AreEqual(1, surface.Pastes);
@@ -588,7 +595,7 @@ public sealed class WindowsTextTargetTests
         surface.Suffix = " user edit";
         surface.ReadAvailable = false;
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "preview", surface.Paste));
-        now += TimeSpan.FromSeconds(2);
+        now += WindowsTextTarget.WriteAcknowledgementTimeout;
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "preview", surface.Paste));
         Assert.AreEqual(1, surface.RefreshCalls);
         Assert.AreEqual(1, surface.Pastes);
@@ -707,7 +714,7 @@ public sealed class WindowsTextTargetTests
         now += TimeSpan.FromMilliseconds(1900);
         surface.ReadAvailable = false;
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("preview", "final", surface.Paste));
-        now += TimeSpan.FromMilliseconds(101);
+        now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds - 1900);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("preview", "final", surface.Paste));
         Assert.AreEqual(1, surface.SelectCalls);
         Assert.AreEqual(1, surface.Pastes);

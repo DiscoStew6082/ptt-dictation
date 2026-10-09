@@ -6,6 +6,23 @@ namespace PttDictation.Tests;
 public sealed class SelectionRequestRetryTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void PassiveSelectionCatchUpAfterRetryWindowNeverResends(bool changedDocument)
+    {
+        var run = new Run();
+        Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
+        run.Now += TimeSpan.FromMilliseconds(2600);
+        Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
+        Assert.AreEqual(1, run.Surface.Selects, "The longer passive wait must not extend active Select retries.");
+        run.Surface.Prefix = changedDocument ? "user edit " : "prior text ";
+        run.Surface.Selection = "preview";
+        Assert.AreEqual(changedDocument ? TextTargetUpdateResult.Conflict : TextTargetUpdateResult.Pending, run.Replace());
+        Assert.AreEqual(changedDocument ? 1 : 2, run.Surface.Pastes);
+        Assert.AreEqual(1, run.Surface.Selects);
+    }
+
+    [TestMethod]
     public void LateFirstAcknowledgementOnPreRetryReadNeedsNoSecondSelect()
     {
         var run = new Run();
@@ -29,7 +46,7 @@ public sealed class SelectionRequestRetryTests
         run.Replace();
         run.Now += TimeSpan.FromMilliseconds(250);
         run.Replace();
-        run.Now += TimeSpan.FromSeconds(2);
+        run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds);
         run.Surface.Prefix = "prior text ";
         run.Surface.Selection = "preview";
         Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
@@ -47,7 +64,7 @@ public sealed class SelectionRequestRetryTests
         run.Surface.OnRead = () =>
         {
             if (++reads != 2) return;
-            run.Now += TimeSpan.FromSeconds(2);
+            run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds);
             run.Surface.Prefix = "prior text ";
             run.Surface.Selection = "preview";
         };
@@ -106,7 +123,7 @@ public sealed class SelectionRequestRetryTests
         Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
         run.Now += TimeSpan.FromMilliseconds(250);
         Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
-        run.Now += TimeSpan.FromMilliseconds(1750);
+        run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds - 250);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
         Assert.AreEqual(2, run.Surface.Selects);
         Assert.AreEqual(1, run.Surface.Pastes);
@@ -145,7 +162,7 @@ public sealed class SelectionRequestRetryTests
         var run = new Run();
         run.Replace();
         run.Now += TimeSpan.FromMilliseconds(250);
-        run.Surface.OnResend = () => run.Now += TimeSpan.FromSeconds(2);
+        run.Surface.OnResend = () => run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
         Assert.AreEqual(2, run.Surface.Selects);
         Assert.AreEqual(1, run.Surface.Pastes);
@@ -159,7 +176,7 @@ public sealed class SelectionRequestRetryTests
         run.Replace();
         run.Now += TimeSpan.FromMilliseconds(250);
         run.Replace();
-        run.Now += TimeSpan.FromSeconds(2);
+        run.Now += WindowsTextTarget.WriteAcknowledgementTimeout;
         Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
         Assert.AreEqual(2, run.Surface.Pastes);
         Assert.AreEqual(2, run.Surface.Selects);

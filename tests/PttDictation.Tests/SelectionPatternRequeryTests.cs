@@ -7,6 +7,24 @@ namespace PttDictation.Tests;
 public sealed class SelectionPatternRequeryTests
 {
     [TestMethod]
+    public void SlowInitialSelectionObservationWaitsWithoutLatePatternRequery()
+    {
+        var run = new Harness();
+        run.Surface.AfterSelect = () => run.Surface.AfterRead = () =>
+        {
+            run.Now += TimeSpan.FromMilliseconds(2600);
+            run.Surface.AfterRead = null;
+        };
+        Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
+        Assert.AreEqual(0, run.Surface.Requeries);
+        run.Surface.AcknowledgeSelection();
+        Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
+        Assert.AreEqual(0, run.Surface.Requeries);
+        Assert.AreEqual(2, run.Surface.Pastes);
+        Assert.AreEqual(2, run.Surface.Selects);
+    }
+
+    [TestMethod]
     public void RequeriedPatternAcknowledgesExistingSelectionWithoutSelectingAgain()
     {
         var run = new Harness();
@@ -28,7 +46,7 @@ public sealed class SelectionPatternRequeryTests
         Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
         run.Now += TimeSpan.FromMilliseconds(1900);
         Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
-        run.Now += TimeSpan.FromMilliseconds(100);
+        run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds - 1900);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
         Assert.AreEqual(1, run.Surface.Requeries);
         Assert.AreEqual(2, run.Surface.Selects);
@@ -41,7 +59,7 @@ public sealed class SelectionPatternRequeryTests
         var run = new Harness();
         // Selection time starts after Select returns. Advance the clock during
         // its following Read to model a slow provider observation instead.
-        run.Surface.AfterSelect = () => run.Surface.AfterRead = () => run.Now += TimeSpan.FromSeconds(2);
+        run.Surface.AfterSelect = () => run.Surface.AfterRead = () => run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
         Assert.AreEqual(0, run.Surface.Requeries);
         Assert.AreEqual(1, run.Surface.Pastes);
@@ -53,7 +71,7 @@ public sealed class SelectionPatternRequeryTests
         var run = new Harness();
         run.Surface.Requery = () =>
         {
-            run.Now += TimeSpan.FromSeconds(2);
+            run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds);
             run.Surface.AcknowledgeSelection();
             return true;
         };
@@ -139,7 +157,7 @@ public sealed class SelectionPatternRequeryTests
         }
         else
         {
-            run.Now += TimeSpan.FromMilliseconds(100);
+            run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds - 1900);
             Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
             Assert.AreEqual(1, run.Surface.Pastes);
         }
@@ -153,7 +171,7 @@ public sealed class SelectionPatternRequeryTests
         var run = new Harness();
         run.Surface.RequeryUnsupported = true;
         Assert.AreEqual(TextTargetUpdateResult.Pending, run.Replace());
-        run.Now += TimeSpan.FromSeconds(2);
+        run.Now += TimeSpan.FromMilliseconds(WindowsTextTarget.ResponseTimeoutMilliseconds);
         Assert.AreEqual(TextTargetUpdateResult.Conflict, run.Replace());
         Assert.AreEqual(1, run.Surface.Requeries);
         Assert.AreEqual(1, run.Surface.Pastes);

@@ -44,7 +44,10 @@ internal interface IWindowsTextSurface
 
 internal sealed class WindowsTextTarget : IWindowsTextTarget
 {
-    private static readonly TimeSpan AcknowledgementTimeout = TimeSpan.FromSeconds(2);
+    internal const long ResponseTimeoutMilliseconds = 15000;
+    private static readonly TimeSpan ShortRetryTimeout = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan WriteAcknowledgementTimeout = TimeSpan.FromMilliseconds(ResponseTimeoutMilliseconds);
+    private static readonly TimeSpan AcknowledgementTimeout = WriteAcknowledgementTimeout;
     private readonly IWindowsTextSurface _surface;
     private readonly Func<DateTimeOffset> _clock;
     private readonly Func<long>? _readFocusGeneration;
@@ -238,12 +241,11 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         if (_conflicted) { Trace("target.conflict", new { reason = "previous_conflict" }); return TextTargetUpdateResult.Conflict; }
         try
         {
-            var snapshotReadStarted = _clock();
             var snapshot = ReadOriginalSurface(_surface.Read);
             if (_unsentRetrySelection is { } retrySelection)
             {
                 if (snapshot != retrySelection) return Conflict("unsent_retry_selection_changed");
-                if (_clock() - _unsentRetrySince >= AcknowledgementTimeout)
+                if (_clock() - _unsentRetrySince >= ShortRetryTimeout)
                     return Conflict("clipboard_read_timeout");
             }
             if (_pendingText is { } pending)
@@ -261,11 +263,11 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 }
                 if (snapshot.Document != ExpectedDocument(pending))
                 {
-                    // A slow read can return a snapshot captured before the
-                    // deadline. Require an observation begun at/after it before
-                    // declaring the submitted write unacknowledged. The original
-                    // submission deadline stays fixed and input is never resent.
-                    if (snapshotReadStarted - _pendingSince < AcknowledgementTimeout)
+                    // A cold browser can process queued input after a native
+                    // startup pause. Observe the original editor within the same
+                    // bounded response budget as a ready provider operation.
+                    // Polls never reset the submission clock or resend input.
+                    if (_clock() - _pendingSince < WriteAcknowledgementTimeout)
                         return TextTargetUpdateResult.Pending;
                     TraceSnapshotDifference("target.write_acknowledgement_timeout",
                         new(ExpectedDocument(pending), Prefix + pending, "", Suffix), snapshot);
@@ -318,7 +320,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             else selected = snapshot;
             if (!IsFocused) return TextTargetUpdateResult.Unfocused;
             if (!MatchesOwnedSelection(selected, currentOwned) && selected == _selectionBeforeRequest
-                && !_selectionPatternRequeryAttempted && _clock() - _selectionSince < AcknowledgementTimeout)
+                && !_selectionPatternRequeryAttempted && _clock() - _selectionSince < ShortRetryTimeout)
             {
                 // A provider can keep returning its pre-Select caret. Query the
                 // SAME element's pattern once without extending its deadline.
@@ -350,7 +352,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             if (!MatchesOwnedSelection(selected, currentOwned) && selected == _selectionBeforeRequest
                 && _selectionPatternRefreshed && !_selectionRequestRetried
                 && _clock() - _selectionSince >= TimeSpan.FromMilliseconds(200)
-                && _clock() - _selectionSince < AcknowledgementTimeout && SelectionIntentUnchanged())
+                && _clock() - _selectionSince < ShortRetryTimeout && SelectionIntentUnchanged())
             {
                 // Select is an absolute, idempotent request, not a write. Some
                 // providers report success without applying it. Resend at most
@@ -361,7 +363,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     return Conflict("selection_acknowledgement_timeout");
                 if (MatchesOwnedSelection(beforeRetry, currentOwned)) selected = beforeRetry;
                 else if (beforeRetry != _selectionBeforeRequest) return Conflict("selection_retry_snapshot_changed");
-                else if (IsFocused && SelectionIntentUnchanged() && _clock() - _selectionSince < AcknowledgementTimeout)
+                else if (IsFocused && SelectionIntentUnchanged() && _clock() - _selectionSince < ShortRetryTimeout)
                 {
                     _selectionRequestRetried = true;
                     TraceSelectionObservation("target.selection_request_retried", currentOwned,
