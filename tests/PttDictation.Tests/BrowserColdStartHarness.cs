@@ -437,7 +437,10 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
                 return _job is not null && _job.Contains(process)
                     && process.ProcessName.Equals(ProcessName, StringComparison.OrdinalIgnoreCase)
                     && process.StartTime.ToUniversalTime() >= _started
-                    && string.Equals(Path.GetFullPath(process.MainModule!.FileName), Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase);
+                    // A newly resumed Chrome process may not expose its module
+                    // yet. Leave it unowned until its executable can be verified.
+                    && process.MainModule is { FileName: var modulePath }
+                    && string.Equals(Path.GetFullPath(modulePath), Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase);
             }
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or ArgumentException)
             { return false; }
