@@ -251,7 +251,10 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 throw Unavailable("focus", ex);
             }
             catch (Exception ex) when (IsProviderFailure(ex)) { Trace("target.focus_read_failed", error: ex); return false; }
-            if (!OperationInputUnchanged())
+            // A normal focus switch still pauses insertion. Input observed
+            // while the original field remains focused cannot become a new
+            // selection intent after a provider wait.
+            if (focused && !OperationInputUnchanged())
             {
                 Conflict("operation_input_changed");
                 throw new InvalidOperationException("The textbox or input changed while the original editor was responding.");

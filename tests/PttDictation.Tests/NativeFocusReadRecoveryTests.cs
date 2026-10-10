@@ -64,6 +64,27 @@ public sealed class NativeFocusReadRecoveryTests
     }
 
     [TestMethod]
+    public async Task OrdinaryWindowSwitchStillPausesAndResumesAtOriginalField()
+    {
+        await using var run = await Run.Start(blockBeforeSelection: true);
+        run.InputGeneration++;
+        run.Surface.Focused = false;
+        run.Now += 1000;
+        await run.Release();
+        Assert.AreEqual(0, run.Failures);
+        Assert.AreEqual(1, run.Writes);
+        Assert.AreEqual(0, run.Surface.SelectCalls);
+        run.Surface.Focused = true;
+        run.Output.Pump();
+        await run.Drain();
+        Assert.AreEqual(0, run.Failures);
+        Assert.AreEqual(2, run.Writes);
+        run.Output.Pump();
+        await run.Drain();
+        Assert.AreEqual(2, run.Acknowledgements);
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task ThirtySecondCeilingRejectsLateFocusReturnEvenWithoutTimer(bool pumpWhileBlocked)
