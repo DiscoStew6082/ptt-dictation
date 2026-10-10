@@ -144,7 +144,10 @@ All 16 testhost snapshots show the named dictation automation thread in
 `UiaGetPropertyValue -> CrossProcess_GetPropertyValues -> WaitForResponse`.
 Wait-chain inspection additionally connects testhost COM dispatch to the exact
 recorded Firefox main thread in the textarea captures from runners two and
-three. These are observed live waits, not a cause inferred from an expired timer.
+three. Those edges concern a parallel WinEvent accessibility helper, not a
+directly identified RPC for the original focus call. The paired native stacks
+show the original-call UIA wait. These are observed live waits, not a cause
+inferred from an expired timer.
 
 The [matching 156.0.1 release source](https://github.com/mozilla-firefox/firefox/blob/19a90052d7869f7b194ff27d316520366ad1d592/startupcache/StartupCache.cpp)
 acquires `mTableLock` in `GetBuffer` and holds that lock around the background
@@ -206,6 +209,17 @@ do not relax the gate. These checks harden exit evidence without claiming that
 the earlier unexplained processes were owned, extending deadlines, or killing
 unrelated browsers. A native parent/child regression verifies that both owned
 processes exit while the testhost remains outside the job.
+
+[The exit-proof run at `6639eb7`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38088327188)
+completed all 24 browser trials and 48 dictations. Every trial retained exact
+owned-process identities, observed their exit signals, released the handles,
+and reached zero job accounting in at most 324 milliseconds. No nonempty cold
+gate or profile-cleanup failure occurred. The earlier three unexplained PIDs
+did not recur, so their ownership remains unproven. Ordinary Firefox and Chrome
+CI also passed; the separately added parent/child regression failed because its
+`cmd` fixture did not create the expected child. That failed CI is preserved;
+the fixture now uses a static encoded PowerShell command with a fully qualified
+child executable, without changing the production launcher or cleanup ceiling.
 
 The **Firefox lock investigation** workflow is manually available after merge;
 its four-sample matrix also runs on the investigation PR branch. It prepares

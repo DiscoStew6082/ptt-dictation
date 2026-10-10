@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
 
 namespace PttDictation.Tests;
 
@@ -26,15 +28,24 @@ public sealed class ColdStartBrowserJobTests
 
     [TestMethod]
     [DoNotParallelize]
-    public async Task OwnedParentAndChildHaveSignaledHandlesBeforeCleanupCompletes()
+    public async Task OwnedPowerShellParentAndChildHaveSignaledHandlesBeforeCleanupCompletes()
     {
         var evidence = new List<ColdStartBrowserJob.CleanupObservation>();
         var processes = new List<Process>();
         var independentSignalsProven = false;
         var expectIndependentProof = false;
         using var host = Process.GetCurrentProcess();
-        using var job = new ColdStartBrowserJob(Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-            ["/d", "/c", "ping.exe -n 60 127.0.0.1 > nul"], observation =>
+        // A shell has its own command-line grammar. Use a static encoded
+        // PowerShell script so the native launcher's MSCRT argument quoting
+        // does not have to compose cmd.exe's /c command-string parsing.
+        const string script = """
+            $child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\ping.exe') -ArgumentList @('-n', '60', '127.0.0.1') -NoNewWindow -PassThru
+            try { $child.WaitForExit() } finally { $child.Dispose() }
+            """;
+        var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var powershell = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        using var job = new ColdStartBrowserJob(powershell,
+            ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], observation =>
             {
                 evidence.Add(observation);
                 if (observation.Stage != "exit_signals_proven" || !expectIndependentProof) return;
@@ -64,7 +75,19 @@ public sealed class ColdStartBrowserJobTests
                 }
                 if (processes.Any(process => process.Id == job.LauncherId)
                     && processes.Any(process => process.ProcessName.Equals("ping", StringComparison.OrdinalIgnoreCase))) break;
-                Assert.IsLessThan(5000L, deadline.ElapsedMilliseconds, "Owned cmd parent did not create its ping child.");
+                // Cold PowerShell startup has its own bounded fixture allowance;
+                // the job's shared five-second cleanup ceiling is unchanged.
+                if (deadline.ElapsedMilliseconds >= 20000)
+                {
+                    var observed = processes.Select(process => new
+                    {
+                        process.Id, IsJobMember = job.Contains(process), process.HasExited,
+                        Identity = ColdStartProcessGate.ReadIdentity(process)
+                    }).ToArray();
+                    Assert.Fail("Owned PowerShell parent did not create its ping child. Retained members: "
+                        + JsonSerializer.Serialize(observed) + "; current job PIDs: "
+                        + JsonSerializer.Serialize(job.GetOwnedProcessIds()));
+                }
                 await Task.Delay(25);
             }
             var parent = processes.Single(process => process.Id == job.LauncherId);
