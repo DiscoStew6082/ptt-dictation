@@ -13,6 +13,12 @@ namespace PttDictation.Tests;
 [DoNotParallelize]
 public sealed class FirefoxColdStartTests
 {
+    // Observe the bounded pre-send, selection and acknowledgement stages rather
+    // than expiring before the application's own response policy. The unchanged
+    // trial deadline still bounds the whole run; a workflow failure fails at once.
+    private const int ReplacementObservationMilliseconds =
+        (int)(3 * WindowsTextTarget.ResponseTimeoutMilliseconds) + 2000;
+
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
@@ -85,6 +91,12 @@ public sealed class FirefoxColdStartTests
         var presses = 0;
         var releases = 0;
         var keyDown = false;
+        var providerWaitObserved = 0;
+        void ObserveProviderWait()
+        {
+            if (paster.WaitingForTargetResponse) Interlocked.Exchange(ref providerWaitObserved, 1);
+        }
+        paster.PresentationChanged += ObserveProviderWait;
         void Dispatch(DictationIntent intent) => ui.Post(async _ =>
         {
             try { await workflow.HandleAsync(intent, token); }
@@ -120,6 +132,7 @@ public sealed class FirefoxColdStartTests
             Assert.AreEqual("", fixture.Latest.Text);
             for (var dictation = 1; dictation <= 2; dictation++)
             {
+                Interlocked.Exchange(ref providerWaitObserved, 0);
                 var prefix = fixture.Latest!.Text;
                 var pasteEventsBefore = fixture.Latest.TrustedPasteEvents;
                 var inputEventsBefore = fixture.Latest.TrustedInputEvents;
@@ -136,15 +149,23 @@ public sealed class FirefoxColdStartTests
                     $"dictation {dictation} first capture", 10000);
                 Assert.AreEqual(dictation, Volatile.Read(ref presses), "Real keyboard hook must receive each hold exactly once.");
                 var captureMs = Stopwatch.GetElapsedTime(readyAt).TotalMilliseconds;
+                var replacementAt = Stopwatch.GetTimestamp();
                 sessions.Current!.Preview(early);
-                await Until(() => fixture.Latest?.Text == prefix + early, "first real clipboard preview", 8000);
+                await Until(() => fixture.Latest?.Text == prefix + early, "first real clipboard preview", ReplacementObservationMilliseconds);
+                var previewMs = Stopwatch.GetElapsedTime(replacementAt).TotalMilliseconds;
+                Assert.AreEqual(pasteEventsBefore + 1, fixture.Latest!.TrustedPasteEvents, "The early preview must paste exactly once.");
+                replacementAt = Stopwatch.GetTimestamp();
                 sessions.Current.Preview(revised);
-                await Until(() => fixture.Latest?.Text == prefix + revised, "real UIA preview selection/replacement", 8000);
+                await Until(() => fixture.Latest?.Text == prefix + revised, "real UIA preview selection/replacement", ReplacementObservationMilliseconds);
+                var revisionMs = Stopwatch.GetElapsedTime(replacementAt).TotalMilliseconds;
+                Assert.AreEqual(pasteEventsBefore + 2, fixture.Latest!.TrustedPasteEvents, "The revision must paste exactly once.");
                 browser.RequireForeground();
+                replacementAt = Stopwatch.GetTimestamp();
                 SendRightControl(release: true);
                 keyDown = false;
-                await Until(() => workflow.CurrentState.Phase == DictationWorkflowPhase.Pasted, "final replacement", 10000);
+                await Until(() => workflow.CurrentState.Phase == DictationWorkflowPhase.Pasted, "final replacement", ReplacementObservationMilliseconds);
                 await Until(() => fixture.Latest?.Text == prefix + final, "independent DOM final readback", 5000);
+                var finalMs = Stopwatch.GetElapsedTime(replacementAt).TotalMilliseconds;
                 Assert.AreEqual(dictation, Volatile.Read(ref releases));
                 Assert.AreEqual(dictation, history.Items.Count);
                 Assert.AreEqual(final.Trim(), history.Items[^1]);
@@ -153,7 +174,8 @@ public sealed class FirefoxColdStartTests
                     "Each preview, revision and final replacement must be a real trusted browser paste.");
                 Assert.IsGreaterThan(inputEventsBefore, fixture.Latest.TrustedInputEvents,
                     "Firefox must emit trusted input events for the inserted text.");
-                observations.Add(new { dictation, browser.ProcessId, captureMs, browserFocusAgeMs, expected = prefix + final,
+                observations.Add(new { dictation, browser.ProcessId, captureMs, previewMs, revisionMs, finalMs,
+                    providerWaitObserved = Volatile.Read(ref providerWaitObserved) != 0, browserFocusAgeMs, expected = prefix + final,
                     actual = fixture.Latest.Text, presses, releases, userAgent = fixture.Latest.UserAgent,
                     fixture.Latest.TrustedPasteEvents, fixture.Latest.TrustedInputEvents });
                 TestContext.WriteLine($"PASS {editorKind} {Path.GetFileName(output)} PID={browser.ProcessId} dictation={dictation} capture={captureMs:F0}ms exact DOM match");
@@ -192,6 +214,7 @@ public sealed class FirefoxColdStartTests
         }
         finally
         {
+            paster.PresentationChanged -= ObserveProviderWait;
             stopSlowMonitor.Cancel();
             if (slowMonitor is not null)
             {

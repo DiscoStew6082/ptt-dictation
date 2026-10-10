@@ -19,6 +19,17 @@ three trusted paste events per dictation. The second dictation must preserve
 the first one's text through preview and final replacement. The actual
 nonactivating preparation overlay participates in each recording.
 
+Each replacement has a 47-second observation allowance, derived from three
+15-second response stages plus two seconds for observation. This is a test
+envelope, not an end-to-end latency guarantee. The whole trial still has its
+90-second deadline, initial capture still has ten seconds, and a failed workflow
+fails the test immediately. Each preview boundary requires exactly one new
+trusted paste and exact DOM text. Evidence records capture, preview, revision
+and final latency, plus whether the provider-wait state occurred. That state
+metadata is separate from waiting-window presentation, which the regular
+visible UI tests verify. The former eight-second preview limit could expire
+while PTT was correctly waiting for Firefox and then delivering the text once.
+
 Live replacement keeps its clipboard payload until exact target readback
 acknowledges the insertion, then restores the original clipboard only if its
 sequence is still owned. Cancellation or failure after input submission leaves
