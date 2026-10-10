@@ -11,10 +11,19 @@ namespace PttDictation.Tests;
 internal sealed class ColdStartBrowserJob : IDisposable
 {
     private readonly SafeFileHandle _job;
+    private readonly Action<CleanupObservation>? _report;
     public int LauncherId { get; }
 
-    public ColdStartBrowserJob(string executable, IReadOnlyList<string> arguments)
+    internal sealed record MemberObservation(int ProcessId, DateTime? StartedUtc, string? Executable,
+        int? ParentProcessIdAtCreation, bool? IsJobMember, bool? ExitSignaled, string? Error);
+    internal sealed record CleanupObservation(DateTime ObservedUtc, long ElapsedMilliseconds, string Stage,
+        uint? ActiveProcesses, MemberObservation[] Members, string? Error);
+    private sealed record RetainedMember(SafeProcessHandle Handle, MemberObservation Identity);
+
+    public ColdStartBrowserJob(string executable, IReadOnlyList<string> arguments,
+        Action<CleanupObservation>? report = null)
     {
+        _report = report;
         _job = CreateJobObject(IntPtr.Zero, null);
         if (_job.IsInvalid) throw new Win32Exception();
         var limits = new ExtendedLimits { Basic = new BasicLimits { LimitFlags = 0x2000 } };
@@ -45,23 +54,137 @@ internal sealed class ColdStartBrowserJob : IDisposable
 
     public bool Contains(Process process) => IsProcessInJob(process.SafeHandle, _job, out var member) && member;
 
+    // Query this job only. PID values are observations until a retained process
+    // handle proves membership; never act on browser-name enumeration here.
+    internal int[] GetOwnedProcessIds()
+    {
+        var capacity = 32;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var bytes = checked(8 + capacity * IntPtr.Size);
+            var buffer = Marshal.AllocHGlobal(bytes);
+            try
+            {
+                if (QueryInformationJobObject(_job, 3, buffer, (uint)bytes, IntPtr.Zero))
+                {
+                    var count = Marshal.ReadInt32(buffer, 4);
+                    if (count < 0 || count > capacity) throw new InvalidOperationException("Invalid job member count.");
+                    return Enumerable.Range(0, count)
+                        .Select(index => checked((int)Marshal.ReadIntPtr(buffer, 8 + index * IntPtr.Size).ToInt64()))
+                        .ToArray();
+                }
+                var error = Marshal.GetLastWin32Error();
+                if (error != 234) throw new Win32Exception(error); // ERROR_MORE_DATA: children raced the query.
+                capacity = checked(capacity * 2);
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        throw new InvalidOperationException("Owned job membership did not stabilize within the bounded query.");
+    }
+
     public void Dispose()
     {
         if (_job.IsClosed) return;
+        var deadline = Stopwatch.StartNew();
+        var retained = new List<RetainedMember>();
+        var unavailable = new List<MemberObservation>();
+        uint? active = null;
+        MemberObservation[]? exitProof = null;
+        MemberObservation[] ObserveMembers() => exitProof ?? unavailable.Concat(retained.Select(member =>
+        {
+            try { return member.Identity with { ExitSignaled = IsExitSignaled(member.Handle) }; }
+            catch (Win32Exception error)
+            { return member.Identity with { ExitSignaled = null, Error = member.Identity.Error + Environment.NewLine + error }; }
+        })).ToArray();
+        void Report(string stage, string? error = null) => _report?.Invoke(new(DateTime.UtcNow,
+            deadline.ElapsedMilliseconds, stage, active, ObserveMembers(), error));
         try
         {
+            foreach (var pid in GetOwnedProcessIds())
+            {
+                SafeProcessHandle? handle = null;
+                try
+                {
+                    // Minimum query/synchronization rights avoid demanding full
+                    // access to browser sandbox children. This pins identity.
+                    handle = OpenProcess(0x101000, false, (uint)pid);
+                    if (handle.IsInvalid) throw new Win32Exception();
+                    if (!IsProcessInJob(handle, _job, out var member)) throw new Win32Exception();
+                    var identity = ColdStartProcessGate.ReadIdentity(handle);
+                    var observation = new MemberObservation(pid, identity.StartedUtc, identity.Executable,
+                        identity.ParentProcessIdAtCreation, member, null, identity.Error);
+                    if (!member)
+                    {
+                        unavailable.Add(observation with { Error = "Listed PID no longer belongs to this job; no termination by PID performed." });
+                        continue;
+                    }
+                    retained.Add(new(handle, observation));
+                    handle = null; // Keep the verified handle until exit proof is complete.
+                }
+                catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception)
+                {
+                    // A listed member may have exited before its handle could be
+                    // opened. Preserve that race; final accounting must still be zero.
+                    unavailable.Add(new(pid, null, null, null, null, null, error.ToString()));
+                }
+                finally { handle?.Dispose(); }
+            }
+            Report("before_termination");
             if (!TerminateJobObject(_job, 0)) throw new Win32Exception();
-            var deadline = Stopwatch.StartNew();
+            Report("termination_requested");
             while (true)
             {
                 if (!QueryInformationJobObject(_job, 1, out var accounting,
                     (uint)Marshal.SizeOf<BasicAccounting>(), IntPtr.Zero)) throw new Win32Exception();
-                if (accounting.ActiveProcesses == 0) break;
-                if (deadline.ElapsedMilliseconds >= 5000) throw new TimeoutException("Owned browser job did not fully exit.");
+                active = accounting.ActiveProcesses;
+                var exited = retained.All(member => IsExitSignaled(member.Handle));
+                // One shared ceiling includes capture, termination, exit signals,
+                // handle release and final accounting. No phase renews it.
+                if (deadline.ElapsedMilliseconds >= 5000)
+                    throw new TimeoutException("Owned browser job did not prove all retained process exits within five seconds.");
+                if (exited) break;
                 Thread.Sleep(25);
             }
+            exitProof = ObserveMembers();
+            Report("exit_signals_proven");
+            // Windows accounting can retain a terminated process until all
+            // references close. Preserve the signal proof before releasing ours.
+            foreach (var member in retained) member.Handle.Dispose();
+            Report("retained_handles_released");
+            while (true)
+            {
+                if (!QueryInformationJobObject(_job, 1, out var accounting,
+                    (uint)Marshal.SizeOf<BasicAccounting>(), IntPtr.Zero)) throw new Win32Exception();
+                active = accounting.ActiveProcesses;
+                if (deadline.ElapsedMilliseconds >= 5000)
+                    throw new TimeoutException("Owned browser job accounting did not reach zero within the shared five-second cleanup ceiling.");
+                if (active == 0) break;
+                Thread.Sleep(25);
+            }
+            Report("cleanup_completed");
         }
-        finally { _job.Dispose(); }
+        catch (Exception error)
+        {
+            Report("cleanup_failed", error.ToString());
+            throw;
+        }
+        finally
+        {
+            // KILL_ON_JOB_CLOSE also applies if evidence collection failed.
+            _job.Dispose();
+            foreach (var member in retained) member.Handle.Dispose();
+        }
+    }
+
+    private static bool IsExitSignaled(SafeProcessHandle process)
+    {
+        var result = WaitForSingleObject(process, 0);
+        return result switch
+        {
+            0 => true,
+            258 => false, // WAIT_TIMEOUT
+            _ => throw new Win32Exception()
+        };
     }
 
     internal static string QuoteArgument(string value)
@@ -126,6 +249,12 @@ internal sealed class ColdStartBrowserJob : IDisposable
     private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool QueryInformationJobObject(SafeFileHandle job, int type, out BasicAccounting accounting, uint size, IntPtr returnedSize);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(SafeFileHandle job, int type, IntPtr buffer, uint size, IntPtr returnedSize);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeProcessHandle OpenProcess(uint access, bool inheritHandle, uint processId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(SafeProcessHandle process, uint milliseconds);
     [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcess(string application, StringBuilder commandLine, IntPtr processAttributes,
         IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment, string? directory,

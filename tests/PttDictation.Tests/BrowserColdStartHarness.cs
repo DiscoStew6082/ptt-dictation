@@ -344,7 +344,9 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
                 ? ["--no-remote", "--profile", _profile, "--new-window", url.AbsoluteUri]
                 : [$"--user-data-dir={_profile}", "--no-first-run", "--no-default-browser-check", "--force-dark-mode", "--new-window", url.AbsoluteUri];
             _started = DateTime.UtcNow;
-            _job = new ColdStartBrowserJob(executable, arguments);
+            _job = new ColdStartBrowserJob(executable, arguments, observation =>
+                File.AppendAllText(Path.Combine(output, "owned-process-cleanup.jsonl"),
+                    JsonSerializer.Serialize(observation) + Environment.NewLine));
             File.WriteAllText(Path.Combine(output, "launch.json"), JsonSerializer.Serialize(new
             {
                 executable, version = FileVersionInfo.GetVersionInfo(executable).ProductVersion,

@@ -16,21 +16,23 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
     private readonly Func<Action, IDisposable> _subscribe;
     private readonly Func<bool> _probe;
     private readonly Func<bool> _isIdle;
+    private readonly ApartmentWorker? _providerWorker;
     private readonly TimeSpan _interval;
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
 
     internal Task Completion => _completion.Task;
 
-    internal WindowsAccessibilityWarmup(Func<bool> isIdle)
-        : this(Subscribe, new BrowserProbe().Read, isIdle) { }
+    internal WindowsAccessibilityWarmup(Func<bool> isIdle, ApartmentWorker? providerWorker = null)
+        : this(Subscribe, new BrowserProbe().Read, isIdle, providerWorker: providerWorker) { }
 
     internal WindowsAccessibilityWarmup(Func<Action, IDisposable> subscribe, Func<bool> probe,
-        Func<bool>? isIdle = null, TimeSpan? interval = null)
+        Func<bool>? isIdle = null, TimeSpan? interval = null, ApartmentWorker? providerWorker = null)
     {
         _subscribe = subscribe;
         _probe = probe;
         _isIdle = isIdle ?? (() => true);
+        _providerWorker = providerWorker;
         _interval = interval ?? TimeSpan.FromSeconds(1);
         var thread = new Thread(Run) { IsBackground = true, Name = "Dictation browser accessibility" };
         thread.SetApartmentState(ApartmentState.MTA);
@@ -75,7 +77,7 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
         IDisposable? subscription = null;
         try
         {
-            try { subscription = _subscribe(Request); }
+            try { subscription = OnProviderWorker(() => _subscribe(Request)); }
             catch (Exception error) { TraceFailure("subscribe", error); }
             finally { _providerGate.Release(); }
             var signals = new WaitHandle[] { _stopped, _requested };
@@ -87,7 +89,7 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
                     if (!_isIdle() || !_providerGate.Wait(0)) break;
                     try
                     {
-                        var ready = _probe();
+                        var ready = OnProviderWorker(_probe);
                         lastFailure = null;
                         if (ready) break;
                     }
@@ -110,7 +112,7 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
         }
         finally
         {
-            try { subscription?.Dispose(); }
+            try { OnProviderWorker(() => { subscription?.Dispose(); return true; }); }
             catch (Exception error) { TraceFailure("unsubscribe", error); }
             lock (_gate)
             {
@@ -120,6 +122,16 @@ internal sealed class WindowsAccessibilityWarmup : IDisposable
             }
             _completion.TrySetResult();
         }
+    }
+
+    // The coordinator owns only scheduling and the provider lease. Native UIA
+    // subscription, warmup, capture and removal share one serial MTA client.
+    private T OnProviderWorker<T>(Func<T> action)
+    {
+        if (_providerWorker is null) return action();
+        T result = default!;
+        _providerWorker.InvokeAsync(() => result = action()).GetAwaiter().GetResult();
+        return result;
     }
 
     private static void TraceFailure(string operation, Exception error) =>

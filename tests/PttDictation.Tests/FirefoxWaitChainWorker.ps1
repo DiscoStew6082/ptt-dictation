@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 [CmdletBinding()]
 param([string]$TargetsPath, [Parameter(Mandatory)][string]$OutputPath,
-    [string]$DumpPath, [int]$DumpProcessId, [string]$RequestPath, [string]$ReadyPath)
+    [string]$DumpPath, [int]$DumpProcessId, [string]$RequestPath, [string]$ReadyPath,
+    [string]$WarmupTargetsPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -11,7 +12,11 @@ Set-StrictMode -Version Latest
 $writer = [IO.StreamWriter]::new($OutputPath, $false, [Text.UTF8Encoding]::new($false))
 $writer.AutoFlush = $true
 try {
-    $writeRecord = [Action[object]]{ param($record) $writer.WriteLine(($record | ConvertTo-Json -Depth 8 -Compress)) }
+    $writeRecord = [Action[object]]{ param($record)
+        $record['timestamp'] = [Diagnostics.Stopwatch]::GetTimestamp()
+        $record['timestampFrequency'] = [Diagnostics.Stopwatch]::Frequency
+        $writer.WriteLine(($record | ConvertTo-Json -Depth 8 -Compress))
+    }
     $writeRecord.Invoke(@{ stage = 'worker_script_started'; utc = [DateTimeOffset]::UtcNow; processId = $PID })
 
 # This disposable worker accepts only an exact PID/start-time/name manifest.
@@ -33,7 +38,7 @@ public static class PttWaitChainWorker
         LoadLibrary("dbghelp.dll");
     }
 
-    public static void WriteDump(int pid, long startedUtcTicks, string processName,
+    public static bool WriteDump(int pid, long startedUtcTicks, string processName,
         string dumpPath, Action<object> write)
     {
         if (!String.IsNullOrEmpty(dumpPath))
@@ -42,7 +47,10 @@ public static class PttWaitChainWorker
             {
                 if (process.StartTime.ToUniversalTime().Ticks != startedUtcTicks || process.ProcessName != processName)
                     throw new InvalidOperationException("Dump target identity changed.");
-                write(Row("dump_started", pid, 0, "utc", DateTimeOffset.UtcNow));
+                var began = Row("dump_started", pid, 0, "utc", DateTimeOffset.UtcNow);
+                began["dumpPath"] = dumpPath; began["processName"] = processName;
+                began["startedUtcTicks"] = startedUtcTicks;
+                write(began);
                 using (var file = new FileStream(dumpPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
                 {
                     // MiniDumpNormal | MiniDumpWithThreadInfo: stacks/modules,
@@ -52,11 +60,15 @@ public static class PttWaitChainWorker
                     int error = success ? 0 : Marshal.GetLastWin32Error();
                     GC.KeepAlive(file);
                     var result = Row("dump_completed", pid, 0, "utc", DateTimeOffset.UtcNow);
+                    result["dumpPath"] = dumpPath; result["processName"] = processName;
+                    result["startedUtcTicks"] = startedUtcTicks;
                     result["success"] = success; result["error"] = error;
                     write(result);
+                    return success;
                 }
             }
         }
+        return false;
     }
 
     public static void Run(int pid, long startedUtcTicks, uint priorityThreadId,
@@ -108,7 +120,7 @@ public static class PttWaitChainWorker
                                     var node = IntPtr.Add(buffer, i * stride);
                                     int type = Marshal.ReadInt32(node, 0);
                                     var data = new Dictionary<string, object> {
-                                        { "type", type }, { "status", Marshal.ReadInt32(node, 4) } };
+                                        { "index", i }, { "type", type }, { "status", Marshal.ReadInt32(node, 4) } };
                                     if (type == 8)
                                     {
                                         data["processId"] = (uint)Marshal.ReadInt32(node, 8);
@@ -116,7 +128,27 @@ public static class PttWaitChainWorker
                                         data["waitTime"] = (uint)Marshal.ReadInt32(node, 16);
                                         data["contextSwitches"] = (uint)Marshal.ReadInt32(node, 20);
                                     }
+                                    else
+                                    {
+                                        // wct.h: ObjectName is WCHAR[128] at
+                                        // union offset8. Names exist only for
+                                        // some objects; empty is not proof of
+                                        // an unnamed critical section's owner.
+                                        var name = Marshal.PtrToStringUni(IntPtr.Add(node, 8), 128);
+                                        data["objectName"] = (name ?? "").Split('\0')[0];
+                                    }
                                     nodes.Add(data);
+                                }
+                            // WCT alternates waiting threads, synchronization
+                            // objects and their owning thread. Preserve owner
+                            // IDs only when the following native node provides
+                            // them; do not enumerate or dump that other process.
+                            for (int i = 0; i + 1 < nodes.Count; i++)
+                                if ((int)nodes[i]["type"] != 8 && (int)nodes[i + 1]["type"] == 8)
+                                {
+                                    nodes[i]["ownerProcessId"] = nodes[i + 1]["processId"];
+                                    nodes[i]["ownerThreadId"] = nodes[i + 1]["threadId"];
+                                    nodes[i]["ownerSource"] = "following_thread_node";
                                 }
                             var result = Row("query_completed", pid, tid, "utc", DateTimeOffset.UtcNow);
                             result["success"] = success; result["error"] = error;
@@ -160,6 +192,32 @@ $writeRecord.Invoke(@{ stage = 'worker_helper_loaded'; utc = [DateTimeOffset]::U
 if ($RequestPath) {
     if (-not $ReadyPath) { throw 'A prepared worker requires a readiness path.' }
     [PttWaitChainWorker]::Prepare()
+    if ($WarmupTargetsPath) {
+        $warmupTargets = @(Get-Content -LiteralPath $WarmupTargetsPath -Raw | ConvertFrom-Json)
+        if ($warmupTargets.Count -ne 1 -or $warmupTargets[0].ProcessName -notin @('testhost', 'testhost.x86')) {
+            throw 'Native dump warmup requires exactly the owned testhost manifest; no browser or other process.'
+        }
+        $warmupTarget = $warmupTargets[0]
+        $warmupDumpPath = [IO.Path]::ChangeExtension($OutputPath, '.warmup.testhost.dmp')
+        if ([IO.File]::Exists($warmupDumpPath)) { throw 'Refusing an existing native dump warmup file.' }
+        $warmupWriteRecord = [Action[object]]{ param($record)
+            $record['purpose'] = 'native_dump_warmup'
+            $writeRecord.Invoke($record)
+        }
+        $writeRecord.Invoke(@{ stage = 'worker_dump_warmup_started'; utc = [DateTimeOffset]::UtcNow;
+            processId = [int]$warmupTarget.ProcessId; dumpPath = $warmupDumpPath })
+        try {
+            $startedTicks = ([DateTime]$warmupTarget.StartedUtc).ToUniversalTime().Ticks
+            if (-not [PttWaitChainWorker]::WriteDump([int]$warmupTarget.ProcessId, $startedTicks,
+                [string]$warmupTarget.ProcessName, $warmupDumpPath, $warmupWriteRecord)) {
+                throw 'Native testhost dump warmup failed; refusing to announce prepared diagnostics.'
+            }
+        } finally {
+            if ([IO.File]::Exists($warmupDumpPath)) { [IO.File]::Delete($warmupDumpPath) }
+            $writeRecord.Invoke(@{ stage = 'worker_dump_warmup_removed'; utc = [DateTimeOffset]::UtcNow;
+                processId = [int]$warmupTarget.ProcessId; dumpPath = $warmupDumpPath })
+        }
+    }
     $writeRecord.Invoke(@{ stage = 'worker_prepared'; utc = [DateTimeOffset]::UtcNow; processId = $PID })
     [IO.File]::WriteAllText($ReadyPath, [DateTimeOffset]::UtcNow.ToString('O'))
     while (-not [IO.File]::Exists($RequestPath)) { [Threading.Thread]::Sleep(5) }
@@ -168,20 +226,37 @@ if ($RequestPath) {
     $targets = @($request.Targets)
     $DumpPath = [string]$request.DumpPath
     $DumpProcessId = [int]$request.DumpProcessId
+    $dumpPairs = if ($request.PSObject.Properties['DumpPairs']) { [int]$request.DumpPairs } else { 1 }
+    $dumpInterval = if ($request.PSObject.Properties['DumpIntervalMilliseconds']) { [int]$request.DumpIntervalMilliseconds } else { 350 }
+    if ($dumpPairs -notin @(1, 2) -or $dumpInterval -lt 250 -or $dumpInterval -gt 500) {
+        throw 'Prepared diagnostic requests allow only one or two dump pairs with a bounded 250-500ms interval.'
+    }
 } else {
     if (-not $TargetsPath) { throw 'A one-shot worker requires a target manifest.' }
     $targets = @(Get-Content -LiteralPath $TargetsPath -Raw | ConvertFrom-Json)
+    $dumpPairs = 1
+    $dumpInterval = 350
 }
 
     # Save both process stacks before optional WCT, whose native implementation
     # may itself hang or crash this isolated worker.
     if ($DumpPath) {
-        foreach ($target in $targets) {
-            $startedTicks = ([DateTime]$target.StartedUtc).ToUniversalTime().Ticks
-            $targetDumpPath = if ($target.ProcessId -eq $DumpProcessId) { $DumpPath }
-                else { [IO.Path]::ChangeExtension($DumpPath, '.testhost.dmp') }
-            [PttWaitChainWorker]::WriteDump([int]$target.ProcessId, $startedTicks,
-                [string]$target.ProcessName, $targetDumpPath, $writeRecord)
+        for ($sample = 1; $sample -le $dumpPairs; $sample++) {
+            $writeRecord.Invoke(@{ stage = 'dump_pair_started'; sample = $sample; utc = [DateTimeOffset]::UtcNow })
+            # Caller first: a stuck browser dump must not erase evidence of the
+            # PTT automation MTA awaiting its specific UIA/RPC call.
+            foreach ($target in @($targets | Sort-Object { $_.ProcessId -eq $DumpProcessId })) {
+                $startedTicks = ([DateTime]$target.StartedUtc).ToUniversalTime().Ticks
+                $role = if ($target.ProcessId -eq $DumpProcessId) { 'firefox' } else { 'testhost' }
+                $targetDumpPath = if ($dumpPairs -gt 1) {
+                    [IO.Path]::ChangeExtension($DumpPath, ".sample-$sample.$role.dmp")
+                } elseif ($target.ProcessId -eq $DumpProcessId) { $DumpPath }
+                  else { [IO.Path]::ChangeExtension($DumpPath, '.testhost.dmp') }
+                [void][PttWaitChainWorker]::WriteDump([int]$target.ProcessId, $startedTicks,
+                    [string]$target.ProcessName, $targetDumpPath, $writeRecord)
+            }
+            $writeRecord.Invoke(@{ stage = 'dump_pair_completed'; sample = $sample; utc = [DateTimeOffset]::UtcNow })
+            if ($sample -lt $dumpPairs) { [Threading.Thread]::Sleep($dumpInterval) }
         }
     }
     foreach ($target in $targets) {

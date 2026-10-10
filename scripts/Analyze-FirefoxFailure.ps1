@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 [CmdletBinding()]
-param()
+param([switch]$PrepareOnly)
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
@@ -9,7 +9,7 @@ if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONME
 
 $artifactRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts/firefox-cold-start'
 $dumps = @(Get-ChildItem -LiteralPath $artifactRoot -Filter '*.dmp' -File -Recurse -ErrorAction SilentlyContinue)
-if ($dumps.Count -eq 0) { Write-Output 'No Firefox failure dumps were produced.'; return }
+if ($dumps.Count -eq 0 -and -not $PrepareOnly) { Write-Output 'No Firefox failure dumps were produced.'; return }
 
 $debugger = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
 if (-not (Test-Path -LiteralPath $debugger)) {
@@ -31,6 +31,8 @@ if (-not (Test-Path -LiteralPath $debugger)) {
     }
 }
 
+if ($PrepareOnly) { Write-Output "Prepared native debugger: $debugger"; return }
+
 $symbolCache = Join-Path $env:RUNNER_TEMP 'ptt-debugger-symbols'
 $localSymbols = Join-Path $env:RUNNER_TEMP 'ptt-debugger-local-symbols'
 [IO.Directory]::CreateDirectory($localSymbols) | Out-Null
@@ -43,7 +45,11 @@ foreach ($dump in $dumps) {
     )) {
         $output = $dump.FullName + ".$($pass.Name).stacks.txt"
         $errors = $dump.FullName + ".$($pass.Name).debugger-errors.txt"
-        $arguments = '-z "{0}" -y "{1}" -i "C:\Program Files\Mozilla Firefox" -c "lm; ~* kn 0x40; q"' -f $dump.FullName, $pass.Symbols
+        # Thread IDs and module identities correlate both snapshots with the
+        # pending provider call. Lock queries retain missing-memory/type errors
+        # rather than inferring an owner from a function name alone.
+        $commands = 'vertarget; .time; lm; lmvm xul; lmvm UIAutomationCore; ~* kv 0x40; !locks; !cs -l -o; q'
+        $arguments = '-z "{0}" -y "{1}" -i "C:\Program Files\Mozilla Firefox" -c "{2}"' -f $dump.FullName, $pass.Symbols, $commands
         $analysis = Start-Process -FilePath $debugger -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $output -RedirectStandardError $errors
         if (-not $analysis.WaitForExit($pass.Timeout)) {
             $analysis.Kill($true)

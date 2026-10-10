@@ -78,7 +78,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         {
             var focusGuard = new WindowsFocusCaptureGuard(statusWindow);
             _focusGuard = focusGuard;
-            _accessibilityWarmup = new WindowsAccessibilityWarmup(() => Volatile.Read(ref _session) is null);
+            _automation = new ApartmentWorker(ApartmentState.MTA, "Dictation text target");
+            _accessibilityWarmup = new WindowsAccessibilityWarmup(() => Volatile.Read(ref _session) is null, _automation);
             _acquireCapture = _accessibilityWarmup.AcquireCaptureAsync;
             _beginPreparation = () => focusGuard.BeginPreparation(() => GlobalHotkeySource.InputGeneration);
             _createReadiness = () => BrowserCaptureReadiness.Create(() => focusGuard.Generation);
@@ -89,7 +90,6 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             _prepareCapture = () => WindowsTextTarget.CaptureFocusedIdentity(() => focusGuard.Generation);
             var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             _confirmCapture = confirmCapture ?? (action => ui.Post(_ => action(), null));
-            _automation = new ApartmentWorker(ApartmentState.MTA, "Dictation text target");
             _timer = new System.Windows.Forms.Timer { Interval = 200 };
             _timer.Tick += (_, _) => Pump();
         }
@@ -623,9 +623,21 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         }
         EndSession();
         _timer?.Dispose();
-        _automation?.Dispose();
+        if (_accessibilityWarmup is not null && _automation is not null)
+            _ = DisposeAutomationAfterWarmupAsync(_accessibilityWarmup, _automation);
+        else _automation?.Dispose();
         _clipboard?.Dispose();
         _focusGuard?.Dispose();
+    }
+
+    // A blocked provider never holds up the UI's Dispose. Keep its worker queue
+    // open until the subscription is removed on its original serial MTA.
+    internal static async Task DisposeAutomationAfterWarmupAsync(WindowsAccessibilityWarmup warmup,
+        ApartmentWorker automation)
+    {
+        warmup.Dispose();
+        await warmup.Completion.ConfigureAwait(false);
+        automation.Dispose();
     }
 
     private sealed class Session

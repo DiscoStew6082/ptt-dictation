@@ -118,6 +118,149 @@ workers can capture a slow read while it is occurring; failure-only workers
 retain their bounded lifetimes and now reveal whether native capture ever
 began. Diagnostic collection never changes a failed test to a passing one.
 
+### October 10 live mutex investigation
+
+[Investigation run 38086883821](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38086883821)
+tested commit `2a8408a` on top of `666bccb` with four independent Windows
+runners and Firefox 156.0.1. All 24 fresh launches and 48 dictations passed.
+Ordinary [CI](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38086883573)
+and [CodeQL](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38086883598)
+also passed on attempt one. Passing tests alone do not identify the wait's cause;
+the live captures do.
+
+Each runner captured one original-element `HasKeyboardFocus` read for each
+editor. The call was already pending for at least one second before capture.
+Every one of the eight captures retained the same pending call across two
+paired testhost/Firefox snapshots; all 32 dumps succeeded. Metadata samples
+before and after each dump preserve operation name, managed thread ID and
+monotonic inferred start time, so a subsequent same-name call cannot stand in
+for the triggering call.
+
+All 16 Firefox snapshots show the main thread in
+`StartupCache::GetBuffer -> MutexImpl::lock -> FutexImpl::wait -> WaitOnAddress`.
+In each pair, the same background writer thread remains in
+`StartupCache::WriteToDisk -> PR_Write -> WriteFile -> NtWriteFile`.
+All 16 testhost snapshots show the named dictation automation thread in
+`UiaGetPropertyValue -> CrossProcess_GetPropertyValues -> WaitForResponse`.
+Wait-chain inspection additionally connects testhost COM dispatch to the exact
+recorded Firefox main thread in the textarea captures from runners two and
+three. Those edges concern a parallel WinEvent accessibility helper, not a
+directly identified RPC for the original focus call. The paired native stacks
+show the original-call UIA wait. These are observed live waits, not a cause
+inferred from an expired timer.
+
+The [matching 156.0.1 release source](https://github.com/mozilla-firefox/firefox/blob/19a90052d7869f7b194ff27d316520366ad1d592/startupcache/StartupCache.cpp)
+acquires `mTableLock` in `GetBuffer` and holds that lock around the background
+`WriteToDisk` call. Its lambda at line 795 matches the source location in the
+decoded writer stacks. Thus the shared startup-cache lock relationship is
+supported by the matching source and repeated stacks. The minimal dumps do
+not contain a directly readable mutex owner field: Gecko uses a futex-backed
+mutex, and `!locks`/`!cs` cannot establish its owner from an RTL critical-section
+list. Keep that source-based ownership inference distinct from the directly
+observed wait and writer stacks. Mozilla's
+[upstream optimization discussion](https://bugzilla.mozilla.org/show_bug.cgi?id=2048221)
+also proposes separating table locking from disk I/O; its attempted patch was
+backed out and is not an app-side fix.
+
+The calls recovered and all insertions completed. This establishes startup-cache
+mutex contention during the captured focus reads, not a permanent deadlock,
+and it does not retroactively prove the cause of the earlier uncaptured
+19.368-second read or the preparation deadline collision. Native dump collection
+can pause the target; the first testhost dumps took up to 2.72 seconds, so these
+instrumented call durations are not baseline latency measurements. No
+profile-cleanup lock error occurred in this investigation.
+
+[The repeat run at `2ddb48d`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38087298611)
+passed three diagnostic samples and failed one during final preparation.
+Ordinary CI and CodeQL passed on the same head. The failed sample's first
+testhost dump ran from 21:23:19.679 to 21:23:24.803 UTC, taking 5.124 seconds;
+the five-second final-validation deadline expired during that pause, and the
+failure was logged as the dump finished. The focused-element query was already
+pending for 1.434 seconds before that dump. Both Firefox snapshots still show
+the startup-cache mutex wait and background writer, but the resulting
+10.745-second query duration cannot be classified as uninstrumented latency.
+The diagnostic failure remains in the run history; it does not justify raising
+the app's preparation deadline.
+
+The prepared collector now executes its first native testhost dump before
+Firefox launch, in addition to preparing the helper and loading `dbghelp`.
+This uses the exact owned testhost identity, records warmup timing, and removes
+the warmup dump before publishing readiness. This addresses the observed cold
+dump cost outside the timed browser experiment; it does not eliminate every
+possible observation effect. Trial dump durations remain recorded.
+
+[The warmup verification at `d5e2823`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38087714280)
+passed three diagnostic samples and failed one at the next editor's cold-process
+gate, after all three textarea trials passed. That editor's first gate recorded
+no Firefox processes at 21:29:25.559 UTC; its launch gate found three processes
+at 21:29:33.544, after automation initialization and collector warmup but before
+launching its own browser. This is not evidence that the three processes belonged
+to the preceding browser job, and no profile-deletion lock error was recorded.
+The strict gate refused to proceed rather than terminate unowned processes.
+Ordinary CI and CodeQL passed on the same head. The failure remains available
+for comparison with subsequent ownership diagnostics.
+
+Browser teardown now records exact job membership, process start time, image
+path and creator PID before terminating the owned job. It retains handles to
+those verified members and requires both their exit signals and zero active
+job processes within the existing shared five-second cleanup limit. Cold-process
+gate observations also retain process identity and creator PID; metadata errors
+do not relax the gate. These checks harden exit evidence without claiming that
+the earlier unexplained processes were owned, extending deadlines, or killing
+unrelated browsers. A native parent/child regression verifies that both owned
+processes exit while the testhost remains outside the job.
+
+[The exit-proof run at `6639eb7`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38088327188)
+completed all 24 browser trials and 48 dictations. Every trial retained exact
+owned-process identities, observed their exit signals, released the handles,
+and reached zero job accounting in at most 324 milliseconds. No nonempty cold
+gate or profile-cleanup failure occurred. The earlier three unexplained PIDs
+did not recur, so their ownership remains unproven. Ordinary Firefox and Chrome
+CI also passed; the separately added parent/child regression failed because its
+`cmd` fixture did not create the expected child. That failed CI is preserved;
+the fixture now uses a static encoded PowerShell command with a fully qualified
+child executable, without changing the production launcher or cleanup ceiling.
+
+### Warmup and capture use the same automation client
+
+[Ordinary CI at `6f5ea91`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38088614286)
+passed all 656 non-browser tests and Chrome, but reproduced an uninstrumented
+Firefox preparation failure on the second fresh textarea launch. The global
+focused-element read began at 21:43:31.055 UTC, exceeded the five-second initial
+readiness limit, and returned after 15.525 seconds with an unsupported Firefox
+window container. The warmup thread had reported an edit control with TextPattern
+at 21:43:30.629, before the trusted click and hotkey. No audio or paste started,
+and owned-process cleanup completed without a profile-lock error. All four
+instrumented samples on the same head passed; that does not erase this ordinary
+CI failure. The timeout captures contain no usable native stacks, so this
+specific read's underlying Firefox wait is not established.
+
+Warmup formerly initialized accessibility on its own MTA while capture queried
+focus on a different automation worker. It now dispatches subscription, probes
+and subscription removal to the same serial MTA that performs capture. The
+warmup scheduler and capture lease still prevent concurrent provider calls.
+Shutdown remains nonblocking and defers automation-worker disposal until the
+warmup subscription has been removed on its owning thread. This reuses the
+initialized client without retaining an editor, text, selection or insertion
+target from warmup. Global identity comparisons, exact selection checks, native
+input/focus guards and the five-second readiness plus five-second final-validation
+limits remain active. A scripted thread-local provider regression verifies that capture
+uses the client initialized by warmup; blocked-provider shutdown and lease
+serialization are verified separately. Real Firefox CI remains the acceptance
+check for this change, rather than assuming thread reuse proves the earlier
+read's internal cause.
+
+The **Firefox lock investigation** workflow is manually available after merge;
+its four-sample matrix also runs on the investigation PR branch. It prepares
+the debugger and collector before browser launch, watches only relevant focus
+and preparation calls, saves the caller first, takes a second pair after a
+bounded interval, and records pending-call timing before optional wait-chain
+inspection. Exact PID, start time and process name are checked before every
+dump. Raw and decoded artifacts are retained for 14 days. This opt-in workflow
+does not change runtime policy or ordinary browser acceptance criteria.
+
+### Preparation handoff
+
 Preparation retains the exact editor and selection obtained while the cold
 provider becomes ready. After refinement, a strict native focus/input guard,
 fresh validation of that same editor's selection, and queued native-event
