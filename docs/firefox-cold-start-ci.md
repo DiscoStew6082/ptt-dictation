@@ -118,6 +118,66 @@ workers can capture a slow read while it is occurring; failure-only workers
 retain their bounded lifetimes and now reveal whether native capture ever
 began. Diagnostic collection never changes a failed test to a passing one.
 
+### October 10 live mutex investigation
+
+[Investigation run 38086883821](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38086883821)
+tested commit `2a8408a` on top of `666bccb` with four independent Windows
+runners and Firefox 156.0.1. All 24 fresh launches and 48 dictations passed.
+Ordinary [CI](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38086883573)
+and [CodeQL](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38086883598)
+also passed on attempt one. Passing tests alone do not identify the wait's cause;
+the live captures do.
+
+Each runner captured one original-element `HasKeyboardFocus` read for each
+editor. The call was already pending for at least one second before capture.
+Every one of the eight captures retained the same pending call across two
+paired testhost/Firefox snapshots; all 32 dumps succeeded. Metadata samples
+before and after each dump preserve operation name, managed thread ID and
+monotonic inferred start time, so a subsequent same-name call cannot stand in
+for the triggering call.
+
+All 16 Firefox snapshots show the main thread in
+`StartupCache::GetBuffer -> MutexImpl::lock -> FutexImpl::wait -> WaitOnAddress`.
+In each pair, the same background writer thread remains in
+`StartupCache::WriteToDisk -> PR_Write -> WriteFile -> NtWriteFile`.
+All 16 testhost snapshots show the named dictation automation thread in
+`UiaGetPropertyValue -> CrossProcess_GetPropertyValues -> WaitForResponse`.
+Wait-chain inspection additionally connects testhost COM dispatch to the exact
+recorded Firefox main thread in the textarea captures from runners two and
+three. These are observed live waits, not a cause inferred from an expired timer.
+
+The [matching 156.0.1 release source](https://github.com/mozilla-firefox/firefox/blob/19a90052d7869f7b194ff27d316520366ad1d592/startupcache/StartupCache.cpp)
+acquires `mTableLock` in `GetBuffer` and holds that lock around the background
+`WriteToDisk` call. Its lambda at line 795 matches the source location in the
+decoded writer stacks. Thus the shared startup-cache lock relationship is
+supported by the matching source and repeated stacks. The minimal dumps do
+not contain a directly readable mutex owner field: Gecko uses a futex-backed
+mutex, and `!locks`/`!cs` cannot establish its owner from an RTL critical-section
+list. Keep that source-based ownership inference distinct from the directly
+observed wait and writer stacks. Mozilla's
+[upstream optimization discussion](https://bugzilla.mozilla.org/show_bug.cgi?id=2048221)
+also proposes separating table locking from disk I/O; its attempted patch was
+backed out and is not an app-side fix.
+
+The calls recovered and all insertions completed. This establishes startup-cache
+mutex contention during the captured focus reads, not a permanent deadlock,
+and it does not retroactively prove the cause of the earlier uncaptured
+19.368-second read or the preparation deadline collision. Native dump collection
+can pause the target; the first testhost dumps took up to 2.72 seconds, so these
+instrumented call durations are not baseline latency measurements. No
+profile-cleanup lock error occurred in this investigation.
+
+The **Firefox lock investigation** workflow is manually available after merge;
+its four-sample matrix also runs on the investigation PR branch. It prepares
+the debugger and collector before browser launch, watches only relevant focus
+and preparation calls, saves the caller first, takes a second pair after a
+bounded interval, and records pending-call timing before optional wait-chain
+inspection. Exact PID, start time and process name are checked before every
+dump. Raw and decoded artifacts are retained for 14 days. This opt-in workflow
+does not change runtime policy or ordinary browser acceptance criteria.
+
+### Preparation handoff
+
 Preparation retains the exact editor and selection obtained while the cold
 provider becomes ready. After refinement, a strict native focus/input guard,
 fresh validation of that same editor's selection, and queued native-event
