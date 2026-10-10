@@ -42,8 +42,17 @@ internal sealed class FirefoxSlowCallCollector : IAsyncDisposable
         var script = Path.Combine(root, "tests", "PttDictation.Tests", "FirefoxWaitChainWorker.ps1");
         var readyPath = Path.Combine(output, "slow-provider-worker.ready");
         var requestPath = Path.Combine(output, "slow-provider-worker.request.json");
-        if (File.Exists(readyPath) || File.Exists(requestPath))
+        var warmupTargetsPath = Path.Combine(output, "slow-provider-worker.warmup-targets.json");
+        if (File.Exists(readyPath) || File.Exists(requestPath) || File.Exists(warmupTargetsPath))
             throw new InvalidOperationException("Refusing stale diagnostic worker state.");
+        // Execute the first native dump before a browser exists. JITing the
+        // helper alone does not remove the observed cold dbghelp dump cost.
+        using (var host = Process.GetCurrentProcess())
+            await File.WriteAllTextAsync(warmupTargetsPath, JsonSerializer.Serialize(new[]
+            {
+                new { ProcessId = Environment.ProcessId, StartedUtc = host.StartTime.ToUniversalTime(),
+                    ProcessName = host.ProcessName }
+            }));
         var start = new ProcessStartInfo("pwsh.exe")
         {
             UseShellExecute = false, CreateNoWindow = true,
@@ -51,6 +60,7 @@ internal sealed class FirefoxSlowCallCollector : IAsyncDisposable
         };
         foreach (var argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-MTA", "-File", script,
             "-RequestPath", requestPath, "-ReadyPath", readyPath,
+            "-WarmupTargetsPath", warmupTargetsPath,
             "-OutputPath", Path.Combine(output, "slow-provider.chains.jsonl") })
             start.ArgumentList.Add(argument);
         var worker = Process.Start(start) ?? throw new InvalidOperationException("Diagnostic worker did not start.");

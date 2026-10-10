@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 [CmdletBinding()]
 param([string]$TargetsPath, [Parameter(Mandatory)][string]$OutputPath,
-    [string]$DumpPath, [int]$DumpProcessId, [string]$RequestPath, [string]$ReadyPath)
+    [string]$DumpPath, [int]$DumpProcessId, [string]$RequestPath, [string]$ReadyPath,
+    [string]$WarmupTargetsPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -37,7 +38,7 @@ public static class PttWaitChainWorker
         LoadLibrary("dbghelp.dll");
     }
 
-    public static void WriteDump(int pid, long startedUtcTicks, string processName,
+    public static bool WriteDump(int pid, long startedUtcTicks, string processName,
         string dumpPath, Action<object> write)
     {
         if (!String.IsNullOrEmpty(dumpPath))
@@ -63,9 +64,11 @@ public static class PttWaitChainWorker
                     result["startedUtcTicks"] = startedUtcTicks;
                     result["success"] = success; result["error"] = error;
                     write(result);
+                    return success;
                 }
             }
         }
+        return false;
     }
 
     public static void Run(int pid, long startedUtcTicks, uint priorityThreadId,
@@ -189,6 +192,32 @@ $writeRecord.Invoke(@{ stage = 'worker_helper_loaded'; utc = [DateTimeOffset]::U
 if ($RequestPath) {
     if (-not $ReadyPath) { throw 'A prepared worker requires a readiness path.' }
     [PttWaitChainWorker]::Prepare()
+    if ($WarmupTargetsPath) {
+        $warmupTargets = @(Get-Content -LiteralPath $WarmupTargetsPath -Raw | ConvertFrom-Json)
+        if ($warmupTargets.Count -ne 1 -or $warmupTargets[0].ProcessName -notin @('testhost', 'testhost.x86')) {
+            throw 'Native dump warmup requires exactly the owned testhost manifest; no browser or other process.'
+        }
+        $warmupTarget = $warmupTargets[0]
+        $warmupDumpPath = [IO.Path]::ChangeExtension($OutputPath, '.warmup.testhost.dmp')
+        if ([IO.File]::Exists($warmupDumpPath)) { throw 'Refusing an existing native dump warmup file.' }
+        $warmupWriteRecord = [Action[object]]{ param($record)
+            $record['purpose'] = 'native_dump_warmup'
+            $writeRecord.Invoke($record)
+        }
+        $writeRecord.Invoke(@{ stage = 'worker_dump_warmup_started'; utc = [DateTimeOffset]::UtcNow;
+            processId = [int]$warmupTarget.ProcessId; dumpPath = $warmupDumpPath })
+        try {
+            $startedTicks = ([DateTime]$warmupTarget.StartedUtc).ToUniversalTime().Ticks
+            if (-not [PttWaitChainWorker]::WriteDump([int]$warmupTarget.ProcessId, $startedTicks,
+                [string]$warmupTarget.ProcessName, $warmupDumpPath, $warmupWriteRecord)) {
+                throw 'Native testhost dump warmup failed; refusing to announce prepared diagnostics.'
+            }
+        } finally {
+            if ([IO.File]::Exists($warmupDumpPath)) { [IO.File]::Delete($warmupDumpPath) }
+            $writeRecord.Invoke(@{ stage = 'worker_dump_warmup_removed'; utc = [DateTimeOffset]::UtcNow;
+                processId = [int]$warmupTarget.ProcessId; dumpPath = $warmupDumpPath })
+        }
+    }
     $writeRecord.Invoke(@{ stage = 'worker_prepared'; utc = [DateTimeOffset]::UtcNow; processId = $PID })
     [IO.File]::WriteAllText($ReadyPath, [DateTimeOffset]::UtcNow.ToString('O'))
     while (-not [IO.File]::Exists($RequestPath)) { [Threading.Thread]::Sleep(5) }
@@ -223,7 +252,7 @@ if ($RequestPath) {
                     [IO.Path]::ChangeExtension($DumpPath, ".sample-$sample.$role.dmp")
                 } elseif ($target.ProcessId -eq $DumpProcessId) { $DumpPath }
                   else { [IO.Path]::ChangeExtension($DumpPath, '.testhost.dmp') }
-                [PttWaitChainWorker]::WriteDump([int]$target.ProcessId, $startedTicks,
+                [void][PttWaitChainWorker]::WriteDump([int]$target.ProcessId, $startedTicks,
                     [string]$target.ProcessName, $targetDumpPath, $writeRecord)
             }
             $writeRecord.Invoke(@{ stage = 'dump_pair_completed'; sample = $sample; utc = [DateTimeOffset]::UtcNow })

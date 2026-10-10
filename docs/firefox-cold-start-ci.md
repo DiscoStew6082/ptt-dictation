@@ -167,6 +167,25 @@ can pause the target; the first testhost dumps took up to 2.72 seconds, so these
 instrumented call durations are not baseline latency measurements. No
 profile-cleanup lock error occurred in this investigation.
 
+[The repeat run at `2ddb48d`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38087298611)
+passed three diagnostic samples and failed one during final preparation.
+Ordinary CI and CodeQL passed on the same head. The failed sample's first
+testhost dump ran from 21:23:19.679 to 21:23:24.803 UTC, taking 5.124 seconds;
+the five-second final-validation deadline expired during that pause, and the
+failure was logged as the dump finished. The focused-element query was already
+pending for 1.434 seconds before that dump. Both Firefox snapshots still show
+the startup-cache mutex wait and background writer, but the resulting
+10.745-second query duration cannot be classified as uninstrumented latency.
+The diagnostic failure remains in the run history; it does not justify raising
+the app's preparation deadline.
+
+The prepared collector now executes its first native testhost dump before
+Firefox launch, in addition to preparing the helper and loading `dbghelp`.
+This uses the exact owned testhost identity, records warmup timing, and removes
+the warmup dump before publishing readiness. This addresses the observed cold
+dump cost outside the timed browser experiment; it does not eliminate every
+possible observation effect. Trial dump durations remain recorded.
+
 The **Firefox lock investigation** workflow is manually available after merge;
 its four-sample matrix also runs on the investigation PR branch. It prepares
 the debugger and collector before browser launch, watches only relevant focus
