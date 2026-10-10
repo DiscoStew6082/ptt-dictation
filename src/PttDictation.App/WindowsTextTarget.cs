@@ -7,6 +7,7 @@ namespace PttDictation.App;
 
 internal enum TextTargetUpdateResult { Success, Pending, Unfocused, Unsupported, Conflict }
 internal enum TextPatternRequeryResult { NotSupported, Refreshed, Rejected }
+internal sealed record NativeSelectionRequest(long StartedAt, long? CompletedAt);
 
 internal sealed class TextTargetUnavailableException(ElementNotAvailableException innerException)
     : InvalidOperationException("Windows can no longer access the original textbox's automation reference. The textbox may still be visible; its identity and selected text cannot be verified safely.", innerException)
@@ -20,6 +21,7 @@ internal interface IWindowsTextTarget
     bool IsPreparedSelectionCurrent { get; }
     bool HasAttemptedWrite { get; }
     bool IsAwaitingWriteAcknowledgement => false;
+    NativeSelectionRequest? SelectionRequestProgress => null;
     TextTargetUpdateResult TryReplace(string previousText, string replacementText, Action<string> paste);
 }
 
@@ -50,6 +52,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private static readonly TimeSpan AcknowledgementTimeout = WriteAcknowledgementTimeout;
     private readonly IWindowsTextSurface _surface;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly Func<long> _operationTickCount;
     private readonly Func<long>? _readFocusGeneration;
     private readonly Func<long>? _readInputGeneration;
     private readonly TextTargetSnapshot? _initial;
@@ -73,6 +76,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private bool _initialDecorationDisappeared;
     private bool _originalReferenceRefreshAttempted;
     private readonly string? _recordingId;
+    private NativeSelectionRequest? _selectionRequestProgress;
 
     public static IWindowsTextTarget Capture() => new WindowsTextTarget(AutomationTextSurface.Capture());
 
@@ -164,11 +168,13 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private static extern uint GetWindowThreadProcessId(IntPtr window, out int processId);
 
     internal WindowsTextTarget(IWindowsTextSurface surface, Func<DateTimeOffset>? clock = null, string? recordingId = null,
-        Func<long>? readFocusGeneration = null, Func<long>? readInputGeneration = null)
+        Func<long>? readFocusGeneration = null, Func<long>? readInputGeneration = null,
+        Func<long>? operationTickCount = null)
     {
         _recordingId = recordingId ?? DiagnosticTrace.CurrentRecordingId;
         _surface = surface;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _operationTickCount = operationTickCount ?? (() => Environment.TickCount64);
         _readFocusGeneration = readFocusGeneration;
         _readInputGeneration = readInputGeneration;
         try
@@ -208,19 +214,22 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     public bool CanPasteFallback => _surface.CanPasteFallback;
     public bool HasAttemptedWrite { get; private set; }
     public bool IsAwaitingWriteAcknowledgement => _pendingText is not null;
+    public NativeSelectionRequest? SelectionRequestProgress => Volatile.Read(ref _selectionRequestProgress);
     public bool IsPreparedSelectionCurrent
     {
         get
         {
             try
             {
+                if (_preparedSelection is not null && !SelectionInputUnchanged()) return false;
                 if (!IsFocused) { Trace("target.prepared_invalid", new { reason = "unfocused" }); return false; }
                 var expected = _preparedSelection ?? _capturedSelection;
                 // Some unsupported editors expose no readable selection at all;
                 // their fallback still requires the exact captured field.
                 if (expected is null) return CanPasteFallback && IsFocused;
                 var current = ReadOriginalSurface(_surface.Read);
-                var valid = current.IsConsistent && current == expected && IsFocused;
+                var valid = current.IsConsistent && current == expected && IsFocused
+                    && (_preparedSelection is null || SelectionInputUnchanged());
                 if (!valid)
                 {
                     Trace("target.prepared_invalid", new { reason = "snapshot_or_focus_changed", current.IsConsistent, snapshotMatches = current == expected });
@@ -314,7 +323,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     && MatchesOwnedSelection(snapshot, currentOwned);
                 TraceSelectionObservation(reuseInitialCaret ? "target.initial_caret_reused" : "target.selection_requested",
                     currentOwned, snapshot, snapshot, TimeSpan.Zero);
-                if (!reuseInitialCaret && !_surface.Select(Prefix, currentOwned, Suffix))
+                if (!reuseInitialCaret && !SelectWithProgress(currentOwned))
                     return Conflict("select_owned_range_failed");
                 _selectionBeforeRequest = snapshot;
                 _selectionPatternRequeryAttempted = false;
@@ -374,7 +383,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     _selectionRequestRetried = true;
                     TraceSelectionObservation("target.selection_request_retried", currentOwned,
                         beforeRetry, _selectionBeforeRequest!, _clock() - _selectionSince);
-                    if (!_surface.Select(Prefix, currentOwned, Suffix)) return Conflict("selection_retry_rejected");
+                    if (!SelectWithProgress(currentOwned)) return Conflict("selection_retry_rejected");
                     selected = _surface.Read();
                     if (_clock() - _selectionSince >= AcknowledgementTimeout)
                         return Conflict("selection_acknowledgement_timeout");
@@ -409,6 +418,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             // during a provider read. Both paths share the original deadline.
             if (_clock() - _selectionSince >= AcknowledgementTimeout)
                 return Conflict("selection_acknowledgement_timeout");
+            if (!SelectionInputUnchanged()) return Conflict("selection_input_changed");
             TraceSelectionObservation("target.selection_acknowledged", currentOwned, selected, _selectionBeforeRequest!,
                 _clock() - _selectionSince);
             _selectionBeforeRequest = null;
@@ -444,6 +454,18 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         catch (Exception ex) when (ex is not TextTargetUnavailableException && IsProviderFailure(ex))
         {
             return Conflict("provider_failure", ex);
+        }
+    }
+
+    private bool SelectWithProgress(string currentOwned)
+    {
+        var started = _operationTickCount();
+        Volatile.Write(ref _selectionRequestProgress, new(started, null));
+        try { return _surface.Select(Prefix, currentOwned, Suffix); }
+        finally
+        {
+            Volatile.Write(ref _selectionRequestProgress,
+                new(started, _operationTickCount()));
         }
     }
 
@@ -563,6 +585,12 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         _selectionInputGenerationAtRequest is { } input && ReadInputGeneration() == input
         && _selectionGenerationAtRequest is { } focus && ReadFocusGenerationForDiagnostics() == focus
         && ReadInputGeneration() == input;
+
+    // Native input can be overwritten by a delayed Select and leave an exact
+    // snapshot again. Production captures this generation before Select and
+    // rechecks it after the final provider reads, immediately before paste.
+    private bool SelectionInputUnchanged() => _readInputGeneration is null
+        || _selectionInputGenerationAtRequest is { } input && ReadInputGeneration() == input;
 
     private TextTargetUnavailableException Unavailable(string operation, ElementNotAvailableException error)
     {

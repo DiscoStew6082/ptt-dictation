@@ -18,9 +18,10 @@ forced browser accessibility setting primes the browser before the first hold.
 PTT's accessibility client starts before the browser and remains running across
 the three restarts. Initial capture retains its ten-second test limit, each
 replacement has a 47-second observation allowance, and the whole trial is
-limited to ninety seconds. Those observation limits account for PTT's bounded
-response stages; a failed workflow fails the test immediately. They are not
-latency guarantees. See the [Firefox diagnosis and response policy](firefox-cold-start-ci.md)
+limited to ninety seconds. The 47-second limit is a strict CI acceptance bound,
+not the sum of every maximum product response stage; it remains unchanged with
+bounded native-selection recovery. A failed workflow fails the test immediately.
+These are not latency guarantees. See the [Firefox diagnosis and response policy](firefox-cold-start-ci.md)
 for the startup-stall failures that motivated these checks.
 
 `scripts/Test-FirefoxColdStart.ps1` and `scripts/Test-ChromeColdStart.ps1` call

@@ -23,9 +23,11 @@ three trusted paste events per dictation. The second dictation must preserve
 the first one's text through preview and final replacement. The actual
 nonactivating preparation overlay participates in each recording.
 
-Each replacement has a 47-second observation allowance, derived from three
-15-second response stages plus two seconds for observation. This is a test
-envelope, not an end-to-end latency guarantee. The whole trial still has its
+Each replacement has a fixed 47-second CI acceptance bound. It was originally
+derived from three 15-second response stages plus observation time, and remains
+unchanged after adding bounded native-selection recovery. It is stricter than
+the sum of every maximum product response stage, not an end-to-end latency
+guarantee. The whole trial still has its
 90-second deadline, initial capture still has ten seconds, and a failed workflow
 fails the test immediately. Each preview boundary requires exactly one new
 trusted paste and exact DOM text. Evidence records capture, preview, revision
@@ -60,8 +62,21 @@ Native stacks from the isolated runner showed Firefox's main thread blocked in
 same mutex during disk I/O. Accessibility snapshots could remain stale briefly
 after that pause ended. An already captured target now shows a nonactivating
 waiting status after a single operation blocks for five seconds; recording and
-cancellation remain responsive. A fifteen-second operation ceiling is checked
-by the timer and again before writing or acknowledging a late result. Initial
+cancellation remain responsive. The normal fifteen-second operation ceiling is
+checked by the timer and again before writing or acknowledging a late result.
+A later cold-run failure recorded a single native selection request taking
+25.828 seconds. Only a selection request begun during the current ready-target
+operation and spanning its original fifteen-second deadline can enter one
+recovery window, bounded at thirty seconds from that
+operation's original start. Its explicit progress state survives return, so a
+late timer cannot bypass the ceiling. The request is never replayed by this
+recovery, and its allowance cannot carry into a later operation or extend passive
+acknowledgement polling. Native input generation, original focus, full document
+partition and exact selection must still match before paste; input during the
+wait or final validation revokes write permission. Thirty seconds is a finite
+response policy informed by the observed stall, not a guarantee that arbitrary
+provider hangs can recover. The CI observation limits remain 47 seconds per
+replacement and 90 seconds per trial. Initial
 capture/preparation and focus-return limits remain five seconds. These are
 separate phase limits, not a total dictation deadline.
 

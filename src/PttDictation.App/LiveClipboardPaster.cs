@@ -11,6 +11,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     internal const long InitialCaptureTimeoutMilliseconds = 5000;
     internal const long SlowOperationMilliseconds = 5000;
     internal const long ReadyOperationTimeoutMilliseconds = WindowsTextTarget.ResponseTimeoutMilliseconds;
+    internal const long NativeSelectionRecoveryTimeoutMilliseconds = 30000;
     internal const string SlowProviderReason = "Waiting for textbox to respond.";
     private readonly Func<Func<IWindowsTextTarget>> _prepareCapture;
     private readonly Func<Func<bool>> _beginCaptureGuard;
@@ -316,6 +317,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         }
         if (!IsCurrent(session)) return;
         if (Interlocked.Exchange(ref _queued, 1) != 0) return;
+        session.SelectionProgressAtStart = session.Target?.SelectionRequestProgress;
+        session.NativeSelectionRecovery = false;
         Interlocked.Exchange(ref session.BusySince, _tickCount());
         Dispatch(() =>
         {
@@ -490,6 +493,28 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             var elapsed = _tickCount() - started;
             if (started == 0 || !(session.Ready ? elapsed >= ReadyOperationTimeoutMilliseconds
                 : elapsed > InitialCaptureTimeoutMilliseconds)) return true;
+            if (session.Ready)
+            {
+                var selection = session.Target?.SelectionRequestProgress;
+                if (!session.NativeSelectionRecovery && selection is not null
+                    && !ReferenceEquals(selection, session.SelectionProgressAtStart)
+                    && selection.StartedAt >= started
+                    && selection.StartedAt - started <= ReadyOperationTimeoutMilliseconds
+                    && (selection.CompletedAt is null
+                        || selection.CompletedAt.Value - started >= ReadyOperationTimeoutMilliseconds))
+                {
+                    // A pending Select may already have taken effect. Keep that
+                    // single request alive only if it spans this operation's
+                    // normal deadline. Both clocks are monotonic; completion
+                    // evidence makes eligibility independent of timer cadence.
+                    // Never replay it, and revalidate the
+                    // original input intent/range before paste when it returns.
+                    session.NativeSelectionRecovery = true;
+                    Trace(session, "inline.selection_recovery_wait", new { elapsedMilliseconds = elapsed });
+                }
+                if (session.NativeSelectionRecovery && elapsed < NativeSelectionRecoveryTimeoutMilliseconds)
+                    return true;
+            }
             Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = elapsed });
             TextProviderDiagnostics.WritePendingOperations(session.RecordingId);
             FailInsertion(session, new InvalidOperationException("The original editor stopped responding."),
@@ -592,6 +617,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         public string? Failure;
         public long BusySince;
         public bool SlowOperationNotified;
+        public NativeSelectionRequest? SelectionProgressAtStart;
+        public bool NativeSelectionRecovery;
         public int FailureNotified;
         public volatile LiveInsertionFailureDelivery? FailureDelivery;
     }
