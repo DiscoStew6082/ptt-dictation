@@ -32,10 +32,11 @@ internal sealed class NativeFocusReadTracker(Func<long>? tickCount = null)
         try { return read(); }
         finally
         {
-            var completed = new NativeFocusRead(started, _tickCount());
+            var completedAt = _tickCount();
+            var completed = new NativeFocusRead(started, completedAt);
             if (started >= _operationStarted
                 && started - _operationStarted < WindowsTextTarget.ResponseTimeoutMilliseconds
-                && completed.CompletedAt.Value - _operationStarted >= WindowsTextTarget.ResponseTimeoutMilliseconds)
+                && completedAt - _operationStarted >= WindowsTextTarget.ResponseTimeoutMilliseconds)
                 Volatile.Write(ref _completedSlow, completed);
             Volatile.Write(ref _active, null);
         }
@@ -70,6 +71,7 @@ internal sealed record TextTargetSnapshot(string Document, string Prefix, string
 internal interface IWindowsTextSurface
 {
     bool IsFocused { get; }
+    bool IsOriginalForegroundCurrent => true;
     bool SupportsReplacement { get; }
     bool CanPasteFallback { get; }
     NativeFocusRead? FocusReadProgress => null;
@@ -290,6 +292,22 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 var current = ReadOriginalSurface(_surface.Read);
                 var valid = current.IsConsistent && current == expected && IsFocused
                     && OperationInputUnchanged() && (_preparedSelection is null || SelectionInputUnchanged());
+                if (valid && _surface.FocusReadProgress is { CompletedAt: not null })
+                {
+                    // The last original-focus read may itself have stalled.
+                    // Reread its original selection once after focus returns;
+                    // native events protect this final snapshot from a scripted
+                    // field/caret change. Do not add another blocking focus read
+                    // after it, loop, or restart the operation's hard deadline.
+                    var generation = ReadFocusGenerationForDiagnostics();
+                    if (generation is null) return false;
+                    current = ReadOriginalSurface(_surface.Read);
+                    valid = current.IsConsistent && current == expected
+                        && _surface.IsOriginalForegroundCurrent
+                        && ReadFocusGenerationForDiagnostics() == generation
+                        && OperationInputUnchanged()
+                        && (_preparedSelection is null || SelectionInputUnchanged());
+                }
                 if (!valid)
                 {
                     Trace("target.prepared_invalid", new { reason = "snapshot_or_focus_changed", current.IsConsistent, snapshotMatches = current == expected });
@@ -705,6 +723,8 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     private readonly NativeFocusReadTracker _focusReads;
     public NativeFocusRead? FocusReadProgress => _focusReads.Progress;
     public void BeginReadyOperation(long startedAt) => _focusReads.BeginOperation(startedAt);
+    public bool IsOriginalForegroundCurrent => _foregroundWindow != IntPtr.Zero
+        && GetForegroundWindow() == _foregroundWindow;
 
     private AutomationTextSurface(AutomationElement? element, TextPattern? pattern, bool canPasteFallback = false,
         bool supportsReplacement = false, bool isUnsupportedInitialContainer = false, bool isLegacyFocusContainer = false,

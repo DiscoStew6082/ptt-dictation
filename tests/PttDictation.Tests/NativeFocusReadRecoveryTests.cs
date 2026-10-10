@@ -176,13 +176,82 @@ public sealed class NativeFocusReadRecoveryTests
         Assert.AreEqual(1, run.Writes);
     }
 
+    [TestMethod]
+    [DataRow("unchanged")]
+    [DataRow("document")]
+    [DataRow("caret")]
+    public async Task FinalFocusStallRequiresFreshSnapshotDespiteUnchangedNativeInput(string mutation)
+    {
+        await using var run = await Run.Start(blockDuringFinalValidation: true);
+        var input = run.InputGeneration;
+        if (mutation == "document") run.Surface.Snapshot = new("scripted change", "scripted change", "", "");
+        else if (mutation == "caret")
+        {
+            var document = run.Surface.Snapshot.Document;
+            run.Surface.Snapshot = new(document, document, "", "");
+        }
+        run.Now += 19368;
+        await run.Release();
+        Assert.AreEqual(input, run.InputGeneration);
+        Assert.AreEqual(mutation == "unchanged" ? 2 : 1, run.Writes);
+        Assert.AreEqual(mutation == "unchanged" ? 0 : 1, run.Failures);
+        Assert.AreEqual(1, run.Surface.SelectCalls);
+    }
+
+    [TestMethod]
+    public async Task NativeFocusChangeDuringRecoveredFinalReadRevokesPaste()
+    {
+        await using var run = await Run.Start(blockDuringFinalValidation: true);
+        run.Surface.AfterRead = () => run.FocusGeneration++;
+        run.Now += 19368;
+        await run.Release();
+        Assert.AreEqual(1, run.Failures);
+        Assert.AreEqual(1, run.Writes);
+    }
+
+    [TestMethod]
+    public async Task MissingNativeFocusTelemetryCannotAuthorizeRecoveredFinalSnapshot()
+    {
+        await using var run = await Run.Start(blockDuringFinalValidation: true);
+        run.ThrowFocusTelemetry = true;
+        run.Now += 19368;
+        await run.Release();
+        Assert.AreEqual(1, run.Failures);
+        Assert.AreEqual(1, run.Writes);
+    }
+
+    [TestMethod]
+    public async Task NativeForegroundChangeDuringFinalReadRevokesPasteBeforeEventDelivery()
+    {
+        await using var run = await Run.Start(blockDuringFinalValidation: true);
+        run.Surface.AfterRead = () => run.Surface.ForegroundCurrent = false;
+        run.Now += 19368;
+        await run.Release();
+        Assert.AreEqual(1, run.Failures);
+        Assert.AreEqual(1, run.Writes);
+    }
+
+    [TestMethod]
+    public async Task RecoveredValidationReadsOnlyOnceAndCannotResetHardCeiling()
+    {
+        await using var run = await Run.Start(blockDuringFinalValidation: true);
+        var reads = run.Surface.Reads;
+        run.Surface.AfterRead = () => run.Now += 15000;
+        run.Now += 19368;
+        await run.Release();
+        Assert.AreEqual(reads + 1, run.Surface.Reads, "A slow final snapshot must not start another validation loop.");
+        Assert.AreEqual(1, run.Failures);
+        Assert.AreEqual(1, run.Writes);
+    }
+
     private sealed class Run : IAsyncDisposable
     {
         private readonly ApartmentWorker _worker = new(ApartmentState.MTA, "Native focus recovery test");
         public readonly Surface Surface;
         public readonly LiveClipboardPaster Output;
-        public long Now = 100, InputGeneration = 1;
+        public long Now = 100, InputGeneration = 1, FocusGeneration = 1;
         public int Failures, Writes, Acknowledgements;
+        public bool ThrowFocusTelemetry;
         public Action? BeforeCanWrite;
 
         private Run()
@@ -190,6 +259,9 @@ public sealed class NativeFocusReadRecoveryTests
             Surface = new(() => Interlocked.Read(ref Now));
             var target = new WindowsTextTarget(Surface,
                 clock: () => DateTimeOffset.UnixEpoch.AddMilliseconds(Interlocked.Read(ref Now)),
+                readFocusGeneration: () => ThrowFocusTelemetry
+                    ? throw new InvalidOperationException("Native focus telemetry unavailable.")
+                    : Interlocked.Read(ref FocusGeneration),
                 readInputGeneration: () => Interlocked.Read(ref InputGeneration),
                 operationTickCount: () => Interlocked.Read(ref Now));
             Output = new(() => target, (_, _) => Assert.Fail("Expected acknowledged paste."),
@@ -206,7 +278,7 @@ public sealed class NativeFocusReadRecoveryTests
         }
 
         public static async Task<Run> Start(long workBeforeFocus = 0, bool blockBeforeSelection = false,
-            long workBeforeSelection = 0)
+            long workBeforeSelection = 0, bool blockDuringFinalValidation = false)
         {
             var run = new Run();
             run.Output.CaptureTarget();
@@ -227,8 +299,14 @@ public sealed class NativeFocusReadRecoveryTests
             run.Surface.AfterRequery = () =>
             {
                 run.Now += workBeforeFocus;
-                run.Surface.BlockFocus = true;
+                run.Surface.BlockFocus = !blockDuringFinalValidation;
             };
+            if (blockDuringFinalValidation)
+                run.BeforeCanWrite = () => run.Surface.AfterRead = () =>
+                {
+                    run.Surface.AfterRead = null;
+                    run.Surface.BlockFocus = true;
+                };
             run.Output.UpdatePreview("revised");
             run.Output.Pump();
             Assert.IsTrue(run.Surface.Entered.Wait(TimeSpan.FromSeconds(2)));
@@ -256,8 +334,10 @@ public sealed class NativeFocusReadRecoveryTests
         private readonly NativeFocusReadTracker _focusReads = new(tickCount);
         public readonly ManualResetEventSlim Entered = new(), Continue = new();
         public volatile bool Focused = true;
+        public bool ForegroundCurrent = true;
+        public bool IsOriginalForegroundCurrent => ForegroundCurrent;
         public bool BlockFocus, BlockRead, RefreshFocusOnRead;
-        public int SelectCalls, Requeries;
+        public int SelectCalls, Requeries, Reads;
         public Action? AfterRequery, AfterRead;
         public TextTargetSnapshot Snapshot = new("", "", "", "");
         private TextTargetSnapshot? _requested;
@@ -277,6 +357,7 @@ public sealed class NativeFocusReadRecoveryTests
         public bool CanPasteFallback => true;
         public TextTargetSnapshot Read()
         {
+            Reads++;
             if (RefreshFocusOnRead) _ = IsFocused;
             if (BlockRead)
             {

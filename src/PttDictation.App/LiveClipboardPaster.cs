@@ -502,7 +502,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                 if (!session.NativeSelectionRecovery && selection is not null
                     && !ReferenceEquals(selection, session.SelectionProgressAtStart)
                     && selection.StartedAt >= started
-                    && selection.StartedAt - started <= ReadyOperationTimeoutMilliseconds
+                    && selection.StartedAt - started < ReadyOperationTimeoutMilliseconds
                     && (selection.CompletedAt is null
                         || selection.CompletedAt.Value - started >= ReadyOperationTimeoutMilliseconds))
                 {
