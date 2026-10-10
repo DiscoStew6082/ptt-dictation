@@ -39,7 +39,7 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         {
             // Start PTT before any process of the browser under test exists.
             // A surprise runner browser fails the gate without being terminated.
-            AssertNoExistingBrowser(browserKind);
+            AssertNoExistingBrowser(browserKind, output);
             using var overlay = new StatusOverlayForm();
             using var paster = new LiveClipboardPaster(() => overlay.IsHandleCreated ? overlay.Handle : IntPtr.Zero);
             var started = Stopwatch.StartNew();
@@ -284,13 +284,15 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         await completed.Task.WaitAsync(TimeSpan.FromSeconds(300));
     }
 
-    private static void AssertNoExistingBrowser(ColdStartBrowser kind)
+    private static void AssertNoExistingBrowser(ColdStartBrowser kind, string output)
     {
         var existing = Process.GetProcessesByName(kind.ToString().ToLowerInvariant());
         try
         {
-            Assert.AreEqual(0, existing.Length,
-                $"Cold test requires no existing {kind} processes on its dedicated runner. Unrelated processes will not be terminated.");
+            ColdStartProcessGate.AssertNoneRunning(existing, kind.ToString(), observations =>
+                File.AppendAllText(Path.Combine(output, "cold-process-precondition.jsonl"),
+                    JsonSerializer.Serialize(new { observedUtc = DateTime.UtcNow, browser = kind.ToString(), observations })
+                    + Environment.NewLine));
         }
         finally { foreach (var process in existing) process.Dispose(); }
     }
@@ -327,7 +329,7 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
 
         public void Start()
         {
-            AssertNoExistingBrowser(kind);
+            AssertNoExistingBrowser(kind, output);
             Directory.CreateDirectory(_profile);
             // Suppress first-run chrome only. Never force/enable accessibility.
             if (kind == ColdStartBrowser.Firefox) File.WriteAllText(Path.Combine(_profile, "user.js"), """
