@@ -1,5 +1,9 @@
 # Firefox cold-start CI
 
+Chrome now exercises the same insertion contract in a separate CI job. See
+[browser cold-start CI](browser-cold-start-ci.md) for the shared coverage and
+entry points; this document retains the Firefox-specific diagnosis.
+
 The **Firefox cold start** job in `.github/workflows/ci.yml` runs on a disposable
 GitHub-hosted Windows desktop. It launches the runner's actual Mozilla Firefox
 executable with a new process and a fresh, isolated profile for each iteration.

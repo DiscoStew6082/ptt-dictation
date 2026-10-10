@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace PttDictation.Tests;
 
 // The page observes native insertion independently of UIA. It never injects text.
-internal sealed class FirefoxEditorFixture : IAsyncDisposable
+internal sealed class BrowserEditorFixture : IAsyncDisposable
 {
     internal sealed record State(string Text, bool Focused, long Sequence,
         string UserAgent, double Timestamp, double? FirstFocusedAt, bool Ready,
@@ -26,7 +26,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
     private readonly Task _server;
     private State? _latest;
 
-    private FirefoxEditorFixture(HttpListener listener, Uri url, string kind)
+    private BrowserEditorFixture(HttpListener listener, Uri url, string kind)
     {
         _listener = listener;
         Url = url;
@@ -39,7 +39,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
     public State? Latest { get { lock (_gate) return _latest; } }
     public IReadOnlyList<State> Snapshots { get { lock (_gate) return _snapshots.ToArray(); } }
 
-    public static FirefoxEditorFixture Start(string kind)
+    public static BrowserEditorFixture Start(string kind)
     {
         if (kind is not ("textarea" or "contenteditable"))
             throw new ArgumentOutOfRangeException(nameof(kind));
@@ -57,7 +57,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             try
             {
                 listener.Start();
-                return new FirefoxEditorFixture(listener,
+                return new BrowserEditorFixture(listener,
                     new Uri(origin + Guid.NewGuid().ToString("N") + "/"), kind);
             }
             catch (HttpListenerException error) when (attempt < 4 && error.ErrorCode != 5)
@@ -170,7 +170,7 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
             || !double.IsFinite(state.Timestamp) || state.TrustedInputEvents < 0 || state.TrustedPasteEvents < 0
             || !double.IsFinite(state.ClickX) || !double.IsFinite(state.ClickY)
             || !double.IsFinite(state.PixelRatio) || state.PixelRatio <= 0 || state.TrustedClicks < 0)
-            throw new InvalidDataException("Invalid Firefox state report.");
+            throw new InvalidDataException("Invalid browser state report.");
         state = state with { ReceivedUtc = DateTimeOffset.UtcNow };
         lock (_gate)
         {
@@ -186,20 +186,20 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
     private static string BuildPage(string kind)
     {
         var editor = kind == "textarea"
-            ? "<textarea id=\"editor\" aria-label=\"PTT Firefox cold-start editor\" spellcheck=\"false\"></textarea>"
-            : "<div id=\"editor\" contenteditable=\"true\" role=\"textbox\" aria-multiline=\"true\" aria-label=\"PTT Firefox cold-start editor\" spellcheck=\"false\"></div>";
+            ? "<textarea id=\"editor\" aria-label=\"PTT browser cold-start editor\" spellcheck=\"false\"></textarea>"
+            : "<div id=\"editor\" contenteditable=\"true\" role=\"textbox\" aria-multiline=\"true\" aria-label=\"PTT browser cold-start editor\" spellcheck=\"false\"></div>";
         return $$"""
             <!doctype html>
             <html lang="en"><meta charset="utf-8">
             <meta name="color-scheme" content="dark">
-            <title>PTT Firefox cold-start test</title>
+            <title>PTT browser cold-start test</title>
             <style>
             body { background:#181818; color:#eee; font:18px system-ui; padding:32px; }
             #editor { display:block; box-sizing:border-box; width:100%; min-height:240px;
               background:#242424; color:#eee; border:2px solid #888; padding:16px;
               font:20px system-ui; white-space:pre-wrap; }
             </style>
-            <h1>PTT Firefox cold-start test</h1>
+            <h1>PTT browser cold-start test</h1>
             {{editor}}
             <script>
             const editor = document.getElementById('editor');
@@ -219,8 +219,8 @@ internal sealed class FirefoxEditorFixture : IAsyncDisposable
                 timestamp: performance.now(), firstFocusedAt, ready,
                 trustedInputEvents, trustedPasteEvents,
                 lastTrustedPasteAt, lastTrustedInputAt,
-                clickX: window.mozInnerScreenX + rect.left + Math.min(24, rect.width / 2),
-                clickY: window.mozInnerScreenY + rect.top + Math.min(24, rect.height / 2),
+                clickX: (window.mozInnerScreenX ?? (window.screenX + (window.outerWidth - window.innerWidth) / 2)) + rect.left + Math.min(24, rect.width / 2),
+                clickY: (window.mozInnerScreenY ?? (window.screenY + window.outerHeight - window.innerHeight - (window.outerWidth - window.innerWidth) / 2)) + rect.top + Math.min(24, rect.height / 2),
                 pixelRatio: window.devicePixelRatio, trustedClicks,
                 selectionRangeCount: selection?.rangeCount ?? 0,
                 selectionAnchor: selection?.anchorNode?.nodeName ?? null,

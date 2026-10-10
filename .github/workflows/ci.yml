@@ -53,7 +53,7 @@ jobs:
         # This opt-in is limited to the disposable GitHub-hosted Windows runner.
         env:
           PTT_RUN_VISIBLE_UI_TESTS: '1'
-        run: dotnet test PttDictation.sln --configuration Release --no-restore --filter "TestCategory!=FirefoxColdStart"
+        run: dotnet test PttDictation.sln --configuration Release --no-restore --filter "TestCategory!=FirefoxColdStart&TestCategory!=ChromeColdStart"
 
       - name: Test permanent local deployment workflow
         shell: pwsh
@@ -110,4 +110,36 @@ jobs:
             artifacts/firefox-cold-start/**/*.stacks.txt
             artifacts/firefox-cold-start/**/*.debugger-errors.txt
           if-no-files-found: ignore
+          retention-days: 14
+
+  chrome-cold-start:
+    name: Chrome cold start
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore PttDictation.sln --locked-mode
+
+      - name: Test real Chrome from fresh processes and profiles
+        shell: pwsh
+        run: ./scripts/Test-ChromeColdStart.ps1
+
+      - name: Upload Chrome cold-start evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chrome-cold-start-evidence-${{ github.run_attempt }}
+          path: artifacts/chrome-cold-start/
+          if-no-files-found: warn
           retention-days: 14
