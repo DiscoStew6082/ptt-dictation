@@ -78,8 +78,7 @@ internal sealed class FirefoxSlowCallCollector : IAsyncDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var pending = TextProviderDiagnostics.SnapshotPendingOperations()
-                    .Where(operation => operation.Name == "focus.original_element"
-                        && operation.ElapsedMilliseconds >= 5000).ToArray();
+                    .Where(operation => operation.ElapsedMilliseconds >= 500).ToArray();
                 if (pending.Length > 0)
                 {
                     if (Interlocked.Exchange(ref _triggered, 1) != 0) return;

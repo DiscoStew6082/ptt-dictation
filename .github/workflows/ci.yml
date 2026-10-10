@@ -84,8 +84,6 @@ jobs:
 
       - name: Test real Firefox from fresh processes and profiles
         shell: pwsh
-        env:
-          PTT_CAPTURE_SLOW_FIREFOX: '1'
         run: ./scripts/Test-FirefoxColdStart.ps1
 
       - name: Upload Firefox cold-start evidence

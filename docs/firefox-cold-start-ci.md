@@ -65,8 +65,9 @@ waiting status after a single operation blocks for five seconds; recording and
 cancellation remain responsive. The normal fifteen-second operation ceiling is
 checked by the timer and again before writing or acknowledging a late result.
 A later cold-run failure recorded a single native selection request taking
-25.828 seconds. Only a selection request begun during the current ready-target
-operation and spanning its original fifteen-second deadline can enter one
+25.828 seconds. The initial recovery change allowed a selection request begun
+during the current ready-target operation and spanning its original
+fifteen-second deadline to enter one
 recovery window, bounded at thirty seconds from that
 operation's original start. Its explicit progress state survives return, so a
 late timer cannot bypass the ceiling. The request is never replayed by this
@@ -79,6 +80,41 @@ provider hangs can recover. The CI observation limits remain 47 seconds per
 replacement and 90 seconds per trial. Initial
 capture/preparation and focus-return limits remain five seconds. These are
 separate phase limits, not a total dictation deadline.
+
+The October 10 post-merge run at `49e40a5` exposed a second recovery gap:
+[Firefox's textarea test failed](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38083297753/attempts/1)
+after selection requery produced the exact owned range in 19 milliseconds, but
+the original element's `HasKeyboardFocus` read then blocked for 19.368 seconds.
+The watchdog expired at 15.047 seconds. This was a focus-property read, not a
+focus-changing request, and no profile-cleanup lock error occurred. The retry
+passed with the same source, including slower focus reads of roughly one to
+three seconds; that establishes intermittence, not a repair. Failure-only
+native workers exhausted their eight-second lifetimes without producing dumps,
+so these artifacts do not establish the browser-side cause of this particular
+stall. Earlier startup-cache stacks remain evidence for their earlier runs.
+
+Original-element focus reads now qualify for the same thirty-second absolute
+ready-operation ceiling only when explicit monotonic progress shows a fresh
+read spanning that operation's fifteen-second deadline. Completion evidence is
+retained so a delayed watchdog cannot reject a qualifying returned read or let
+a result beyond thirty seconds write. The allowance does not reset, carry into
+the next operation, or extend a generic provider hang or passive write
+acknowledgement. A native input baseline is captured before ready-operation
+provider work and checked again before paste, so input during the blocked read
+cannot be adopted as new insertion intent.
+
+Passive selection acknowledgement ends when the exact document partition and
+owned range are observed within its existing fifteen-second deadline. A later
+focus read cannot retroactively expire that already completed phase. Clipboard
+submission still requires a fresh read of the original prepared range, fresh
+original-element focus verification, unchanged native input and a current
+uncancelled session within the absolute operation ceiling. No identity is
+inferred from cached UIA runtime IDs, and no uncertain paste is replayed.
+
+Diagnostic workers flush bootstrap stages before helper compilation. Prepared
+workers can capture a slow read while it is occurring; failure-only workers
+retain their bounded lifetimes and now reveal whether native capture ever
+began. Diagnostic collection never changes a failed test to a passing one.
 
 Preparation retains the exact editor and selection obtained while the cold
 provider becomes ready. After refinement, a strict native focus/input guard,
