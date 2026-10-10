@@ -12,9 +12,9 @@ internal sealed record TextTargetReadiness(Func<bool> Probe, Func<IWindowsTextTa
 internal static class BrowserCaptureReadiness
 {
     internal static TextTargetReadiness Create(Func<long> readFocusGeneration)
-        => CreatePrepared(() => AutomationElement.FocusedElement, (original, focused) =>
+        => CreatePrepared(() => TextProviderDiagnostics.Observe("preparation.focused_element", () => AutomationElement.FocusedElement), (original, focused) =>
             Related(original, focused),
-            focused => focused.Current.HasKeyboardFocus
+            focused => TextProviderDiagnostics.Observe("preparation.original_element", () => focused.Current.HasKeyboardFocus)
                 ? WindowsTextTarget.CaptureIdentity(focused, readFocusGeneration)()
                 : null,
             Automation.Compare);

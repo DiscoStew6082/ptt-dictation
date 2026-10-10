@@ -78,7 +78,9 @@ wait or final validation revokes write permission. Thirty seconds is a finite
 response policy informed by the observed stall, not a guarantee that arbitrary
 provider hangs can recover. The CI observation limits remain 47 seconds per
 replacement and 90 seconds per trial. Initial
-capture/preparation and focus-return limits remain five seconds. These are
+cold readiness and focus-return limits remain five seconds. After an exact
+prepared editor becomes ready within that first limit, final validation has one
+five-second phase, with an absolute ten-second preparation ceiling. These are
 separate phase limits, not a total dictation deadline.
 
 The October 10 post-merge run at `49e40a5` exposed a second recovery gap:
@@ -121,8 +123,26 @@ provider becomes ready. After refinement, a strict native focus/input guard,
 fresh validation of that same editor's selection, and queued native-event
 confirmation all finish before microphone startup. The recording adopts that
 prepared target without repeating provider capability discovery. The original
-preparation deadline and intent checks remain active through this handoff;
+preparation phase deadline and intent checks remain active through this handoff;
 changed identity, selection, or cancellation cannot select a replacement editor.
+
+[The post-merge run at `b47a84d`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38085154591)
+exposed a separate preparation deadline collision. The textarea target and
+consistent selection were captured at 295 milliseconds; the strict native
+capture boundary began at 1.090 seconds. Final provider validation returned at
+5.048 seconds, after the shared five-second timer had already rejected startup.
+The browser's DOM stayed focused and untouched, and neither recording nor
+paste began. These artifacts identify the phase and elapsed time, but not
+which individual provider call accounted for the interval.
+
+The two preparation phases now have explicit monotonic deadlines. Only timely
+readiness of a retained exact target permits the one final-validation phase;
+unready polling, a missing target, or expired readiness cannot renew it.
+The final checks retain the pinned readiness identity, original complete
+selection and native intent. Late timers and queued UI confirmations still
+respect the phase deadline and the ten-second absolute ceiling. Preparation
+traces include phase boundaries and readiness provider calls to identify future
+stalls without treating a timeout as proof of a particular Firefox lock.
 
 UI Automation identity capture and target validation run on the serialized,
 windowless MTA worker, following

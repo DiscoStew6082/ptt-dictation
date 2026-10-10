@@ -112,11 +112,11 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
             // the serial automation worker has finished it, never from the UI.
             if (_automation is null) lease.Dispose();
             else _ = _automation.InvokeAsync(lease.Dispose);
-        });
+        }, _tickCount);
         _preparation = preparation;
         void Check()
         {
-            preparation.Token.ThrowIfCancellationRequested();
+            preparation.ThrowIfExpired();
             if (!ReferenceEquals(Volatile.Read(ref _preparation), preparation) || !preparation.Unchanged())
                 throw new InvalidOperationException("The textbox or input changed while dictation was preparing.");
         }
@@ -145,6 +145,10 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                 // Readiness may legitimately refine a cold browser container.
                 // After that, a strict native boundary surrounds final validation
                 // of the SAME editor and snapshot, all before microphone startup.
+                preparation.BeginFinalValidation();
+                var finalValidationStartedAt = preparation.ElapsedMilliseconds;
+                DiagnosticTrace.Write("inline.preparation_final_validation_started",
+                    new { elapsedMs = finalValidationStartedAt });
                 var unchanged = _beginCaptureGuard();
                 await OnWorker(() =>
                 {
@@ -167,11 +171,18 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                     catch (Exception error) { confirmed.TrySetException(error); }
                 });
                 await confirmed.Task.WaitAsync(preparation.Token);
+                Check();
+                DiagnosticTrace.Write("inline.preparation_final_validation_completed",
+                    new { elapsedMs = preparation.ElapsedMilliseconds,
+                        durationMs = preparation.ElapsedMilliseconds - finalValidationStartedAt });
             }
             DiagnosticTrace.Write("inline.preparation_ready");
         }
         catch (Exception error)
         {
+            DiagnosticTrace.Write("inline.preparation_failed",
+                new { phase = preparation.Phase, elapsedMs = preparation.ElapsedMilliseconds }, error);
+            TextProviderDiagnostics.WritePendingOperations(DiagnosticTrace.CurrentRecordingId);
             Interlocked.CompareExchange(ref _preparation, null, preparation);
             preparation.Dispose();
             if (error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
@@ -184,8 +195,10 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
     {
         var preparation = Interlocked.Exchange(ref _preparation, null);
         EndSession();
-        if (preparation is not null && (preparation.Token.IsCancellationRequested || !preparation.Unchanged()
-            || preparation.ConfirmedIntent is { } confirmedIntent && !confirmedIntent()))
+        if (preparation is not null && (preparation.Token.IsCancellationRequested || preparation.IsExpired || !preparation.Unchanged()
+            || preparation.ConfirmedIntent is { } confirmedIntent && !confirmedIntent()
+            // Native guards can return after the deadline or cancellation.
+            || preparation.Token.IsCancellationRequested || preparation.IsExpired))
         {
             preparation.Dispose();
             throw new InvalidOperationException("The textbox or input changed before dictation could start.");
