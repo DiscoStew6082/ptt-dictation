@@ -196,7 +196,9 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         var preparation = Interlocked.Exchange(ref _preparation, null);
         EndSession();
         if (preparation is not null && (preparation.Token.IsCancellationRequested || preparation.IsExpired || !preparation.Unchanged()
-            || preparation.ConfirmedIntent is { } confirmedIntent && !confirmedIntent()))
+            || preparation.ConfirmedIntent is { } confirmedIntent && !confirmedIntent()
+            // Native guards can return after the deadline or cancellation.
+            || preparation.Token.IsCancellationRequested || preparation.IsExpired))
         {
             preparation.Dispose();
             throw new InvalidOperationException("The textbox or input changed before dictation could start.");

@@ -85,6 +85,28 @@ public sealed class FinalCaptureValidationTests
     }
 
     [TestMethod]
+    public async Task NativeIntentGuardCrossingDeadlineCannotAdoptPreparedTarget()
+    {
+        long now = 0;
+        var advanceDuringHandoff = false;
+        var captures = 0;
+        using var output = new LiveClipboardPaster(() => { captures++; throw new AssertFailedException("No recapture."); },
+            (_, _) => Assert.Fail("Preparation permits no paste."), tickCount: () => now,
+            acquireCapture: _ => Task.FromResult<IDisposable>(new Lease()),
+            createPreparedReadiness: () => new(() => { now = 1090; return true; }, () => new Target()),
+            beginCaptureGuard: () => () =>
+            {
+                if (advanceDuringHandoff) now = 6090;
+                return true; // Identity and intent are unchanged, but validation is too late.
+            });
+        await output.PrepareCaptureAsync(CancellationToken.None);
+        advanceDuringHandoff = true;
+        Assert.Throws<InvalidOperationException>(output.CaptureTarget);
+        Assert.AreEqual(0, captures);
+        Assert.IsFalse(output.InlinePreview);
+    }
+
+    [TestMethod]
     [DataRow(3957L, true)]
     [DataRow(5000L, false)]
     public async Task FinalSnapshotReadMustAlsoReturnBeforeTheFinalPhaseDeadline(long duration, bool succeeds)
