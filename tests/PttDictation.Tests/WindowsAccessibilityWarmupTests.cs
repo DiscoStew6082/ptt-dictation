@@ -155,6 +155,134 @@ public sealed class WindowsAccessibilityWarmupTests
         warmup.Request();
     }
 
+    [TestMethod]
+    public async Task CaptureReusesTheThreadLocalClientInitializedByWarmup()
+    {
+        using var initialized = new ThreadLocal<bool>(() => false);
+        using var worker = new ApartmentWorker(ApartmentState.MTA, "Shared accessibility client test");
+        using var coldWorker = new ApartmentWorker(ApartmentState.MTA, "Uninitialized accessibility client test");
+        var warmed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int subscribeThread = 0, probeThread = 0, captureThread = 0, removeThread = 0, captures = 0, guards = 0;
+        using var warmup = new WindowsAccessibilityWarmup(_ =>
+        {
+            subscribeThread = Environment.CurrentManagedThreadId;
+            return new Subscription(() => removeThread = Environment.CurrentManagedThreadId);
+        }, () =>
+        {
+            Assert.AreEqual(ApartmentState.MTA, Thread.CurrentThread.GetApartmentState());
+            probeThread = Environment.CurrentManagedThreadId;
+            initialized.Value = true;
+            warmed.TrySetResult();
+            return true;
+        }, interval: TimeSpan.FromMinutes(1), providerWorker: worker);
+        var originalTarget = new Target();
+        using var output = new LiveClipboardPaster(() =>
+        {
+            captures++;
+            throw new AssertFailedException("A prepared original target must not be recaptured.");
+        }, (_, _) => Assert.Fail("Warmup and preparation never paste."), automationWorker: worker,
+            acquireCapture: warmup.AcquireCaptureAsync,
+            beginCaptureGuard: () => { guards++; return () => true; },
+            createPreparedReadiness: () => new(() =>
+            {
+                captureThread = Environment.CurrentManagedThreadId;
+                Assert.IsTrue(initialized.Value, "Capture must use the exact client initialized by warmup.");
+                return true;
+            }, () => originalTarget));
+        try
+        {
+            await warmed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await coldWorker.InvokeAsync(() => Assert.IsFalse(initialized.Value,
+                "Another MTA thread still has an uninitialized client; warmup is not process-wide."));
+
+            await output.PrepareCaptureAsync(CancellationToken.None);
+            output.CaptureTarget();
+            await worker.InvokeAsync(() => { }); // Complete exact prepared-target handoff.
+            output.EndSession();
+            await worker.InvokeAsync(() => { }); // Complete the queued capture-lease release.
+
+            Assert.AreEqual(subscribeThread, probeThread);
+            Assert.AreEqual(probeThread, captureThread);
+            Assert.AreEqual(1, guards);
+            Assert.AreEqual(0, captures);
+        }
+        finally { await LiveClipboardPaster.DisposeAutomationAfterWarmupAsync(warmup, worker); }
+        Assert.AreEqual(subscribeThread, removeThread);
+    }
+
+    [TestMethod]
+    public async Task SharedMtaCaptureLeasePreventsWarmupUntilTheLeaseIsReleased()
+    {
+        using var worker = new ApartmentWorker(ApartmentState.MTA, "Leased accessibility client test");
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int calls = 0, probeThread = 0;
+        using var warmup = new WindowsAccessibilityWarmup(_ => new Subscription(() => { }), () =>
+        {
+            probeThread = Environment.CurrentManagedThreadId;
+            if (Interlocked.Increment(ref calls) == 1) first.TrySetResult();
+            else second.TrySetResult();
+            return true;
+        }, interval: TimeSpan.FromMinutes(1), providerWorker: worker);
+        try
+        {
+            await first.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            using (await warmup.AcquireCaptureAsync(CancellationToken.None))
+            {
+                warmup.Request();
+                await Task.Delay(150);
+                await worker.InvokeAsync(() =>
+                {
+                    Assert.AreEqual(probeThread, Environment.CurrentManagedThreadId);
+                    Assert.AreEqual(1, Volatile.Read(ref calls), "Warmup cannot interleave with a capture lease.");
+                });
+            }
+            warmup.Request();
+            await second.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally { await LiveClipboardPaster.DisposeAutomationAfterWarmupAsync(warmup, worker); }
+    }
+
+    [TestMethod]
+    public async Task BlockedSharedProviderDisposalKeepsQueueOpenUntilSameOwnerUnsubscribes()
+    {
+        using var worker = new ApartmentWorker(ApartmentState.MTA, "Blocked accessibility client test");
+        using var release = new ManualResetEvent(false);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int subscribeThread = 0, removeThread = 0;
+        using var warmup = new WindowsAccessibilityWarmup(_ =>
+        {
+            subscribeThread = Environment.CurrentManagedThreadId;
+            return new Subscription(() => removeThread = Environment.CurrentManagedThreadId);
+        }, () =>
+        {
+            entered.TrySetResult();
+            release.WaitOne();
+            return true;
+        }, providerWorker: worker);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var shutdown = LiveClipboardPaster.DisposeAutomationAfterWarmupAsync(warmup, worker);
+            Assert.IsFalse(shutdown.IsCompleted, "Disposal must return without waiting for a blocked provider.");
+            Assert.IsFalse(warmup.Completion.IsCompleted);
+            var queued = worker.InvokeAsync(() => { });
+            Assert.IsFalse(queued.IsCompleted, "The queue stays open, but the provider still owns its worker.");
+
+            release.Set();
+            await shutdown.WaitAsync(TimeSpan.FromSeconds(2));
+            await queued.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.AreEqual(subscribeThread, removeThread);
+            Assert.AreNotEqual(0, removeThread);
+            Assert.IsTrue(worker.InvokeAsync(() => Assert.Fail("Closed worker cannot execute more provider work.")).IsCanceled);
+        }
+        finally
+        {
+            release.Set();
+            await LiveClipboardPaster.DisposeAutomationAfterWarmupAsync(warmup, worker);
+        }
+    }
+
     private sealed class Subscription(Action dispose) : IDisposable
     {
         public void Dispose() => dispose();

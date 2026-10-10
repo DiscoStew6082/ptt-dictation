@@ -221,6 +221,35 @@ CI also passed; the separately added parent/child regression failed because its
 the fixture now uses a static encoded PowerShell command with a fully qualified
 child executable, without changing the production launcher or cleanup ceiling.
 
+### Warmup and capture use the same automation client
+
+[Ordinary CI at `6f5ea91`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38088614286)
+passed all 656 non-browser tests and Chrome, but reproduced an uninstrumented
+Firefox preparation failure on the second fresh textarea launch. The global
+focused-element read began at 21:43:31.055 UTC, exceeded the five-second initial
+readiness limit, and returned after 15.525 seconds with an unsupported Firefox
+window container. The warmup thread had reported an edit control with TextPattern
+at 21:43:30.629, before the trusted click and hotkey. No audio or paste started,
+and owned-process cleanup completed without a profile-lock error. All four
+instrumented samples on the same head passed; that does not erase this ordinary
+CI failure. The timeout captures contain no usable native stacks, so this
+specific read's underlying Firefox wait is not established.
+
+Warmup formerly initialized accessibility on its own MTA while capture queried
+focus on a different automation worker. It now dispatches subscription, probes
+and subscription removal to the same serial MTA that performs capture. The
+warmup scheduler and capture lease still prevent concurrent provider calls.
+Shutdown remains nonblocking and defers automation-worker disposal until the
+warmup subscription has been removed on its owning thread. This reuses the
+initialized client without retaining an editor, text, selection or insertion
+target from warmup. Global identity comparisons, exact selection checks, native
+input/focus guards and the five-second readiness plus five-second final-validation
+limits remain active. A scripted thread-local provider regression verifies that capture
+uses the client initialized by warmup; blocked-provider shutdown and lease
+serialization are verified separately. Real Firefox CI remains the acceptance
+check for this change, rather than assuming thread reuse proves the earlier
+read's internal cause.
+
 The **Firefox lock investigation** workflow is manually available after merge;
 its four-sample matrix also runs on the investigation PR branch. It prepares
 the debugger and collector before browser launch, watches only relevant focus
