@@ -8,6 +8,40 @@ namespace PttDictation.App;
 internal enum TextTargetUpdateResult { Success, Pending, Unfocused, Unsupported, Conflict }
 internal enum TextPatternRequeryResult { NotSupported, Refreshed, Rejected }
 internal sealed record NativeSelectionRequest(long StartedAt, long? CompletedAt);
+internal sealed record NativeFocusRead(long StartedAt, long? CompletedAt);
+
+// Tracks only a synchronous read of the captured element's focus property.
+// Keep a completed long read until this pump ends so a late timer cannot lose
+// the evidence when subsequent validation performs another short read.
+internal sealed class NativeFocusReadTracker(Func<long>? tickCount = null)
+{
+    private readonly Func<long> _tickCount = tickCount ?? (() => Environment.TickCount64);
+    private NativeFocusRead? _active, _completedSlow;
+    private long _operationStarted;
+    public NativeFocusRead? Progress => Volatile.Read(ref _completedSlow) ?? Volatile.Read(ref _active);
+    public void BeginOperation(long startedAt)
+    {
+        _operationStarted = startedAt;
+        Volatile.Write(ref _active, null);
+        Volatile.Write(ref _completedSlow, null);
+    }
+    public bool Read(Func<bool> read)
+    {
+        var started = _tickCount();
+        Volatile.Write(ref _active, new(started, null));
+        try { return read(); }
+        finally
+        {
+            var completedAt = _tickCount();
+            var completed = new NativeFocusRead(started, completedAt);
+            if (started >= _operationStarted
+                && started - _operationStarted < WindowsTextTarget.ResponseTimeoutMilliseconds
+                && completedAt - _operationStarted >= WindowsTextTarget.ResponseTimeoutMilliseconds)
+                Volatile.Write(ref _completedSlow, completed);
+            Volatile.Write(ref _active, null);
+        }
+    }
+}
 
 internal sealed class TextTargetUnavailableException(ElementNotAvailableException innerException)
     : InvalidOperationException("Windows can no longer access the original textbox's automation reference. The textbox may still be visible; its identity and selected text cannot be verified safely.", innerException)
@@ -22,6 +56,8 @@ internal interface IWindowsTextTarget
     bool HasAttemptedWrite { get; }
     bool IsAwaitingWriteAcknowledgement => false;
     NativeSelectionRequest? SelectionRequestProgress => null;
+    NativeFocusRead? FocusReadProgress => null;
+    void BeginReadyOperation(long startedAt) { }
     TextTargetUpdateResult TryReplace(string previousText, string replacementText, Action<string> paste);
 }
 
@@ -35,8 +71,11 @@ internal sealed record TextTargetSnapshot(string Document, string Prefix, string
 internal interface IWindowsTextSurface
 {
     bool IsFocused { get; }
+    bool IsOriginalForegroundCurrent => true;
     bool SupportsReplacement { get; }
     bool CanPasteFallback { get; }
+    NativeFocusRead? FocusReadProgress => null;
+    void BeginReadyOperation(long startedAt) { }
     TextTargetSnapshot Read();
     bool Select(string prefix, string ownedText, string suffix);
     // Refresh only the original provider reference; never adopt another editor.
@@ -64,6 +103,9 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private bool _selectionRequestRetried;
     private long? _selectionInputGenerationAtRequest;
     private DateTimeOffset _selectionSince;
+    private DateTimeOffset? _selectionAcknowledgedAt;
+    private long? _operationInputGeneration;
+    private bool _readyOperationStarted;
     private long _selectionRequestOrdinal;
     private long? _selectionGenerationAtRequest;
     private TextTargetSnapshot? _unsentRetrySelection;
@@ -198,7 +240,11 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     {
         get
         {
-            try { return ReadOriginalSurface(() => _surface.IsFocused); }
+            bool focused;
+            try
+            {
+                focused = ReadOriginalSurface(() => _surface.IsFocused);
+            }
             catch (ElementNotAvailableException ex)
             {
                 // The captured automation reference cannot verify the original
@@ -207,6 +253,15 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 throw Unavailable("focus", ex);
             }
             catch (Exception ex) when (IsProviderFailure(ex)) { Trace("target.focus_read_failed", error: ex); return false; }
+            // A normal focus switch still pauses insertion. Input observed
+            // while the original field remains focused cannot become a new
+            // selection intent after a provider wait.
+            if (focused && !OperationInputUnchanged())
+            {
+                Conflict("operation_input_changed");
+                throw new InvalidOperationException("The textbox or input changed while the original editor was responding.");
+            }
+            return focused;
         }
     }
 
@@ -215,13 +270,20 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     public bool HasAttemptedWrite { get; private set; }
     public bool IsAwaitingWriteAcknowledgement => _pendingText is not null;
     public NativeSelectionRequest? SelectionRequestProgress => Volatile.Read(ref _selectionRequestProgress);
+    public NativeFocusRead? FocusReadProgress => _surface.FocusReadProgress;
+    public void BeginReadyOperation(long startedAt)
+    {
+        _operationInputGeneration = ReadInputGeneration();
+        _readyOperationStarted = true;
+        _surface.BeginReadyOperation(startedAt);
+    }
     public bool IsPreparedSelectionCurrent
     {
         get
         {
             try
             {
-                if (_preparedSelection is not null && !SelectionInputUnchanged()) return false;
+                if (!OperationInputUnchanged() || _preparedSelection is not null && !SelectionInputUnchanged()) return false;
                 if (!IsFocused) { Trace("target.prepared_invalid", new { reason = "unfocused" }); return false; }
                 var expected = _preparedSelection ?? _capturedSelection;
                 // Some unsupported editors expose no readable selection at all;
@@ -229,7 +291,23 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 if (expected is null) return CanPasteFallback && IsFocused;
                 var current = ReadOriginalSurface(_surface.Read);
                 var valid = current.IsConsistent && current == expected && IsFocused
-                    && (_preparedSelection is null || SelectionInputUnchanged());
+                    && OperationInputUnchanged() && (_preparedSelection is null || SelectionInputUnchanged());
+                if (valid && _surface.FocusReadProgress is { CompletedAt: not null })
+                {
+                    // The last original-focus read may itself have stalled.
+                    // Reread its original selection once after focus returns;
+                    // native events protect this final snapshot from a scripted
+                    // field/caret change. Do not add another blocking focus read
+                    // after it, loop, or restart the operation's hard deadline.
+                    var generation = ReadFocusGenerationForDiagnostics();
+                    if (generation is null) return false;
+                    current = ReadOriginalSurface(_surface.Read);
+                    valid = current.IsConsistent && current == expected
+                        && _surface.IsOriginalForegroundCurrent
+                        && ReadFocusGenerationForDiagnostics() == generation
+                        && OperationInputUnchanged()
+                        && (_preparedSelection is null || SelectionInputUnchanged());
+                }
                 if (!valid)
                 {
                     Trace("target.prepared_invalid", new { reason = "snapshot_or_focus_changed", current.IsConsistent, snapshotMatches = current == expected });
@@ -248,6 +326,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 
     public TextTargetUpdateResult TryReplace(string previousText, string replacementText, Action<string> paste)
     {
+        if (_pendingText is null && !OperationInputUnchanged()) return Conflict("operation_input_changed");
         // Observing an already-submitted write grants no permission for new
         // input. A focus query here can block Firefox's queued paste processing.
         // Read only the captured original document until that write is settled.
@@ -330,9 +409,11 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 _selectionPatternRefreshed = false;
                 _selectionRequestRetried = false;
                 _selectionSince = _clock();
+                _selectionAcknowledgedAt = null;
                 selected = ReadOriginalSurface(_surface.Read);
             }
             else selected = snapshot;
+            ObserveSelectionAcknowledgement(selected, currentOwned);
             if (!IsFocused) return TextTargetUpdateResult.Unfocused;
             if (!MatchesOwnedSelection(selected, currentOwned) && selected == _selectionBeforeRequest
                 && !_selectionPatternRequeryAttempted && _clock() - _selectionSince < ShortRetryTimeout)
@@ -356,10 +437,11 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     _selectionPatternRefreshed = true;
                     // Do not recursively refresh an unavailable query/read.
                     selected = _surface.Read();
+                    ObserveSelectionAcknowledgement(selected, currentOwned);
                     var elapsed = _clock() - _selectionSince;
                     TraceSelectionObservation("target.selection_requery_observed", currentOwned,
                         selected, _selectionBeforeRequest!, elapsed);
-                    if (elapsed >= AcknowledgementTimeout)
+                    if (SelectionResponseExpired())
                         return Conflict("selection_acknowledgement_timeout");
                     if (!IsFocused) return TextTargetUpdateResult.Unfocused;
                 }
@@ -374,7 +456,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 // once, only while the original snapshot and native intent are
                 // unchanged; never extend the deadline or retry clipboard input.
                 var beforeRetry = _surface.Read();
-                if (_clock() - _selectionSince >= AcknowledgementTimeout)
+                ObserveSelectionAcknowledgement(beforeRetry, currentOwned);
+                if (SelectionResponseExpired())
                     return Conflict("selection_acknowledgement_timeout");
                 if (MatchesOwnedSelection(beforeRetry, currentOwned)) selected = beforeRetry;
                 else if (beforeRetry != _selectionBeforeRequest) return Conflict("selection_retry_snapshot_changed");
@@ -385,7 +468,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                         beforeRetry, _selectionBeforeRequest!, _clock() - _selectionSince);
                     if (!SelectWithProgress(currentOwned)) return Conflict("selection_retry_rejected");
                     selected = _surface.Read();
-                    if (_clock() - _selectionSince >= AcknowledgementTimeout)
+                    ObserveSelectionAcknowledgement(selected, currentOwned);
+                    if (SelectionResponseExpired())
                         return Conflict("selection_acknowledgement_timeout");
                     if (!IsFocused) return TextTargetUpdateResult.Unfocused;
                 }
@@ -416,9 +500,9 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             if (!IsFocused) return TextTargetUpdateResult.Unfocused;
             // An acknowledgement can arrive between pump calls as well as
             // during a provider read. Both paths share the original deadline.
-            if (_clock() - _selectionSince >= AcknowledgementTimeout)
+            if (SelectionResponseExpired())
                 return Conflict("selection_acknowledgement_timeout");
-            if (!SelectionInputUnchanged()) return Conflict("selection_input_changed");
+            if (!SelectionInputUnchanged() || !OperationInputUnchanged()) return Conflict("selection_input_changed");
             TraceSelectionObservation("target.selection_acknowledged", currentOwned, selected, _selectionBeforeRequest!,
                 _clock() - _selectionSince);
             _selectionBeforeRequest = null;
@@ -468,6 +552,19 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 new(started, _operationTickCount()));
         }
     }
+
+    private void ObserveSelectionAcknowledgement(TextTargetSnapshot selected, string owned)
+    {
+        if (_selectionAcknowledgedAt is null && MatchesOwnedSelection(selected, owned)
+            && _clock() - _selectionSince < AcknowledgementTimeout)
+            _selectionAcknowledgedAt = _clock();
+    }
+
+    private bool SelectionResponseExpired() => _selectionAcknowledgedAt is null
+        && _clock() - _selectionSince >= AcknowledgementTimeout;
+
+    private bool OperationInputUnchanged() => !_readyOperationStarted || _readInputGeneration is null
+        || _operationInputGeneration is { } input && ReadInputGeneration() == input;
 
     private T ReadOriginalSurface<T>(Func<T> read)
     {
@@ -623,11 +720,18 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     private TextPattern? _pattern;
     private readonly IntPtr _foregroundWindow;
     private readonly bool _supportsReplacement;
+    private readonly NativeFocusReadTracker _focusReads;
+    public NativeFocusRead? FocusReadProgress => _focusReads.Progress;
+    public void BeginReadyOperation(long startedAt) => _focusReads.BeginOperation(startedAt);
+    public bool IsOriginalForegroundCurrent => _foregroundWindow != IntPtr.Zero
+        && GetForegroundWindow() == _foregroundWindow;
 
     private AutomationTextSurface(AutomationElement? element, TextPattern? pattern, bool canPasteFallback = false,
-        bool supportsReplacement = false, bool isUnsupportedInitialContainer = false, bool isLegacyFocusContainer = false)
+        bool supportsReplacement = false, bool isUnsupportedInitialContainer = false, bool isLegacyFocusContainer = false,
+        NativeFocusReadTracker? focusReads = null)
     {
         _element = element;
+        _focusReads = focusReads ?? new();
         _pattern = pattern;
         CanPasteFallback = canPasteFallback;
         _supportsReplacement = supportsReplacement;
@@ -639,7 +743,7 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
     internal static AutomationTextSurface Capture()
         => Capture(AutomationElement.FocusedElement);
 
-    internal static AutomationTextSurface Capture(AutomationElement? capturedIdentity)
+    internal static AutomationTextSurface Capture(AutomationElement? capturedIdentity, NativeFocusReadTracker? focusReads = null)
     {
         var element = capturedIdentity;
         try
@@ -649,7 +753,7 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
                 || TextProviderDiagnostics.Observe("capture.password", () => element.Current.IsPassword))
             {
                 DiagnosticTrace.Write("target.surface_rejected", new { reason = "missing_disabled_or_password_field" });
-                return new AutomationTextSurface(element, null);
+                return new AutomationTextSurface(element, null, focusReads: focusReads);
             }
             bool? valueReadOnly = null;
             var rawValue = TextProviderDiagnostics.Observe("capture.value_pattern", () =>
@@ -678,14 +782,14 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
                 TextProviderDiagnostics.InspectUnsupportedSelection(element, pattern);
             if (canPaste && pattern is not null && textReadOnly is false
                 && TextProviderDiagnostics.Observe("capture.selection_support", () => pattern.SupportedTextSelection) != SupportedTextSelection.None)
-                return new AutomationTextSurface(element, pattern, canPasteFallback: true, supportsReplacement: true);
+                return new AutomationTextSurface(element, pattern, canPasteFallback: true, supportsReplacement: true, focusReads: focusReads);
             return new AutomationTextSurface(element, pattern, canPaste,
                 isUnsupportedInitialContainer: AllowsInitialFocusRefinement(enabled, password, canPaste,
                     controlType, rawValue is not null, pattern is not null),
-                isLegacyFocusContainer: AllowsLegacyFocusResolution(enabled, password, canPaste, controlType));
+                isLegacyFocusContainer: AllowsLegacyFocusResolution(enabled, password, canPaste, controlType), focusReads: focusReads);
         }
         catch (Exception ex) when (WindowsTextTarget.IsProviderFailure(ex)) { DiagnosticTrace.Write("target.surface_capture_failed", error: ex); }
-        return new AutomationTextSurface(element, null);
+        return new AutomationTextSurface(element, null, focusReads: focusReads);
     }
 
     internal static bool AllowsFallback(bool enabled, bool password, bool editControl, bool? valueReadOnly, object? textReadOnly)
@@ -713,7 +817,8 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
             if (_element is null) return false;
             // Probe the captured element even while its window is in the
             // background, so a closed editor does not look merely unfocused.
-            var hasKeyboardFocus = TextProviderDiagnostics.Observe("focus.original_element", () => _element.Current.HasKeyboardFocus);
+            var hasKeyboardFocus = _focusReads.Read(() =>
+                TextProviderDiagnostics.Observe("focus.original_element", () => _element.Current.HasKeyboardFocus));
             return _foregroundWindow != IntPtr.Zero && GetForegroundWindow() == _foregroundWindow
                 && hasKeyboardFocus && TextProviderDiagnostics.Observe("focus.compare_original", () =>
                     Automation.Compare(_element, AutomationElement.FocusedElement));
@@ -727,7 +832,7 @@ internal sealed class AutomationTextSurface : IWindowsTextSurface
         if (_element is null) return RejectRefresh("missing_original_element");
         if (!IsFocused) return RejectRefresh("original_element_unfocused");
         if (!_supportsReplacement) return RejectRefresh("replacement_unsupported");
-        var refreshed = Capture(_element);
+        var refreshed = Capture(_element, _focusReads);
         if (!refreshed.SupportsReplacement || !refreshed.CanPasteFallback)
             return RejectRefresh("original_element_capabilities_unavailable");
         if (!refreshed.IsFocused) return RejectRefresh("original_element_focus_changed");

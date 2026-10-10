@@ -318,8 +318,11 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         if (!IsCurrent(session)) return;
         if (Interlocked.Exchange(ref _queued, 1) != 0) return;
         session.SelectionProgressAtStart = session.Target?.SelectionRequestProgress;
+        session.ObservingSubmittedWrite = session.Target?.IsAwaitingWriteAcknowledgement == true;
         session.NativeSelectionRecovery = false;
+        session.NativeFocusRecovery = false;
         Interlocked.Exchange(ref session.BusySince, _tickCount());
+        session.Target?.BeginReadyOperation(Interlocked.Read(ref session.BusySince));
         Dispatch(() =>
         {
             try { if (IsCurrent(session)) PumpSession(session); }
@@ -499,7 +502,7 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                 if (!session.NativeSelectionRecovery && selection is not null
                     && !ReferenceEquals(selection, session.SelectionProgressAtStart)
                     && selection.StartedAt >= started
-                    && selection.StartedAt - started <= ReadyOperationTimeoutMilliseconds
+                    && selection.StartedAt - started < ReadyOperationTimeoutMilliseconds
                     && (selection.CompletedAt is null
                         || selection.CompletedAt.Value - started >= ReadyOperationTimeoutMilliseconds))
                 {
@@ -513,6 +516,21 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
                     Trace(session, "inline.selection_recovery_wait", new { elapsedMilliseconds = elapsed });
                 }
                 if (session.NativeSelectionRecovery && elapsed < NativeSelectionRecoveryTimeoutMilliseconds)
+                    return true;
+                var focus = session.Target?.FocusReadProgress;
+                if (!session.ObservingSubmittedWrite && !session.NativeFocusRecovery && focus is not null
+                    && focus.StartedAt >= started
+                    && focus.StartedAt - started < ReadyOperationTimeoutMilliseconds
+                    && (focus.CompletedAt is null
+                        || focus.CompletedAt.Value - started >= ReadyOperationTimeoutMilliseconds))
+                {
+                    // One original-element focus read may stall in the browser.
+                    // Keep its original operation ceiling; no query or input is
+                    // replayed, and native input was pinned before the read.
+                    session.NativeFocusRecovery = true;
+                    Trace(session, "inline.focus_read_recovery_wait", new { elapsedMilliseconds = elapsed });
+                }
+                if (session.NativeFocusRecovery && elapsed < NativeSelectionRecoveryTimeoutMilliseconds)
                     return true;
             }
             Trace(session, "inline.watchdog_timeout", new { elapsedMilliseconds = elapsed });
@@ -619,6 +637,8 @@ internal sealed class LiveClipboardPaster : ILiveClipboardPaster, IDisposable
         public bool SlowOperationNotified;
         public NativeSelectionRequest? SelectionProgressAtStart;
         public bool NativeSelectionRecovery;
+        public bool NativeFocusRecovery;
+        public bool ObservingSubmittedWrite;
         public int FailureNotified;
         public volatile LiveInsertionFailureDelivery? FailureDelivery;
     }

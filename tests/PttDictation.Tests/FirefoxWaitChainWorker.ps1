@@ -5,6 +5,15 @@ param([string]$TargetsPath, [Parameter(Mandatory)][string]$OutputPath,
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Flush bootstrap stages before loading the C# helper. A cold PowerShell or
+# Add-Type startup can consume the bounded worker lifetime before native capture
+# starts; its absence of dumps must not look like a hung MiniDumpWriteDump call.
+$writer = [IO.StreamWriter]::new($OutputPath, $false, [Text.UTF8Encoding]::new($false))
+$writer.AutoFlush = $true
+try {
+    $writeRecord = [Action[object]]{ param($record) $writer.WriteLine(($record | ConvertTo-Json -Depth 8 -Compress)) }
+    $writeRecord.Invoke(@{ stage = 'worker_script_started'; utc = [DateTimeOffset]::UtcNow; processId = $PID })
+
 # This disposable worker accepts only an exact PID/start-time/name manifest.
 # It does not attach a debugger, send input, query UIA, or enumerate other processes.
 Add-Type -TypeDefinition @'
@@ -147,12 +156,15 @@ public static class PttWaitChainWorker
 }
 '@
 
+$writeRecord.Invoke(@{ stage = 'worker_helper_loaded'; utc = [DateTimeOffset]::UtcNow; processId = $PID })
 if ($RequestPath) {
     if (-not $ReadyPath) { throw 'A prepared worker requires a readiness path.' }
     [PttWaitChainWorker]::Prepare()
+    $writeRecord.Invoke(@{ stage = 'worker_prepared'; utc = [DateTimeOffset]::UtcNow; processId = $PID })
     [IO.File]::WriteAllText($ReadyPath, [DateTimeOffset]::UtcNow.ToString('O'))
     while (-not [IO.File]::Exists($RequestPath)) { [Threading.Thread]::Sleep(5) }
     $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+    $writeRecord.Invoke(@{ stage = 'worker_request_received'; utc = [DateTimeOffset]::UtcNow; processId = $PID })
     $targets = @($request.Targets)
     $DumpPath = [string]$request.DumpPath
     $DumpProcessId = [int]$request.DumpProcessId
@@ -161,10 +173,6 @@ if ($RequestPath) {
     $targets = @(Get-Content -LiteralPath $TargetsPath -Raw | ConvertFrom-Json)
 }
 
-$writer = [IO.StreamWriter]::new($OutputPath, $false, [Text.UTF8Encoding]::new($false))
-$writer.AutoFlush = $true
-try {
-    $writeRecord = [Action[object]]{ param($record) $writer.WriteLine(($record | ConvertTo-Json -Depth 8 -Compress)) }
     # Save both process stacks before optional WCT, whose native implementation
     # may itself hang or crash this isolated worker.
     if ($DumpPath) {
