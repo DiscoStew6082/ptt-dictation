@@ -75,15 +75,15 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var token = deadline.Token;
-        await using var fixture = BrowserEditorFixture.Start(editorKind);
-        using var browser = new OwnedBrowser(browserKind, executable, fixture.Url, output);
+        var fixture = BrowserEditorFixture.Start(editorKind);
+        var browser = new OwnedBrowser(browserKind, executable, fixture.Url, output);
         using var stopSlowMonitor = new CancellationTokenSource();
         Task? slowMonitor = null;
         var sessions = new KnownTranscripts();
         var history = new SessionHistory();
         var ui = SynchronizationContext.Current!;
         var workflow = new DictationWorkflow(sessions, paster, history, synchronizationContext: ui);
-        using var hotkey = new GlobalHotkeySource(DictationHotkey.RightControl, DictationHotkey.F9);
+        var hotkey = new GlobalHotkeySource(DictationHotkey.RightControl, DictationHotkey.F9);
         Exception? dispatchError = null;
         var presses = 0;
         var releases = 0;
@@ -109,10 +109,11 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
                 overlay.ShowStatus(DictationStatusCatalog.Preparing);
             else overlay.Hide();
         };
-        hotkey.Start();
         var observations = new List<object>();
+        Exception? trialFailure = null;
         try
         {
+            hotkey.Start();
             browser.Start();
             await Until(() => browser.TryActivate(), "browser native foreground window", 20000);
             // Only the page's DOM reports readiness. No test UIA query, WebDriver
@@ -179,8 +180,12 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
             }
             File.WriteAllText(Path.Combine(output, "passed.json"), JsonSerializer.Serialize(observations, new JsonSerializerOptions { WriteIndented = true }));
         }
-        catch
+        catch (Exception failure)
         {
+            trialFailure = failure;
+            TestContext.WriteLine($"Primary trial failure: {failure}");
+            try { File.WriteAllText(Path.Combine(output, "failure.txt"), failure.ToString()); }
+            catch (Exception error) { TestContext.WriteLine($"Primary failure evidence unavailable: {error}"); }
             // Persist the browser history before any optional native diagnostics.
             try { File.WriteAllText(Path.Combine(output, "dom-at-failure.json"), JsonSerializer.Serialize(fixture.Snapshots)); }
             catch (Exception error) { TestContext.WriteLine($"Initial DOM evidence unavailable: {error}"); }
@@ -212,6 +217,11 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         }
         finally
         {
+            var cleanup = new ColdStartCleanup((stage, error) =>
+            {
+                TestContext.WriteLine($"Cleanup failure ({stage}): {error}");
+                File.AppendAllText(Path.Combine(output, "cleanup-errors.txt"), $"{stage}: {error}{Environment.NewLine}");
+            });
             paster.PresentationChanged -= ObserveProviderWait;
             stopSlowMonitor.Cancel();
             if (slowMonitor is not null)
@@ -219,10 +229,14 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
                 try { await slowMonitor; }
                 catch (Exception error) { TestContext.WriteLine($"Slow-call diagnostics unavailable: {error}"); }
             }
-            if (keyDown) SendRightControl(release: true);
-            await workflow.HandleAsync(DictationIntent.Cancel, CancellationToken.None);
-            File.WriteAllText(Path.Combine(output, "dom-observations.json"), JsonSerializer.Serialize(fixture.Snapshots));
-            await DiagnosticTrace.FlushAsync();
+            if (keyDown) cleanup.Run("release-hotkey", () => SendRightControl(release: true));
+            await cleanup.RunAsync("cancel-workflow", () => workflow.HandleAsync(DictationIntent.Cancel, CancellationToken.None));
+            cleanup.Run("dom-evidence", () => File.WriteAllText(Path.Combine(output, "dom-observations.json"), JsonSerializer.Serialize(fixture.Snapshots)));
+            await cleanup.RunAsync("flush-diagnostics", () => DiagnosticTrace.FlushAsync());
+            cleanup.Run("hotkey", hotkey.Dispose);
+            cleanup.Run("browser", browser.Dispose);
+            await cleanup.RunAsync("fixture", () => fixture.DisposeAsync().AsTask());
+            cleanup.ThrowIfNeeded(trialFailure);
         }
 
         async Task Until(Func<bool> predicate, string stage, int milliseconds)
@@ -343,12 +357,24 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
             {
                 using (process)
                 {
-                    if (!IsOwned(process) || process.MainWindowHandle == IntPtr.Zero) continue;
-                    _window = process.MainWindowHandle;
-                    ProcessId = process.Id;
-                    if (GetForegroundWindow() == _window) return true;
-                    SetForegroundWindow(_window);
-                    return GetForegroundWindow() == _window;
+                    try
+                    {
+                        if (!IsOwned(process)) continue;
+                        var window = process.MainWindowHandle;
+                        if (window == IntPtr.Zero) continue;
+                        GetWindowThreadProcessId(window, out var owner);
+                        if (owner != (uint)process.Id) continue;
+                        _window = window;
+                        ProcessId = process.Id;
+                        if (GetForegroundWindow() == _window) return true;
+                        SetForegroundWindow(_window);
+                        return GetForegroundWindow() == _window;
+                    }
+                    catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or ArgumentException)
+                    {
+                        File.AppendAllText(Path.Combine(output, "startup-process-observations.txt"),
+                            $"Transient process/window observation: {error}{Environment.NewLine}");
+                    }
                 }
             }
             return false;
@@ -401,7 +427,7 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
             // Job membership was fixed before process resume. Stop only this
             // profile's descendants, including children whose launcher exited.
             _job?.Dispose();
-            if (Directory.Exists(_profile)) Directory.Delete(_profile, recursive: true);
+            ColdStartCleanup.DeleteProfile(_profile);
         }
 
         private bool IsOwned(Process process)
