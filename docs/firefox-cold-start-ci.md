@@ -186,6 +186,27 @@ the warmup dump before publishing readiness. This addresses the observed cold
 dump cost outside the timed browser experiment; it does not eliminate every
 possible observation effect. Trial dump durations remain recorded.
 
+[The warmup verification at `d5e2823`](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/38087714280)
+passed three diagnostic samples and failed one at the next editor's cold-process
+gate, after all three textarea trials passed. That editor's first gate recorded
+no Firefox processes at 21:29:25.559 UTC; its launch gate found three processes
+at 21:29:33.544, after automation initialization and collector warmup but before
+launching its own browser. This is not evidence that the three processes belonged
+to the preceding browser job, and no profile-deletion lock error was recorded.
+The strict gate refused to proceed rather than terminate unowned processes.
+Ordinary CI and CodeQL passed on the same head. The failure remains available
+for comparison with subsequent ownership diagnostics.
+
+Browser teardown now records exact job membership, process start time, image
+path and creator PID before terminating the owned job. It retains handles to
+those verified members and requires both their exit signals and zero active
+job processes within the existing shared five-second cleanup limit. Cold-process
+gate observations also retain process identity and creator PID; metadata errors
+do not relax the gate. These checks harden exit evidence without claiming that
+the earlier unexplained processes were owned, extending deadlines, or killing
+unrelated browsers. A native parent/child regression verifies that both owned
+processes exit while the testhost remains outside the job.
+
 The **Firefox lock investigation** workflow is manually available after merge;
 its four-sample matrix also runs on the investigation PR branch. It prepares
 the debugger and collector before browser launch, watches only relevant focus
