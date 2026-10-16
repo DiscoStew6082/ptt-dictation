@@ -11,6 +11,18 @@ public interface IChunkedAudioRecorder : IAudioRecorder
     event Action<RecordedAudio>? AudioChunkReady;
 }
 
+// A descriptor names an immutable prefix, without copying PCM or publishing a WAV.
+public sealed record CumulativeAudioSnapshot(Guid RecordingId, long EndSample);
+
+public interface ICumulativeAudioRecorder : IAudioRecorder
+{
+    event Action<CumulativeAudioSnapshot>? SnapshotReady;
+    Task StartAsync(Guid recordingId, CancellationToken cancellationToken);
+    // Called only by the session's selected preview worker. The caller owns the
+    // returned WAV until recognition settles, including ignored cancellation.
+    RecordedAudio MaterializeSnapshot(CumulativeAudioSnapshot snapshot, CancellationToken cancellationToken);
+}
+
 public interface ITranscriber
 {
     Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken);

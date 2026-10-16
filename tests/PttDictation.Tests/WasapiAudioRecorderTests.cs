@@ -1,5 +1,6 @@
 using NAudio.Wave;
 using PttDictation.App;
+using PttDictation.Core;
 
 namespace PttDictation.Tests;
 
@@ -28,23 +29,26 @@ public sealed class WasapiAudioRecorderTests
     [TestMethod]
     public void CumulativeSnapshotsKeepEarlyAudioAndPublicationCadence()
     {
-        using var buffer = new PcmChunkBuffer(10, 20, 12, cumulative: true);
+        var recording = Guid.NewGuid();
+        var buffer = new CumulativePcmBuffer(recording, firstSamples: 10, intervalSamples: 4);
         var pcm = Enumerable.Range(0, 100).Select(value => (byte)value).ToArray();
-        buffer.Append(pcm.AsSpan(0, 19));
-        Assert.IsNull(buffer.TryCreateChunk("early"));
-        buffer.Append(pcm.AsSpan(19, 1));
-        var first = buffer.TryCreateChunk("first")!;
-        Assert.AreEqual(TimeSpan.FromSeconds(2), first.Duration);
-        Assert.IsTrue(first.IsCumulative);
+        buffer.Append(pcm[..18]);
+        Assert.IsNull(buffer.TryCreateSnapshot());
+        buffer.Append(pcm[18..20]);
+        var first = buffer.TryCreateSnapshot()!;
+        Assert.AreEqual(10L, first.EndSample);
+        Assert.AreEqual(recording, first.RecordingId);
         for (var end = 28; end <= 100; end += 8)
         {
-            buffer.Append(pcm.AsSpan(end - 8, 8));
-            var chunk = buffer.TryCreateChunk("next")!;
-            CollectionAssert.AreEqual(pcm[..end], chunk.Pcm);
-            Assert.IsTrue(chunk.IsCumulative);
-            Assert.AreEqual(TimeSpan.FromSeconds(end / 10d), chunk.Duration);
-            Assert.IsNull(buffer.TryCreateChunk("too-soon"));
+            buffer.Append(pcm[(end - 8)..end]);
+            var snapshot = buffer.TryCreateSnapshot()!;
+            Assert.AreEqual((long)end / 2, snapshot.EndSample);
+            CollectionAssert.AreEqual(pcm[..end], buffer.CopyPrefix(snapshot, CancellationToken.None));
+            Assert.IsNull(buffer.TryCreateSnapshot());
         }
+        CollectionAssert.AreEqual(pcm[..20], buffer.CopyPrefix(first, CancellationToken.None),
+            "A selected prefix remains immutable while capture appends newer blocks.");
+        CollectionAssert.AreEqual(pcm, buffer.ToArray(), "Final audio retains every captured sample.");
     }
 
     [TestMethod]
@@ -80,28 +84,20 @@ public sealed class WasapiAudioRecorderTests
     }
 
     [TestMethod]
-    public async Task ChunkPublicationQueueDrainsAcceptedPublisherBeforeClosing()
+    public void LargeCallbackSelectsLatestBoundaryAndRejectsForeignOrFutureSnapshots()
     {
-        var queue = new AudioChunkPublicationQueue();
-        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        queue.Open();
-
-        Assert.IsTrue(queue.TryQueue(() =>
-        {
-            started.SetResult();
-            release.Task.GetAwaiter().GetResult();
-        }));
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-        queue.StopAccepting();
-        var drain = Task.Run(queue.Drain);
-        await Task.Delay(100);
-
-        Assert.IsFalse(drain.IsCompleted);
-        Assert.IsFalse(queue.TryQueue(() => throw new InvalidOperationException("must not run")));
-
-        release.SetResult();
-        await drain.WaitAsync(TimeSpan.FromSeconds(2));
+        var recording = Guid.NewGuid();
+        var buffer = new CumulativePcmBuffer(recording, firstSamples: 10, intervalSamples: 4);
+        buffer.Append(new byte[100]);
+        Assert.AreEqual(50L, buffer.TryCreateSnapshot()!.EndSample);
+        Assert.IsNull(buffer.TryCreateSnapshot());
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            buffer.CopyPrefix(new(Guid.NewGuid(), 10), CancellationToken.None));
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            buffer.CopyPrefix(new(recording, 51), CancellationToken.None));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        Assert.ThrowsExactly<OperationCanceledException>(() =>
+            buffer.CopyPrefix(new(recording, 10), cancelled.Token));
     }
 }

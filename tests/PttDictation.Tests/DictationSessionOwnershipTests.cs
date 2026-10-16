@@ -152,7 +152,7 @@ public sealed class DictationSessionOwnershipTests
     }
 
     [TestMethod]
-    public async Task ChunkedSessionReleasesPreviewChunkBeforeReturningWhenPreviewIgnoresCancellation()
+    public async Task ChunkedSessionReportsRetainedPreviewWhenRecognitionIgnoresCancellation()
     {
         var chunkPath = Path.GetTempFileName();
         var finalPath = Path.GetTempFileName();
@@ -183,6 +183,56 @@ public sealed class DictationSessionOwnershipTests
         {
             File.Delete(chunkPath);
             File.Delete(finalPath);
+        }
+    }
+
+    [TestMethod]
+    public async Task CancelKeepsActiveWavUntilIgnoringRecognizerActuallyReturns()
+    {
+        var chunkPath = Path.GetTempFileName();
+        var finalPath = Path.GetTempFileName();
+        var preview = new IgnoringCancellationTranscriber();
+        var recorder = new ChunkRecorder(finalPath);
+        var session = new ChunkedTranscribingDictationSession(recorder, preview, new ConstantTranscriber("final"));
+        var updates = 0;
+        session.TranscriptUpdated += _ => updates++;
+        try
+        {
+            await session.StartAsync(CancellationToken.None);
+            recorder.PublishChunk(new(chunkPath, TimeSpan.FromSeconds(2), DeleteAfterUse: true));
+            await preview.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await session.CancelAsync(CancellationToken.None);
+            Assert.IsTrue(File.Exists(chunkPath), "A settle timeout must not delete audio still owned by inference.");
+            Assert.IsFalse(File.Exists(finalPath));
+            Assert.AreEqual(chunkPath, session.CleanupWarningPath);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => session.StartAsync(CancellationToken.None));
+            preview.Release.TrySetResult();
+            await preview.Returning.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var deadline = DateTime.UtcNow.AddSeconds(2);
+            while (File.Exists(chunkPath) && DateTime.UtcNow < deadline) await Task.Delay(10);
+            Assert.IsFalse(File.Exists(chunkPath), "The active worker must release its WAV after returning.");
+            Assert.AreEqual(0, updates, "A retired recording cannot publish a late result.");
+        }
+        finally
+        {
+            preview.Release.TrySetResult();
+            File.Delete(chunkPath);
+            File.Delete(finalPath);
+        }
+    }
+
+    private sealed class IgnoringCancellationTranscriber : ITranscriber
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Returning { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            await Release.Task;
+            Assert.IsTrue(File.Exists(wavPath), "Recognition owns a readable file until it returns.");
+            Returning.TrySetResult();
+            return new("late preview", null, null);
         }
     }
 

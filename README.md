@@ -50,8 +50,9 @@ The current app downloads and runs `parakeet.cpp` with a supported Parakeet GGUF
 
 ## Start with the interesting code
 
-- [`ChunkedTranscribingDictationSession.cs`](src/PttDictation.Core/ChunkedTranscribingDictationSession.cs) — serial recognition scheduling, latest-snapshot coalescing, revisable full-recording previews, and legacy overlapping-chunk assembly.
+- [`ChunkedTranscribingDictationSession.cs`](src/PttDictation.Core/ChunkedTranscribingDictationSession.cs) — session-owned descriptor scheduling before PCM/WAV materialization, revisable full-recording previews, and a legacy overlapping-chunk adapter.
 - [`ParakeetCliTranscriber.cs`](src/PttDictation.Core/ParakeetCliTranscriber.cs) — `parakeet.cpp` process integration, streaming, cancellation, and CUDA-to-CPU fallback.
+- [`CumulativePcmBuffer.cs`](src/PttDictation.App/CumulativePcmBuffer.cs) — immutable capture blocks and recording-bound sample descriptors. One selected preview is materialized at a time, with only the latest pending descriptor; capture retains the complete recording for final recognition.
 - [`CoreBehaviorTests.cs`](tests/PttDictation.Tests/CoreBehaviorTests.cs) — behavioral coverage for chunk reconciliation, transcription modes, asset validation, and failure paths.
 
 ## Privacy

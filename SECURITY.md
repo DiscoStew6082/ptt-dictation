@@ -8,6 +8,8 @@ Security fixes are intended for the latest release only. Supported builds target
 
 ## Trust Boundaries
 
+- Preview scheduling selects recording-bound sample descriptors before copying cumulative PCM or creating temporary WAVs. The selected worker owns its WAV through recognition and cleanup. If a recognizer ignores cancellation past the bounded settle wait, its file remains readable until it returns and the retained path is reported as a cleanup warning. Pending descriptors create no files; final recognition separately owns the complete recording.
+
 - Clipboard insertion is a local OS boundary. Interim and final transcripts are temporarily placed on the clipboard; restoration is best-effort. Other local applications may observe them. Destination editors receive real text during live recording, so their normal autosave and text-processing behavior applies.
 - UI Automation reads the original editable field's text and selection to validate replacement of only this recording's text. These surrounding editor snapshots are transient. Known password, disabled, and read-only fields are excluded; uncertain writes stop instead of falling back to a duplicate whole-transcript paste.
 - Bounded recovery of a blocked original-field focus read or selection request preserves fresh original-element identity, focus, complete text-partition and selection checks before input. Native input is tracked from the start of the ready operation; intervening typing or clicks, cancellation, a changed target, or expiration of the thirty-second ceiling revoke write permission. Recovery never resends an uncertain clipboard paste.
