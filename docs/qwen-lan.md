@@ -47,4 +47,17 @@ Automated tests cover authentication, multipart handling, response formats, inva
 - Staged self-contained package installed through the repository updater at the existing installation path; all 604 package files verified, with the previous package retained for recovery.
 - The live authenticated endpoint transcribed one existing public LibriSpeech sample from WAV, M4A/AAC, and Ogg/Opus, with identical text. Request times were 3.03, 1.85, and 1.93 seconds respectively; these are single-machine observations, not latency guarantees.
 - Missing authorization returned 401; malformed audio returned 400; no temporary request directories remained. Process ancestry showed one desktop-owned Qwen worker (Python launcher plus runtime child), not a second model service.
-- Phone-to-PC network reachability, S25 keyboard insertion, and desktop hotkey interaction after this deployment remain pending. The Windows firewall permission prompt was still pending at this record's creation.
+- The user was on the phone and could not approve a Windows desktop prompt. The pending firewall command was stopped; no Qwen firewall rule was created. Instead, an existing private Tailscale network was used with a persistent TCP Serve proxy on port 8765 to the LAN endpoint. Authenticated discovery and an M4A transcription through the PC's Tailscale address passed; transcription took 2.13 seconds, and missing authorization returned 401. These checks originated on the PC: actual S25 connectivity/insertion and desktop hotkey interaction after deployment remain pending.
+
+## Existing Tailscale connection (no desktop firewall approval)
+
+When the PC and phone already belong to the same Tailscale network, a TCP Serve proxy can carry the authenticated API over that encrypted network. Check existing Serve configuration first so another service is not overwritten:
+
+```powershell
+tailscale serve status --json
+tailscale serve --bg --tcp=8765 tcp://PC_LAN_IP:8765
+```
+
+Use `http://PC_TAILSCALE_IP:8765/v1/` in the Android app with the same API key and model. Enable Tailscale on the phone. The HTTP traffic travels inside Tailscale's encrypted tunnel; this is private Serve, not public Funnel. The underlying app listener still uses the configured LAN IP, so update that target if DHCP changes it. Stop only this proxy with `tailscale serve --tcp=8765 off` when no longer needed. No Tailscale access-control policy was changed.
+
+Source: [Tailscale Serve CLI](https://tailscale.com/docs/reference/tailscale-cli/serve).
