@@ -60,7 +60,11 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
         }
     }
 
-    public async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
+    public Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken token) => TranscribeAsync(wavPath, token, recordText: true);
+
+    internal Task<TranscriptResult> TranscribePrivateAsync(string wavPath, CancellationToken token) => TranscribeAsync(wavPath, token, recordText: false);
+
+    private async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken, bool recordText)
     {
         using var operation = CreateOperation(cancellationToken);
         var audioPath = RequireLocalPath(wavPath, directory: false);
@@ -94,7 +98,7 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
                 request.Token.ThrowIfCancellationRequested();
                 stopwatch.Stop();
                 DiagnosticTrace.Write("qwen.request_completed",
-                    new { elapsedMilliseconds = stopwatch.Elapsed.TotalMilliseconds, text },
+                    new { elapsedMilliseconds = stopwatch.Elapsed.TotalMilliseconds, text = recordText ? text : null },
                     recordingId: recordingId);
                 return new TranscriptResult(text, stopwatch.Elapsed, null);
             }

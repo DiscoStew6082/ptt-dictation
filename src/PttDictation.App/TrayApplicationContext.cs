@@ -105,6 +105,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _hotkeySource.ToggleRequested += () => PostToUi(OnToggleRequestedAsync);
         _hotkeySource.Start();
         LoadSettingsAtStartup();
+        _ = Task.Run(() => QwenLanServer.RunConfiguredAsync(AppPaths.RootDirectory,
+            _finalTranscriber.TranscribeQwenFromPhoneAsync, _lifetime.Token));
         if (staleAudioCleanupFailures.Count > 0)
         {
             ShowCleanupWarning(staleAudioCleanupFailures[0]);
