@@ -12,8 +12,7 @@ internal sealed record DictationPresentationEnvironment(
     Action<string, string, ToolTipIcon> ShowTrayNotification,
     Action<StatusSound> PlayStatusSound,
     Func<TimeSpan, Task> DelayAsync,
-    Func<bool>? IsInlinePreview = null,
-    Func<string?>? GetHoldingReason = null,
+    Func<bool> IsInlinePreview,
     Func<bool>? IsWaitingForTargetResponse = null);
 
 internal enum StatusSound
@@ -79,7 +78,7 @@ internal sealed class DictationPresentation
         }
 
         _cancelItem.Enabled = state.CanCancel;
-        _overlay.SetInlinePreview(_environment.IsInlinePreview?.Invoke() == true);
+        _overlay.SetInlinePreview(_environment.IsInlinePreview());
 
         if (string.IsNullOrWhiteSpace(state.CleanupWarningPath))
         {
@@ -100,8 +99,7 @@ internal sealed class DictationPresentation
         // The live-paste workflow presents words in the destination editor.
         // This includes the asynchronous capture interval and focus pauses;
         // neither should flash a transcript card over that editor.
-        if (_environment.IsInlinePreview is not null
-            && state.Phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing)
+        if (state.Phase is DictationWorkflowPhase.Recording or DictationWorkflowPhase.Processing)
         {
             if (_environment.IsWaitingForTargetResponse?.Invoke() == true)
                 _overlay.ShowStatus(state.Phase == DictationWorkflowPhase.Recording
@@ -131,12 +129,6 @@ internal sealed class DictationPresentation
                 // Listening is signalled only after preparation and microphone
                 // startup. Do not play the listening sound for a pending start.
                 break;
-            case DictationWorkflowPhase.Recording:
-                PresentRecording(state, phaseChanged);
-                break;
-            case DictationWorkflowPhase.Processing:
-                PresentProcessing(state, phaseChanged);
-                break;
             case DictationWorkflowPhase.Pasted:
             case DictationWorkflowPhase.InsertedPreview:
                 await PresentPastedAsync(phaseChanged);
@@ -151,12 +143,10 @@ internal sealed class DictationPresentation
             case DictationWorkflowPhase.Cancelled:
                 if (phaseChanged)
                 {
-                    var cancelled = _environment.IsInlinePreview is null
-                        ? DictationStatusCatalog.DictationCancelled
-                        : DictationStatusCatalog.DictationCancelled with
-                        {
-                            Message = "Recording stopped. Text already inserted remains in the textbox."
-                        };
+                    var cancelled = DictationStatusCatalog.DictationCancelled with
+                    {
+                        Message = "Recording stopped. Text already inserted remains in the textbox."
+                    };
                     ShowStatus(cancelled, ToolTipIcon.Info);
                 }
 
@@ -177,26 +167,6 @@ internal sealed class DictationPresentation
         }
     }
 
-    private void PresentProcessing(DictationWorkflowState state, bool phaseChanged)
-    {
-        if (phaseChanged)
-        {
-            _overlay.ShowProcessing();
-            _environment.PlayStatusSound(StatusSound.Transcribing);
-        }
-
-        if (!string.IsNullOrWhiteSpace(state.Transcript))
-        {
-            _overlay.ShowProcessingTranscript(state.Transcript);
-        }
-
-        var detail = _environment.GetHoldingReason?.Invoke() ?? state.ProcessingDetail;
-        if (!string.IsNullOrWhiteSpace(detail))
-        {
-            _overlay.ShowProcessingDetail(detail);
-        }
-    }
-
     private async Task PresentPastedAsync(bool phaseChanged)
     {
         _environment.RefreshHistory();
@@ -213,42 +183,11 @@ internal sealed class DictationPresentation
         }
     }
 
-    private void PresentRecording(DictationWorkflowState state, bool phaseChanged)
-    {
-        var settings = _environment.GetSettings();
-        var mode = state.TriggerMode == DictationTriggerMode.Toggle
-            ? ListeningTriggerMode.Toggle
-            : ListeningTriggerMode.PushToTalk;
-        var hotkey = state.TriggerMode == DictationTriggerMode.Toggle
-            ? settings.ToggleHotkey
-            : settings.HoldHotkey;
-        var hotkeyName = DictationHotkeyCatalog.DisplayName(hotkey);
-
-        if (phaseChanged)
-        {
-            _environment.PlayStatusSound(StatusSound.Listening);
-            ShowStatus(
-                DictationStatusCatalog.Listening,
-                ToolTipIcon.Info,
-                ListeningStatusFormatter.FormatHint(mode, hotkeyName),
-                mode,
-                hotkeyName);
-        }
-
-        if (!string.IsNullOrWhiteSpace(state.Transcript))
-        {
-            _overlay.ShowListeningTranscript(state.Transcript, mode);
-        }
-    }
-
     private void ShowStatus(
         DictationStatus status,
-        ToolTipIcon icon,
-        string? notifyMessage = null,
-        ListeningTriggerMode mode = ListeningTriggerMode.PushToTalk,
-        string? listeningHotkeyName = null)
+        ToolTipIcon icon)
     {
-        _overlay.ShowStatus(status, mode, listeningHotkeyName);
-        _environment.ShowTrayNotification(status.Title, notifyMessage ?? status.Message, icon);
+        _overlay.ShowStatus(status);
+        _environment.ShowTrayNotification(status.Title, status.Message, icon);
     }
 }

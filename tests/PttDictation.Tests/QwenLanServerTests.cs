@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using PttDictation.App;
 using PttDictation.Core;
@@ -28,7 +29,8 @@ public sealed class QwenLanServerTests
         fixture.Authorize();
         using var response = await fixture.Client.PostAsync("v1/audio/transcriptions", Upload());
         response.EnsureSuccessStatusCode();
-        StringAssert.Contains(await response.Content.ReadAsStringAsync(), "Hello, caf");
+        using var transcript = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.AreEqual("Hello, café.", transcript.RootElement.GetProperty("text").GetString());
         using var plain = await fixture.Client.PostAsync("v1/audio/transcriptions", Upload(format: "text"));
         Assert.AreEqual("Hello, café.", await plain.Content.ReadAsStringAsync());
         Assert.AreEqual(0, Directory.GetDirectories(fixture.Root).Length);

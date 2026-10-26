@@ -12,7 +12,7 @@ public sealed class DictationPresentationTests
     public void SlowOriginalTextboxShowsCancelableWaitAndClearsOnResumeOrCancellation()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancel = new ToolStripMenuItem();
@@ -51,6 +51,7 @@ public sealed class DictationPresentationTests
             await presentation.ApplyAsync(state);
             Assert.AreEqual("Dictation cancelled", overlay.TitleTextForTest,
                 "A queued wait notification must not replace the current terminal state.");
+            StringAssert.Contains(overlay.MessageTextForTest, "Text already inserted remains in the textbox.");
             Assert.IsFalse(cancel.Enabled);
         });
     }
@@ -60,7 +61,7 @@ public sealed class DictationPresentationTests
     public void PreparingOverlayPreservesNativeForegroundFocusOnFirstAndSecondShow()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             var diagnosticsDirectory = Path.Combine(AppContext.BaseDirectory, "overlay-focus-" + Guid.NewGuid().ToString("N"));
             using var diagnostics = DiagnosticTrace.Configure(diagnosticsDirectory, "preparing-overlay-native-focus");
@@ -101,7 +102,7 @@ public sealed class DictationPresentationTests
     public void PreparingShowsNonActivatingWaitUntilRecordingStarts(DictationTriggerMode mode, string expectedHint)
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancel = new ToolStripMenuItem();
@@ -132,15 +133,17 @@ public sealed class DictationPresentationTests
     }
 
     [TestMethod]
+    [DataRow(DictationTriggerMode.Hold)]
+    [DataRow(DictationTriggerMode.Toggle)]
     [VisibleUi]
-    public void LiveTextboxRecordingAndProcessingNeverShowFloatingOverlay()
+    public void LiveTextboxRecordingAndProcessingNeverShowFloatingOverlay(DictationTriggerMode mode)
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancel = new ToolStripMenuItem();
-            var state = new DictationWorkflowState(DictationWorkflowPhase.Recording);
+            var state = new DictationWorkflowState(DictationWorkflowPhase.Recording, mode);
             var inlineReady = false;
             var sounds = new List<StatusSound>();
             var environment = CreateEnvironment(() => AppSettings.Default, () => state,
@@ -154,80 +157,11 @@ public sealed class DictationPresentationTests
             Assert.IsFalse(overlay.Visible, "Live text needs no floating transcription window.");
             state = state with { Phase = DictationWorkflowPhase.Processing };
             await presentation.ApplyAsync(state);
+            state = state with { Transcript = "Revised final words", ProcessingDetail = "Preparing to paste." };
+            await presentation.ApplyAsync(state);
             Assert.IsFalse(overlay.Visible, "Final processing must not open a corner indicator.");
             Assert.IsTrue(cancel.Enabled);
             CollectionAssert.AreEqual(new[] { StatusSound.Listening, StatusSound.Transcribing }, sounds);
-        });
-    }
-
-    [TestMethod]
-    [VisibleUi]
-    public void EnteringToggleRecordingPresentsConfiguredTriggerAndEnablesCancellation()
-    {
-        VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
-        {
-            using var overlay = new StatusOverlayForm();
-            using var cancelItem = new ToolStripMenuItem { Enabled = false };
-            var sounds = new List<StatusSound>();
-            var state = new DictationWorkflowState(
-                DictationWorkflowPhase.Recording,
-                DictationTriggerMode.Toggle);
-            var presentation = new DictationPresentation(
-                overlay,
-                cancelItem,
-                CreateEnvironment(
-                    () => AppSettings.Default with { ToggleHotkey = DictationHotkey.F9 },
-                    () => state,
-                    playStatusSound: sounds.Add));
-
-            await presentation.ApplyAsync(state);
-
-            Assert.IsTrue(cancelItem.Enabled);
-            CollectionAssert.AreEqual(new[] { StatusSound.Listening }, sounds);
-            Assert.AreEqual("Listening", overlay.TitleTextForTest);
-            StringAssert.Contains(overlay.MessageTextForTest, "Press F9 to transcribe");
-        });
-    }
-
-    [TestMethod]
-    [VisibleUi]
-    public void ProcessingUpdatesTranscriptAndDetailWithoutReplayingTransitionSound()
-    {
-        VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
-        {
-            using var overlay = new StatusOverlayForm();
-            using var cancelItem = new ToolStripMenuItem();
-            var sounds = new List<StatusSound>();
-            var state = new DictationWorkflowState(DictationWorkflowPhase.Recording);
-            var presentation = new DictationPresentation(
-                overlay,
-                cancelItem,
-                CreateEnvironment(
-                    () => AppSettings.Default,
-                    () => state,
-                    playStatusSound: sounds.Add));
-            await presentation.ApplyAsync(state);
-            sounds.Clear();
-
-            state = new DictationWorkflowState(
-                DictationWorkflowPhase.Processing,
-                Transcript: "first words",
-                ProcessingDetail: "Loading the local model.");
-            await presentation.ApplyAsync(state);
-            state = state with
-            {
-                Transcript = "first words and more",
-                ProcessingDetail = "Preparing to paste."
-            };
-            await presentation.ApplyAsync(state);
-
-            Assert.IsTrue(cancelItem.Enabled);
-            CollectionAssert.AreEqual(new[] { StatusSound.Transcribing }, sounds);
-            Assert.AreEqual("Processing", overlay.TitleTextForTest);
-            StringAssert.Contains(overlay.MessageTextForTest, "Preparing to paste.");
-            StringAssert.Contains(overlay.MessageTextForTest, "first words and more");
         });
     }
 
@@ -238,7 +172,7 @@ public sealed class DictationPresentationTests
     public void CompletedPasteRefreshesHistoryAndHidesAfterQuarterSecond(DictationWorkflowPhase phase)
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancelItem = new ToolStripMenuItem();
@@ -278,7 +212,7 @@ public sealed class DictationPresentationTests
     public void CompletedPasteDoesNotHideAWorkflowThatStartedDuringVisibilityDelay()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancelItem = new ToolStripMenuItem();
@@ -307,7 +241,7 @@ public sealed class DictationPresentationTests
     public void FailedStateDisablesCancellationAndPresentsErrorOnce()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancelItem = new ToolStripMenuItem { Enabled = true };
@@ -340,7 +274,7 @@ public sealed class DictationPresentationTests
     [TestMethod]
     public void CleanupWarningIsForwardedWithTheState()
     {
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancelItem = new ToolStripMenuItem();
@@ -367,7 +301,7 @@ public sealed class DictationPresentationTests
     public void CleanupWarningIsPresentedOnceAcrossProcessingAndTerminalState()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(async () =>
+        StaTest.Run(async () =>
         {
             using var overlay = new StatusOverlayForm();
             using var cancelItem = new ToolStripMenuItem();
@@ -410,31 +344,8 @@ public sealed class DictationPresentationTests
             ShowCleanupWarning: showCleanupWarning ?? (_ => { }),
             ShowTrayNotification: showTrayNotification ?? ((_, _, _) => { }),
             PlayStatusSound: playStatusSound ?? (_ => { }),
-            DelayAsync: delayAsync ?? (_ => Task.CompletedTask));
+            DelayAsync: delayAsync ?? (_ => Task.CompletedTask),
+            IsInlinePreview: () => false);
     }
 
-    private static void RunOnStaThread(Func<Task> action)
-    {
-        Exception? exception = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                action().GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                exception = ex;
-            }
-        });
-
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join();
-
-        if (exception is not null)
-        {
-            throw exception;
-        }
-    }
 }

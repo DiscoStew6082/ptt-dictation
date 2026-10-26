@@ -86,7 +86,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 PlayStatusSound: _statusSoundPlayer.Play,
                 DelayAsync: Task.Delay,
                 IsInlinePreview: () => _livePaster.InlinePreview,
-                GetHoldingReason: () => _livePaster.HoldingReason,
                 IsWaitingForTargetResponse: () => _livePaster.WaitingForTargetResponse));
         _livePaster.PresentationChanged += OnInsertionPresentationChanged;
         _dictationWorkflow.StateChanged += OnDictationStateChanged;

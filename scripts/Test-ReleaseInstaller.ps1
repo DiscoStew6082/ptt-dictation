@@ -111,18 +111,35 @@ function Invoke-Fixture([string]$Case) {
         }
     }
     function Wait-Process { param($Id, $Timeout, $ErrorAction) }
-    function Start-Sleep { param($Seconds) }
-    function Start-Process {
-        param($FilePath, $WorkingDirectory, [switch]$PassThru)
+    function Start-Sleep { param($Seconds, $Milliseconds) }
+    function Invoke-FixtureLaunch {
+        param($FilePath, $Arguments, $WorkingDirectory, $Verb, $Show)
         Assert ($FilePath -eq $expectedExe -and $WorkingDirectory -eq $live) 'Launch moved the installation.'
+        Assert ($Arguments -ceq '' -and $Verb -eq 'open' -and $Show -eq 1) 'Expected a normal launch with no arguments.'
         $state.Starts += (Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash
         if ($Case -eq 'launch-failure' -and $state.Starts.Count -eq 1) { throw 'Injected launch failure.' }
         $newId = 200 + $state.Starts.Count
         $state.Running += [pscustomobject]@{ ProcessId = $newId; ExecutablePath = $FilePath;
-            CommandLine = '"' + $FilePath + '"'; CreationDate = [datetime]'2026-02-01' }
-        return [pscustomobject]@{ Id = $newId }
+            CommandLine = '"' + $FilePath + '"'; CreationDate = [datetime]::Now }
     }
-    function New-Object { throw 'Shortcut writes are forbidden in installer fixtures.' }
+    function Start-Process { throw 'Installer must launch through the Explorer desktop.' }
+    function New-Object {
+        param($ComObject)
+        Assert ($ComObject -eq 'Shell.Application') 'Shortcut writes are forbidden in installer fixtures.'
+        $application = [pscustomobject]@{}
+        $application | Add-Member ScriptMethod ShellExecute {
+            param($FilePath, $Arguments, $WorkingDirectory, $Verb, $Show)
+            Invoke-FixtureLaunch $FilePath $Arguments $WorkingDirectory $Verb $Show
+        }
+        $windows = [pscustomobject]@{ Desktop = [pscustomobject]@{ Document = [pscustomobject]@{ Application = $application } } }
+        $windows | Add-Member ScriptMethod FindWindowSW {
+            param($Location, $Root, $Class, $Handle, $Options)
+            return $this.Desktop
+        }
+        $shell = [pscustomobject]@{ ShellWindows = $windows }
+        $shell | Add-Member ScriptMethod Windows { return $this.ShellWindows }
+        return $shell
+    }
     function Move-Item { throw 'Installation must preserve its selected directory.' }
     function Copy-Item {
         param([Parameter(ValueFromPipeline)]$InputObject, $Destination, [switch]$Recurse, [switch]$Force)
@@ -177,8 +194,11 @@ function Invoke-Fixture([string]$Case) {
     $success = $Case -in @('success', 'online-success', 'no-launch', 'owned-workers', 'first-install')
     if ($success) {
         Assert ($null -eq $caught) "Unexpected install failure: $caught"
-        $newHash = (Get-FileHash -LiteralPath (Join-Path $package 'PttDictation.dll')).Hash
-        Assert ((Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash -eq $newHash) 'New package missing.'
+        $newHashes = Get-TestHashes $package
+        $installed = Get-TestHashes $live
+        $installed.Remove('deployment-receipt.json')
+        Assert ($installed.Count -eq $newHashes.Count) 'Installed package file count changed.'
+        foreach ($name in $newHashes.Keys) { Assert ($installed[$name] -eq $newHashes[$name]) "New package file missing or changed: $name" }
         Assert (-not (Test-Path -LiteralPath (Join-Path $live 'old-only.dat'))) 'Obsolete file retained.'
         $receipt = Get-Content -LiteralPath (Join-Path $live 'deployment-receipt.json') -Raw | ConvertFrom-Json
         Assert ($receipt.ExecutablePath -eq $expectedExe -and $receipt.ArchiveSha256 -eq $archiveHash) 'Receipt has wrong destination or archive hash.'
@@ -190,6 +210,11 @@ function Invoke-Fixture([string]$Case) {
             Assert (1101 -in $state.Stops -and $state.Workers.Count -eq 3) 'Owned worker survived or unrelated worker changed.'
         }
         if ($Case -eq 'online-success') { Assert ($state.NetworkCalls -eq 3 -and $receipt.ReleaseTag -eq 'v-test') 'Latest-release lookup/download was not exercised.' }
+        if ($Case -eq 'success') {
+            $verified = & $InstallerPath -VerifyOnly -InstallDirectory $live
+            Assert ($verified.DeploymentReceiptVerified -and $verified.FilesHashed -eq $newHashes.Count) 'PowerShell 5.1 could not verify the installed receipt.'
+            Assert ($state.Starts.Count -eq 1 -and $state.Stops.Count -eq 1) 'Read-only verification changed process state.'
+        }
     }
     else {
         Assert ($null -ne $caught) "Expected $Case to fail."
@@ -225,10 +250,10 @@ function Invoke-Fixture([string]$Case) {
     Write-Host "PASS $Case"
 }
 
-$cases = if ($Scenario.Count -gt 0) { $Scenario } else { @(
+$cases = @(if ($Scenario.Count -gt 0) { $Scenario } else { @(
     'partial-backup', 'corrupt-backup', 'relative-path', 'drive-relative-path', 'checksum-mismatch',
     'success', 'online-success', 'first-install', 'first-install-copy-failure', 'copy-failure', 'copy-failure-no-launch', 'launch-failure', 'no-launch', 'unrelated-process',
-    'stop-failure', 'unconfirmed-stop', 'owned-workers', 'worker-stop-failure') }
+    'stop-failure', 'unconfirmed-stop', 'owned-workers', 'worker-stop-failure') })
 $failures = @()
 try {
     foreach ($case in $cases) {

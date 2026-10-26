@@ -75,6 +75,9 @@ public sealed class EmptyPreviewDiagnosticsTests
         await run.ChunkError(new IOException("preview provider failed"));
         await run.Session.StopAsync(CancellationToken.None);
         Assert.IsEmpty(await run.Warnings());
+        var failure = (await run.Errors()).Single(entry => entry.GetProperty("stage").GetString() == "chunk.failed");
+        Assert.AreEqual(run.RecordingId, failure.GetProperty("recordingId").GetString());
+        StringAssert.Contains(failure.GetProperty("exception").GetString()!, "IOException: preview provider failed");
     }
 
     [TestMethod]
@@ -229,7 +232,9 @@ public sealed class EmptyPreviewDiagnosticsTests
             while (File.Exists(path) && DateTime.UtcNow < deadline) await Task.Delay(1);
             Assert.IsFalse(File.Exists(path), "Chunk processing must finish before the next fixture input.");
         }
-        public async Task<JsonElement[]> Warnings()
+        public async Task<JsonElement[]> Warnings() => (await Errors())
+            .Where(entry => entry.GetProperty("stage").GetString() == WarningStage).ToArray();
+        public async Task<JsonElement[]> Errors()
         {
             await DiagnosticTrace.FlushAsync();
             var path = Path.Combine(Directory, "errors.jsonl");
@@ -237,7 +242,7 @@ public sealed class EmptyPreviewDiagnosticsTests
             {
                 using var json = JsonDocument.Parse(line);
                 return json.RootElement.Clone();
-            }).Where(entry => entry.GetProperty("stage").GetString() == WarningStage).ToArray() : [];
+            }).ToArray() : [];
         }
         public void Dispose()
         {

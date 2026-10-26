@@ -326,7 +326,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayUsesNonActivatingTopmostWindow()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -341,7 +341,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormBuildsSelectedTranscriptionMode()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -359,7 +359,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormClearsAutoModelPathWhenBuiltInModelChanges()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -380,7 +380,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormFallsBackToAutoWhenStreamingModeIsNotValidForSelectedModel()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -399,7 +399,7 @@ public sealed class AppBehaviorTests
     public void TrayPresentsSettingsImmediatelyFromCurrentSettings()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -428,7 +428,7 @@ public sealed class AppBehaviorTests
     public void TrayRecreatesDisposedSettingsFormBeforePresenting()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             var disposedForm = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -457,7 +457,7 @@ public sealed class AppBehaviorTests
     public void TrayOpenSettingsMenuWorksOnFirstClickAndAfterDisposedForm()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             TrayApplicationContext? context = null;
@@ -514,7 +514,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormBuildsIndependentHoldAndToggleHotkeys()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -537,7 +537,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormRejectsMatchingHoldAndToggleHotkeys()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -555,7 +555,7 @@ public sealed class AppBehaviorTests
     public void SettingsFormUsesResponsiveDarkSectionsAtMinimumSize()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -596,7 +596,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormOpensAtAComfortableDefaultWithinDesktopLimits()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -614,7 +614,7 @@ public sealed class AppBehaviorTests
     public void SettingsFormStacksSectionsAtHighDpi()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -639,7 +639,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormUsesTwoColumnsWhenWide()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -656,7 +656,7 @@ public sealed class AppBehaviorTests
     public void SettingsFormCorrectionEditorGeometryMatchesResponsiveMode()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -714,7 +714,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormDisablesModelDownloadWhenSelectedModelIsPresent()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             var downloaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -741,7 +741,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormDownloadButtonSavesSelectedModelPath()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             var downloaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -770,7 +770,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormDisablesModelSelectorWhileDownloadIsInFlight()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             var download = new TaskCompletionSource<string>();
@@ -808,7 +808,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormKeepsDownloadFailureVisible()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(
@@ -830,7 +830,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormTreatsExistingPersistedModelPathAsDownloaded()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var settingsPath = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             var modelPath = Path.Combine(Path.GetTempPath(), $"parakeet-model-{Guid.NewGuid():N}.gguf");
@@ -862,7 +862,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsFormBuildsTranscriptCorrectionsAndShowsPreview()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -895,7 +895,7 @@ public sealed class AppBehaviorTests
     public void SettingsFormCorrectionEditorShowsRulesAndKeepsEditorAndPreviewInSync()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -961,7 +961,7 @@ public sealed class AppBehaviorTests
     public void SettingsFormSavePersistsCorrectionRulesWithoutClosingSettings()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             try
@@ -994,7 +994,7 @@ public sealed class AppBehaviorTests
     public void SettingsFormSavesSelectedRuleCollisionExactlyAsPreviewed()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             try
@@ -1036,7 +1036,7 @@ public sealed class AppBehaviorTests
     public void SettingsFormIncompleteDraftLeavesSavedRulesUntouchedAndReloadDiscardsEdits()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             try
@@ -1082,7 +1082,7 @@ public sealed class AppBehaviorTests
     public void InlineRecordingUsesSmallIndicatorThroughFinalProcessing()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening, ListeningTriggerMode.Toggle);
@@ -1120,7 +1120,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayAutoHidesExceptionalCompletionStatesWithoutShowingWindow()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -1137,7 +1137,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayKeepsListeningTextAwayFromClippedEdges()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -1154,7 +1154,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayReservesRoomForCompleteTranscriptAboveActivityMeter()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -1173,7 +1173,7 @@ public sealed class AppBehaviorTests
     public void StatusOverlayCanHideAfterPasteCompletes()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -1191,7 +1191,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayExplainsThatCancelledRecordingWasDiscarded()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -1243,7 +1243,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayKeepsConfiguredToggleKeyInLiveTranscriptHint()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening, ListeningTriggerMode.Toggle, "F9");
@@ -1257,7 +1257,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayShowsToggleListeningTextWithoutRelease()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -1270,7 +1270,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayKeepsToggleRecordingVisibleWhenPartialTranscriptArrives()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening, ListeningTriggerMode.Toggle);
@@ -1289,7 +1289,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayShowsTheCompletePartialTranscriptWithoutStoppingRecording()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening, ListeningTriggerMode.Toggle);
@@ -1314,7 +1314,7 @@ public sealed class AppBehaviorTests
     public void StatusOverlayTracksProcessingInPlaceUntilPasteCompletes()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -1347,7 +1347,7 @@ public sealed class AppBehaviorTests
     public void BackgroundModelWarmUpDoesNotReplaceTheRecordingTranscript()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -1386,112 +1386,9 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
-    public void PcmChunkBufferWaitsForEnoughAudioBeforeCreatingChunk()
-    {
-        var buffer = new PcmChunkBuffer(bytesPerSecond: 4, chunkBytes: 8, overlapBytes: 2);
-
-        buffer.Append([1, 2, 3, 4]);
-
-        Assert.IsNull(buffer.TryCreateChunk("chunk.wav"));
-        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, buffer.ToArray());
-    }
-
-    [TestMethod]
-    public void PcmChunkBufferCreatesOverlappedChunks()
-    {
-        var buffer = new PcmChunkBuffer(bytesPerSecond: 4, chunkBytes: 8, overlapBytes: 2);
-
-        buffer.Append([1, 2, 3, 4, 5, 6, 7, 8]);
-        var first = buffer.TryCreateChunk("chunk-1.wav");
-        buffer.Append([9, 10, 11, 12, 13, 14]);
-        var second = buffer.TryCreateChunk("chunk-2.wav");
-
-        Assert.IsNotNull(first);
-        Assert.AreEqual("chunk-1.wav", first.Path);
-        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, first.Pcm);
-        Assert.AreEqual(TimeSpan.FromSeconds(2), first.Duration);
-        Assert.AreEqual(TimeSpan.Zero, first.OverlapDuration);
-        Assert.IsNotNull(second);
-        CollectionAssert.AreEqual(new byte[] { 7, 8, 9, 10, 11, 12, 13, 14 }, second.Pcm);
-        Assert.AreEqual(TimeSpan.FromSeconds(2), second.Duration);
-        Assert.AreEqual(TimeSpan.FromSeconds(0.5), second.OverlapDuration);
-        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 }, buffer.ToArray());
-    }
-
-    [TestMethod]
-    public void PcmChunkBufferKeepsChunksFixedSizeAfterLargeAppend()
-    {
-        var buffer = new PcmChunkBuffer(bytesPerSecond: 4, chunkBytes: 8, overlapBytes: 2);
-
-        buffer.Append([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-        var first = buffer.TryCreateChunk("chunk-1.wav");
-        var second = buffer.TryCreateChunk("chunk-2.wav");
-        var third = buffer.TryCreateChunk("chunk-3.wav");
-
-        Assert.IsNotNull(first);
-        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, first.Pcm);
-        Assert.AreEqual(TimeSpan.Zero, first.OverlapDuration);
-        Assert.IsNotNull(second);
-        CollectionAssert.AreEqual(new byte[] { 7, 8, 9, 10, 11, 12, 13, 14 }, second.Pcm);
-        Assert.AreEqual(TimeSpan.FromSeconds(0.5), second.OverlapDuration);
-        Assert.IsNull(third);
-        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, buffer.ToArray());
-    }
-
-    [TestMethod]
-    public void AudioChunkPublisherDeletesChunkWhenHandlerIsMissing()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"parakeet-late-chunk-{Guid.NewGuid():N}.wav");
-        var deletedPaths = new List<string>();
-
-        AudioChunkPublisher.Publish(
-            new PendingAudioChunk(path, [1, 2, 3, 4], TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(250)),
-            handler: null,
-            writeWav: (chunkPath, pcm) => File.WriteAllBytes(chunkPath, pcm),
-            delete: chunkPath =>
-            {
-                deletedPaths.Add(chunkPath);
-                File.Delete(chunkPath);
-            });
-
-        CollectionAssert.AreEqual(new[] { path }, deletedPaths.ToArray());
-        Assert.IsFalse(File.Exists(path));
-    }
-
-    [TestMethod]
-    public void AudioChunkPublisherPublishesWrittenChunkWhenHandlerExists()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"parakeet-published-chunk-{Guid.NewGuid():N}.wav");
-        RecordedAudio? published = null;
-
-        try
-        {
-            AudioChunkPublisher.Publish(
-                new PendingAudioChunk(path, [1, 2, 3, 4], TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(250)),
-                audio => published = audio,
-                writeWav: (chunkPath, pcm) => File.WriteAllBytes(chunkPath, pcm),
-                delete: File.Delete);
-
-            Assert.IsNotNull(published);
-            Assert.AreEqual(path, published.Path);
-            Assert.AreEqual(TimeSpan.FromSeconds(1), published.Duration);
-            Assert.AreEqual(TimeSpan.FromMilliseconds(250), published.OverlapDuration);
-            Assert.IsTrue(published.DeleteAfterUse);
-            CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(path));
-        }
-        finally
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-    }
-
-    [TestMethod]
     public void StatusOverlayRunsLiveActivityOnlyWhileListening()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -1511,7 +1408,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayActivityMeterStoresLatestMicrophoneLevel()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -1525,7 +1422,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayActivityMeterUsesFixedVerticalResponseProfile()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -1546,7 +1443,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayDecaysMicrophoneLevelInsteadOfAnimatingFakeMotion()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -1562,7 +1459,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayIgnoresMicrophoneLevelWhenNotListening()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
 
@@ -1576,7 +1473,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void StatusOverlayResetsActivityMeterForEachListeningSession()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -1623,7 +1520,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SessionHistoryWrapsLongTextAndKeepsButtonsVisibleAtMinimumSize()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var history = new SessionHistory();
             history.Add("That seems." + Environment.NewLine +
@@ -1676,7 +1573,7 @@ public sealed class AppBehaviorTests
     [TestMethod]
     public void SettingsCorrectionTextBoxesUseDarkEditingMenus()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"parakeet-settings-form-{Guid.NewGuid():N}.json");
             using var form = new SettingsForm(new AppSettingsStore(path), ModelRegistry.CreateDefault());
@@ -1691,30 +1588,6 @@ public sealed class AppBehaviorTests
         });
     }
 
-    private static void RunOnStaThread(Action action)
-    {
-        Exception? exception = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                action();
-            }
-            catch (Exception ex)
-            {
-                exception = ex;
-            }
-        });
-
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join();
-
-        if (exception is not null)
-        {
-            throw exception;
-        }
-    }
 
     private static void WriteInt16(byte[] buffer, int offset, short sample)
     {

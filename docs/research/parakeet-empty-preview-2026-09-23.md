@@ -1,5 +1,9 @@
 # Empty Parakeet preview investigation, September 23, 2026
 
+Historical report: the benchmark scripts referenced below were retired during
+the October 26 maintenance cleanup. Their last version is preserved at Git
+commit `679eeb9`; these commands are not current validation instructions.
+
 ## Live observations
 
 After a local app restart, a 4.55-second recording took 7.68 seconds from Stop to completed insertion. Approximately 5.93 seconds was remaining Qwen cold startup, 1.39 seconds was the final request, and 0.34 seconds was insertion. The app had been idle for about eleven minutes before recording; the earlier implementation did not preload during that interval. Background Qwen preload addresses this avoidable first-use wait. It does not make final inference instantaneous, and recording immediately after launch can still overlap loading.

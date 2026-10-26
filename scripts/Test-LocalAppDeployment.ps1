@@ -5,11 +5,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ptt-deployment-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
-$installer = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Update-LocalApp.ps1') -Raw
-$fixedSettingsInitialization = '$settingsPath = Join-Path $env:LOCALAPPDATA ''PttDictation\settings.json'''
-if ([regex]::Matches($installer, [regex]::Escape($fixedSettingsInitialization)).Count -ne 1) {
-    throw 'Expected exactly one fixed settings initialization in the production script.'
-}
+$testScript = Join-Path $PSScriptRoot 'Update-LocalApp.ps1'
+$previousLocalAppData = $env:LOCALAPPDATA
 
 function Assert($Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -46,18 +43,14 @@ function Invoke-Fixture([string]$Scenario) {
     $oldSettingsSnapshot = if ($hadSettings) { [Convert]::ToBase64String($oldSettingsBytes) } else { '<missing>' }
     $newSettingsSnapshot = [Convert]::ToBase64String($newSettingsBytes)
 
-    # The production settings destination is replaced before the test script can run.
-    # The installation destination is supplied explicitly to every invocation.
-    $testScript = Join-Path $caseRoot 'installer.ps1'
-    $settingsInitialization = '$settingsPath = ''' + $global:pttTestSettingsPath.Replace("'", "''") + ''''
-    $isolatedInstaller = $installer.Replace($fixedSettingsInitialization, $settingsInitialization).
-        Replace('Local\PttDictation-PermanentDeployment', "Local\PttTest-$Scenario")
-    Assert (-not $isolatedInstaller.Contains('$env:LOCALAPPDATA')) 'Fixture could access real appdata.'
-    [IO.File]::WriteAllText($testScript, $isolatedInstaller, [Text.UTF8Encoding]::new($false))
+    # Run the unchanged public engine through the compatibility wrapper. Only
+    # this test process's appdata environment points at the disposable fixture.
+    $env:LOCALAPPDATA = Join-Path $caseRoot 'appdata'
     $global:pttTestExpectedExe = Join-Path $live 'PttDictation.exe'
     $global:pttTestRunning = @([pscustomobject]@{
         ProcessId = 101; ExecutablePath = $global:pttTestExpectedExe; CommandLine = '"' + $global:pttTestExpectedExe + '"'; CreationDate = [datetime]'2026-01-01'
     })
+    if ($Scenario -eq 'stopped-startup-failure') { $global:pttTestRunning = @() }
     $global:pttTestWorkers = @()
     if ($Scenario -eq 'owned-worker') {
         $global:pttTestWorkers = @(101, 999 | ForEach-Object {
@@ -158,7 +151,7 @@ function Invoke-Fixture([string]$Scenario) {
             throw 'Injected Explorer dispatch failure.'
         }
         $newId = 200 + $global:pttTestStartCount
-        if ($global:pttTestFailure -notin @('startup-failure', 'settings-startup-failure', 'settings-missing-rollback') -or
+        if ($global:pttTestFailure -notin @('startup-failure', 'stopped-startup-failure', 'settings-startup-failure', 'settings-missing-rollback') -or
             $global:pttTestStartCount -gt 1) {
             $global:pttTestRunning = @([pscustomobject]@{
                 ProcessId = $newId; ExecutablePath = $FilePath; CommandLine = '"' + $FilePath + '"'; CreationDate = [datetime]::Now
@@ -206,7 +199,7 @@ function Invoke-Fixture([string]$Scenario) {
             $InputObject | Microsoft.PowerShell.Management\Copy-Item -Destination $Destination -Recurse:$Recurse -Force:$Force
             if ($Destination -eq (Split-Path $global:pttTestExpectedExe -Parent) -and
                 $InputObject.Name -eq 'PttDictation.dll' -and
-                $InputObject.Directory.Name.StartsWith('.install-')) {
+                $InputObject.Directory.Name -eq 'stage') {
                 if ($global:pttTestFailure -eq 'corrupt-install') {
                     Set-Content -LiteralPath (Join-Path $Destination 'PttDictation.dll') -Value 'corrupted'
                 }
@@ -236,7 +229,7 @@ function Invoke-Fixture([string]$Scenario) {
     catch { $caught = $_ }
 
     $successScenarios = @('success', 'owned-worker', 'vanished-process', 'delayed-launch', 'settings-success', 'settings-first-install', 'settings-frozen-source')
-    $rollbackScenarios = @('startup-failure', 'corrupt-install', 'settings-startup-failure', 'settings-copy-failure', 'settings-missing-rollback',
+    $rollbackScenarios = @('startup-failure', 'stopped-startup-failure', 'corrupt-install', 'settings-startup-failure', 'settings-copy-failure', 'settings-missing-rollback',
         'shell-dispatch-failure', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process')
     if ($Scenario -in $successScenarios) {
         Assert ($null -eq $caught) "Install failed: $caught"
@@ -273,7 +266,7 @@ function Invoke-Fixture([string]$Scenario) {
     else {
         Assert ($null -ne $caught) "Expected $Scenario to fail."
         $expectedError = switch ($Scenario) {
-            { $_ -in @('startup-failure', 'settings-startup-failure', 'settings-missing-rollback', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process') } { '*Expected exactly one new process*'; break }
+            { $_ -in @('startup-failure', 'stopped-startup-failure', 'settings-startup-failure', 'settings-missing-rollback', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process') } { '*Expected exactly one new process*'; break }
             'shell-dispatch-failure' { '*Injected Explorer dispatch failure*' }
             'corrupt-install' { '*Installed file hash mismatch*' }
             'settings-copy-failure' { '*Injected package copy failure*' }
@@ -281,12 +274,12 @@ function Invoke-Fixture([string]$Scenario) {
             'live-as-source' { '*Stage a separate package*' }
             'ancestor-as-source' { '*Stage a separate package*' }
             'unexpected-arguments' { '*Unexpected arguments*' }
-            'other-location' { '*Another PTT executable*' }
+            'other-location' { '*Another PTT Dictation executable*' }
             'desktop-unavailable' { '*Explorer desktop is unavailable*' }
             { $_ -in @('settings-malformed-json', 'settings-invalid-root') } { '*Invalid settings JSON*'; break }
             'settings-missing-source' { '*does not exist*' }
             { $_ -in @('settings-unc-source', 'settings-slash-unc-source') } { '*Settings source must be a local JSON file*'; break }
-            'settings-unconfirmed-stop' { '*canonical app is still running*' }
+            'settings-unconfirmed-stop' { '*did not stop*' }
             'settings-verify-rejected' { '*Parameter set cannot be resolved*' }
         }
         Assert ("$caught" -like $expectedError) "Unexpected failure in $($Scenario): $caught"
@@ -333,7 +326,7 @@ function Invoke-Fixture([string]$Scenario) {
 
 try {
     $scenarios = @('desktop-unavailable', 'delayed-launch', 'shell-dispatch-failure', 'stale-process', 'duplicate-process', 'early-exit', 'replaced-process',
-        'owned-worker', 'success', 'vanished-process', 'startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
+        'owned-worker', 'success', 'vanished-process', 'startup-failure', 'stopped-startup-failure', 'corrupt-install', 'missing-file', 'live-as-source',
         'ancestor-as-source', 'unexpected-arguments', 'other-location', 'verify-existing',
         'settings-success', 'settings-first-install', 'settings-startup-failure', 'settings-copy-failure',
         'settings-missing-rollback', 'settings-malformed-json', 'settings-invalid-root', 'settings-missing-source',
@@ -342,6 +335,7 @@ try {
     Write-Host "PASS: all $($scenarios.Count) deployment scenarios (including settings transactions and receipt tampering detection)."
 }
 finally {
+    $env:LOCALAPPDATA = $previousLocalAppData
     $resolved = [IO.Path]::GetFullPath($testRoot)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if (-not $resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or

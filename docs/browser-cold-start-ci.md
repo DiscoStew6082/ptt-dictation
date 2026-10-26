@@ -7,6 +7,12 @@ of three launches per editor type. Both textarea and contenteditable editors
 receive two dictations per launch: six cold launches and twelve dictations per
 browser per CI run.
 
+Documentation-only pull requests skip these browser jobs. Superseded CI runs
+are cancelled; main-branch pushes always validate browsers so cancellation
+cannot bypass checks for an earlier application change. The temporary proactive Firefox lock-investigation workflow and slow
+call collector have been retired; failure-time wait-chain capture and native
+stack analysis remain available in the ordinary Firefox job.
+
 Before PTT initialization and each Firefox launch, the harness allows up to
 twenty seconds for unrelated Firefox processes to exit naturally. It re-enumerates
 every poll, records exit state and elapsed time, and does not reset the budget

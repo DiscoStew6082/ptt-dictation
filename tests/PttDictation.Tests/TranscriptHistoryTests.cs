@@ -30,7 +30,7 @@ public sealed class TranscriptHistoryTests
     [TestMethod]
     public void SelectingSessionShowsAllRecognitionAndCorrectionStagesWithoutTruncation()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var lastPreview = "Use the textbook. " + new string('x', 5000) + " preview end";
             var history = new SessionHistory();
@@ -82,7 +82,7 @@ public sealed class TranscriptHistoryTests
     [TestMethod]
     public void RefreshKeepsSelectedComparisonAndIdentifiesUnchangedStages()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             var history = new SessionHistory();
             history.Add("Already correct.", new TranscriptComparison(
@@ -118,17 +118,4 @@ public sealed class TranscriptHistoryTests
         }
     }
 
-    private static void RunOnStaThread(Action action)
-    {
-        Exception? exception = null;
-        var thread = new Thread(() =>
-        {
-            try { action(); }
-            catch (Exception ex) { exception = ex; }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(20)), "History form test timed out.");
-        if (exception is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception).Throw();
-    }
 }

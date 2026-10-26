@@ -74,20 +74,23 @@ public sealed class SingleInstanceGuardTests
             {
                 ownerException = ex;
             }
-        });
+        }) { IsBackground = true };
 
         ownerThread.Start();
-        Assert.IsTrue(ownerReady.Wait(TimeSpan.FromSeconds(5)));
-
-        using var guard = SingleInstanceGuard.TryAcquire(guardName);
-
-        releaseOwner.Set();
-        ownerThread.Join();
+        try
+        {
+            Assert.IsTrue(ownerReady.Wait(TimeSpan.FromSeconds(5)));
+            using var guard = SingleInstanceGuard.TryAcquire(guardName);
+            Assert.IsNull(guard);
+        }
+        finally
+        {
+            releaseOwner.Set();
+            Assert.IsTrue(ownerThread.Join(TimeSpan.FromSeconds(5)), "Mutex owner did not exit after release.");
+        }
         if (ownerException is not null)
         {
             throw ownerException;
         }
-
-        Assert.IsNull(guard);
     }
 }

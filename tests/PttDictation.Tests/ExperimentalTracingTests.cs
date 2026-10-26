@@ -98,14 +98,19 @@ public sealed class ExperimentalTracingTests
         await published.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await session.StopAsync(CancellationToken.None);
         var events = await folder.ReadAsync();
+        var expectedStages = new HashSet<string> { "test.nested_runtime_completed", "recognition.chunk_raw", "recognition.final_raw" };
+        var observedStages = new HashSet<string>();
         foreach (var line in events.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             using var json = JsonDocument.Parse(line);
             var stage = json.RootElement.GetProperty("stage").GetString();
-            if (stage is "test.nested_runtime_completed" or "recognition.chunk_raw" or "recognition.final_raw")
+            if (stage is not null && expectedStages.Contains(stage))
+            {
                 Assert.AreEqual(original, json.RootElement.GetProperty("recordingId").GetString());
+                observedStages.Add(stage);
+            }
         }
-        StringAssert.Contains(events, "test.nested_runtime_completed");
+        Assert.IsTrue(expectedStages.SetEquals(observedStages), "Every expected runtime, preview, and final event must be emitted.");
     }
 
     private static async Task<string> RunChunkFailureAsync()

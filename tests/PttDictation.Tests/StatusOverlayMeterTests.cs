@@ -9,7 +9,7 @@ public sealed class StatusOverlayMeterTests
     [TestMethod]
     public void StatusOverlayActivityMeterEmphasizesCenterBarsAtModerateLevels()
     {
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.ApplyStatusForTest(DictationStatusCatalog.Listening);
@@ -32,28 +32,4 @@ public sealed class StatusOverlayMeterTests
         });
     }
 
-    private static void RunOnStaThread(Action action)
-    {
-        Exception? exception = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                action();
-            }
-            catch (Exception ex)
-            {
-                exception = ex;
-            }
-        });
-
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join();
-
-        if (exception is not null)
-        {
-            throw exception;
-        }
-    }
 }

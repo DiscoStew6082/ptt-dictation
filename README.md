@@ -210,13 +210,10 @@ The October 26 installed build passed user-confirmed successive dictation and ca
 5. Repeat with Right Shift toggle mode and confirm the second press finalizes transcription.
 ```
 
-Realtime streaming model smoke can be rerun with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Test-RealtimeStreaming.ps1 -Runtime both -Iterations 3
-```
-
-The script downloads/verifies the two realtime EOU models through `hf` when needed, runs the local smoke WAV through the CPU and CUDA runtimes, and writes `smoke\streaming-smoke-results.md`.
+Historical ASR benchmark and streaming experiments are retained in the research
+reports under `docs/research`. Their one-off harnesses were retired; the last
+version is available in Git at commit `679eeb9`. Current verification commands
+are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 

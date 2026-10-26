@@ -152,42 +152,9 @@ public sealed class DictationSessionOwnershipTests
     }
 
     [TestMethod]
-    public async Task ChunkedSessionReportsRetainedPreviewWhenRecognitionIgnoresCancellation()
-    {
-        var chunkPath = Path.GetTempFileName();
-        var finalPath = Path.GetTempFileName();
-        try
-        {
-            using var locked = new FileStream(chunkPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var previewTranscriber = new DelayedTranscriber(
-                "preview",
-                TimeSpan.FromMilliseconds(2500));
-            var recorder = new ChunkRecorder(finalPath);
-            var session = new ChunkedTranscribingDictationSession(
-                recorder,
-                previewTranscriber,
-                new ConstantTranscriber("final"));
-
-            await session.StartAsync(CancellationToken.None);
-            recorder.PublishChunk(new RecordedAudio(
-                chunkPath,
-                TimeSpan.FromSeconds(1),
-                DeleteAfterUse: true));
-            await previewTranscriber.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-            var result = await session.StopAsync(CancellationToken.None);
-
-            Assert.AreEqual(chunkPath, result.CleanupWarningPath);
-        }
-        finally
-        {
-            File.Delete(chunkPath);
-            File.Delete(finalPath);
-        }
-    }
-
-    [TestMethod]
-    public async Task CancelKeepsActiveWavUntilIgnoringRecognizerActuallyReturns()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task EndingSessionKeepsActiveWavUntilIgnoringRecognizerActuallyReturns(bool cancel)
     {
         var chunkPath = Path.GetTempFileName();
         var finalPath = Path.GetTempFileName();
@@ -201,7 +168,13 @@ public sealed class DictationSessionOwnershipTests
             await session.StartAsync(CancellationToken.None);
             recorder.PublishChunk(new(chunkPath, TimeSpan.FromSeconds(2), DeleteAfterUse: true));
             await preview.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-            await session.CancelAsync(CancellationToken.None);
+            if (cancel) await session.CancelAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+            else
+            {
+                var result = await session.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.AreEqual("final", result.Transcript.Text);
+                Assert.AreEqual(chunkPath, result.CleanupWarningPath);
+            }
             Assert.IsTrue(File.Exists(chunkPath), "A settle timeout must not delete audio still owned by inference.");
             Assert.IsFalse(File.Exists(finalPath));
             Assert.AreEqual(chunkPath, session.CleanupWarningPath);
@@ -216,6 +189,8 @@ public sealed class DictationSessionOwnershipTests
         finally
         {
             preview.Release.TrySetResult();
+            if (preview.Started.Task.IsCompleted)
+                await preview.Returning.Task.WaitAsync(TimeSpan.FromSeconds(2));
             File.Delete(chunkPath);
             File.Delete(finalPath);
         }
@@ -230,9 +205,12 @@ public sealed class DictationSessionOwnershipTests
         {
             Started.TrySetResult();
             await Release.Task;
-            Assert.IsTrue(File.Exists(wavPath), "Recognition owns a readable file until it returns.");
-            Returning.TrySetResult();
-            return new("late preview", null, null);
+            try
+            {
+                Assert.IsTrue(File.Exists(wavPath), "Recognition owns a readable file until it returns.");
+                return new("late preview", null, null);
+            }
+            finally { Returning.TrySetResult(); }
         }
     }
 
@@ -305,18 +283,6 @@ public sealed class DictationSessionOwnershipTests
         public Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
         {
             return Task.FromResult(new TranscriptResult(text, null, null));
-        }
-    }
-
-    private sealed class DelayedTranscriber(string text, TimeSpan delay) : ITranscriber
-    {
-        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public async Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)
-        {
-            Started.TrySetResult();
-            await Task.Delay(delay, CancellationToken.None);
-            return new TranscriptResult(text, null, null);
         }
     }
 

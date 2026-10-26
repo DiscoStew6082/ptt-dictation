@@ -20,8 +20,6 @@ if (args.Length == 2 && args[0] == "--placeholder-probe")
     return NativeInsertionProbe.Run(args[1], "editor");
 if (args.Length == 3 && args[0] == "--saved-insertion-probe")
     return NativeInsertionProbe.Run(args[2], "editor", args[1]);
-if (args.Length == 5 && args[0] == "--context-probe")
-    return await RecognitionContextProbe.RunAsync(args[1], args[2], args[3], args[4]);
 
 // The default replay below is microphone-free; only the explicit capture-stop probe opens it.
 // This default harness drives the experimental production workflow. It never opens the microphone,
@@ -186,17 +184,18 @@ sealed class ReplayRecorder : IChunkedAudioRecorder
         const int bytesPerSecond = 32000;
         var chunkBytes = (int)(bytesPerSecond * WasapiAudioRecorder.ChunkDurationForTest.TotalSeconds);
         var overlapBytes = (int)(bytesPerSecond * WasapiAudioRecorder.ChunkOverlapForTest.TotalSeconds);
-        using var buffer = new PcmChunkBuffer(bytesPerSecond, chunkBytes, overlapBytes, cumulative: true);
-        buffer.Append(pcm);
         var stopwatch = Stopwatch.StartNew();
         var sequence = 0;
-        while (buffer.TryCreateChunk(Path.Combine(scratch, $"chunk-{sequence:0000}.wav")) is { } chunk)
+        for (var end = chunkBytes; end <= pcm.Length; end += chunkBytes - overlapBytes)
         {
-            var due = TimeSpan.FromSeconds((chunkBytes + sequence * (chunkBytes - overlapBytes)) / (double)bytesPerSecond);
+            var due = TimeSpan.FromSeconds(end / (double)bytesPerSecond);
             if (due > stopwatch.Elapsed) await Task.Delay(due - stopwatch.Elapsed, cancellationToken);
-            using (var writer = new WaveFileWriter(chunk.Path, new WaveFormat(16000, 16, 1)))
-                writer.Write(chunk.Pcm, 0, chunk.Pcm.Length);
-            AudioChunkReady?.Invoke(new RecordedAudio(chunk.Path, chunk.Duration, true, chunk.OverlapDuration, chunk.IsCumulative));
+            var path = Path.Combine(scratch, $"chunk-{sequence:0000}.wav");
+            using (var writer = new WaveFileWriter(path, new WaveFormat(16000, 16, 1)))
+                writer.Write(pcm, 0, end);
+            var overlap = sequence == 0 ? TimeSpan.Zero
+                : TimeSpan.FromSeconds((end - (chunkBytes - overlapBytes)) / (double)bytesPerSecond);
+            AudioChunkReady?.Invoke(new RecordedAudio(path, due, true, overlap, IsCumulative: true));
             sequence++;
         }
         if (Duration > stopwatch.Elapsed) await Task.Delay(Duration - stopwatch.Elapsed, cancellationToken);

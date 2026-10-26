@@ -283,9 +283,12 @@ public sealed class CumulativePreviewTests
     private sealed class SnapshotRecorder : IChunkedAudioRecorder
     {
         public event Action<RecordedAudio>? AudioChunkReady;
-        public void Publish(string path, double seconds) => AudioChunkPublisher.Publish(new PendingAudioChunk(path,
-            [0, 0], TimeSpan.FromSeconds(seconds), TimeSpan.FromSeconds(Math.Max(0, seconds - .8)), IsCumulative: true),
-            AudioChunkReady, File.WriteAllBytes, File.Delete);
+        public void Publish(string path, double seconds)
+        {
+            File.WriteAllBytes(path, [0, 0]);
+            AudioChunkReady?.Invoke(new RecordedAudio(path, TimeSpan.FromSeconds(seconds), DeleteAfterUse: true,
+                OverlapDuration: TimeSpan.FromSeconds(Math.Max(0, seconds - .8)), IsCumulative: true));
+        }
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<RecordedAudio> StopAsync(CancellationToken cancellationToken) => Task.FromResult(new RecordedAudio("unused-final", TimeSpan.FromSeconds(5)));
         public Task CancelAsync(CancellationToken cancellationToken) => Task.CompletedTask;

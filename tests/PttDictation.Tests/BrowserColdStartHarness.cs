@@ -57,29 +57,23 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
                 Assert.IsLessThan(20000L, started.ElapsedMilliseconds, "PTT accessibility client startup failed before browser launch.");
                 await Task.Delay(25);
             }
-            // Preparation occurs before the owned browser exists and performs
-            // no accessibility or browser work. Opt-in diagnostics only.
-            await using var slowCollector = browserKind == ColdStartBrowser.Firefox
-                ? await FirefoxSlowCallCollector.StartIfEnabledAsync(output) : null;
             for (var trial = 1; trial <= 3; trial++)
             {
                 var trialOutput = Path.Combine(output, $"trial-{trial}");
                 Directory.CreateDirectory(trialOutput);
-                await RunTrialAsync(executable!, editorKind, trialOutput, paster, overlay, slowCollector);
+                await RunTrialAsync(executable!, editorKind, trialOutput, paster, overlay);
                 await DiagnosticTrace.FlushAsync();
             }
         });
     }
 
     private async Task RunTrialAsync(string executable, string editorKind, string output,
-        LiveClipboardPaster paster, StatusOverlayForm overlay, FirefoxSlowCallCollector? slowCollector)
+        LiveClipboardPaster paster, StatusOverlayForm overlay)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var token = deadline.Token;
         var fixture = BrowserEditorFixture.Start(editorKind);
         var browser = new OwnedBrowser(browserKind, executable, fixture.Url, output);
-        using var stopSlowMonitor = new CancellationTokenSource();
-        Task? slowMonitor = null;
         var sessions = new KnownTranscripts();
         var history = new SessionHistory();
         var ui = SynchronizationContext.Current!;
@@ -121,8 +115,6 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
             // attachment, provider probing, or arbitrary warmup delay precedes PTT.
             await Until(() => fixture.Latest is { Focused: true, Ready: true }, "browser editor DOM focus", 20000);
             browser.BindReadyWindow();
-            slowMonitor = slowCollector?.WatchTrialAsync(browser.WaitChainTarget, GetCurrentThreadId(), output,
-                stopSlowMonitor.Token);
             var clicksBefore = fixture.Latest!.TrustedClicks;
             browser.ClickEditor(fixture.Latest);
             await Until(() => fixture.Latest is { Focused: true } state && state.TrustedClicks > clicksBefore,
@@ -224,12 +216,6 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
                 File.AppendAllText(Path.Combine(output, "cleanup-errors.txt"), $"{stage}: {error}{Environment.NewLine}");
             });
             paster.PresentationChanged -= ObserveProviderWait;
-            stopSlowMonitor.Cancel();
-            if (slowMonitor is not null)
-            {
-                try { await slowMonitor; }
-                catch (Exception error) { TestContext.WriteLine($"Slow-call diagnostics unavailable: {error}"); }
-            }
             if (keyDown) cleanup.Run("release-hotkey", () => SendRightControl(release: true));
             await cleanup.RunAsync("cancel-workflow", () => workflow.HandleAsync(DictationIntent.Cancel, CancellationToken.None));
             cleanup.Run("dom-evidence", () => File.WriteAllText(Path.Combine(output, "dom-observations.json"), JsonSerializer.Serialize(fixture.Snapshots)));

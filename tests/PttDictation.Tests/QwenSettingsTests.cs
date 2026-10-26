@@ -1,4 +1,3 @@
-using System.Runtime.ExceptionServices;
 using PttDictation.App;
 using PttDictation.Core;
 
@@ -40,7 +39,7 @@ public sealed class QwenSettingsTests
     [TestMethod]
     public void NonNvidiaMachineHidesCudaAndKeepsCpuQwenWithoutRewritingSavedPreferences()
     {
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"non-nvidia-settings-{Guid.NewGuid():N}.json");
             var installer = new SetupInstaller((_, _) => Task.FromResult(new QwenSetupStatus(true, "CPU Qwen ready.")));
@@ -102,7 +101,7 @@ public sealed class QwenSettingsTests
     public void SettingsSelectionSavesQwenAndCanReturnToParakeetWithoutChangingPreviewModel()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             var path = Path.Combine(Path.GetTempPath(), $"qwen-form-{Guid.NewGuid():N}.json");
             try
@@ -259,7 +258,7 @@ public sealed class QwenSettingsTests
     [TestMethod]
     public void QwenSetupShowsProgressAndReadyStateWithoutChangingFinalEngine()
     {
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             IProgress<QwenSetupProgress>? progress = null;
             var finish = new TaskCompletionSource<QwenSetupStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -286,7 +285,7 @@ public sealed class QwenSettingsTests
     [TestMethod]
     public void QwenSetupCanCancelAndRetryWithoutPrompting()
     {
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             var calls = 0;
             var installer = new SetupInstaller(async (_, token) =>
@@ -312,7 +311,7 @@ public sealed class QwenSettingsTests
     [TestMethod]
     public void FailedQwenSetupRemainsActionableAndDisposalCancelsOwnedSetup()
     {
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             var calls = 0;
             CancellationToken setupToken = default;
@@ -344,7 +343,7 @@ public sealed class QwenSettingsTests
     [TestMethod]
     public void AlreadyInstalledQwenHasVisibleReadyButtonWithoutStartingDownloads()
     {
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             var installer = new SetupInstaller((_, _) => throw new AssertFailedException("No download should start."))
             { Status = new QwenSetupStatus(true, "Qwen is installed locally.") };
@@ -429,13 +428,4 @@ public sealed class QwenSettingsTests
         }
     }
 
-    private static void RunOnSta(Action action)
-    {
-        Exception? failure = null;
-        var thread = new Thread(() => { try { action(); } catch (Exception error) { failure = error; } });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(15)), "Settings test did not complete.");
-        if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
-    }
 }

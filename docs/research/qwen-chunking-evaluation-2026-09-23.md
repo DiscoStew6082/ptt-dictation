@@ -1,5 +1,9 @@
 # Same-audio Qwen and Parakeet chunking evaluation
 
+Historical report: the benchmark scripts referenced below were retired during
+the October 26 maintenance cleanup. Their last version is preserved at Git
+commit `679eeb9`; these commands are not current validation instructions.
+
 Date: 2026-09-23. This was a local offline comparison using already installed
 models. No audio was uploaded, no models downloaded, and no app settings,
 textbox, clipboard, or live app processes were changed by this evaluation.

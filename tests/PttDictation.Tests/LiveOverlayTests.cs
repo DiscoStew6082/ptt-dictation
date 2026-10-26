@@ -1,4 +1,3 @@
-using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using PttDictation.App;
 using PttDictation.Core;
@@ -13,7 +12,7 @@ public sealed class LiveOverlayTests
     public void LongFallbackTranscriptCanScrollBackAndFollowsNewSpeech()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             var transcript = string.Join(Environment.NewLine,
@@ -57,7 +56,7 @@ public sealed class LiveOverlayTests
     public void InlinePreviewKeepsRecordingIndicatorAndRestoresFullFallbackWhenDisabled()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnStaThread(() =>
+        StaTest.Run(() =>
         {
             using var overlay = new StatusOverlayForm();
             overlay.SetInlinePreview(true);
@@ -98,18 +97,4 @@ public sealed class LiveOverlayTests
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern nint SendMessage(nint window, uint message, nint wParam, nint lParam);
 
-    private static void RunOnStaThread(Action action)
-    {
-        Exception? failure = null;
-        var thread = new Thread(() =>
-        {
-            try { action(); }
-            catch (Exception exception) { failure = exception; }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(15)), "Overlay test timed out.");
-        if (failure is not null)
-            ExceptionDispatchInfo.Capture(failure).Throw();
-    }
 }

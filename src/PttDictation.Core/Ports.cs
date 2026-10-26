@@ -83,15 +83,7 @@ public sealed record RecordedAudio(
     TimeSpan Duration,
     bool DeleteAfterUse = false,
     TimeSpan? OverlapDuration = null,
-    bool IsCumulative = false)
-{
-    public void Deconstruct(out string path, out TimeSpan duration, out bool deleteAfterUse)
-    {
-        path = Path;
-        duration = Duration;
-        deleteAfterUse = DeleteAfterUse;
-    }
-}
+    bool IsCumulative = false);
 
 public sealed record TranscriptWord(string Text, TimeSpan Start, TimeSpan End, double? Confidence);
 
@@ -117,12 +109,6 @@ public sealed record TranscriptResult
 
     public IReadOnlyList<TranscriptWord> Words { get; init; }
 
-    public void Deconstruct(out string text, out TimeSpan? inferenceTime, out double? confidence)
-    {
-        text = Text;
-        inferenceTime = InferenceTime;
-        confidence = Confidence;
-    }
 }
 
 public sealed record DictationSessionResult(TranscriptResult Transcript, string? CleanupWarningPath = null);

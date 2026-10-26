@@ -719,30 +719,6 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
-    public void TranscriptResultStillSupportsOriginalDeconstructionShape()
-    {
-        var result = new TranscriptResult("hello", TimeSpan.FromMilliseconds(12), 0.7);
-
-        var (text, inferenceTime, confidence) = result;
-
-        Assert.AreEqual("hello", text);
-        Assert.AreEqual(TimeSpan.FromMilliseconds(12), inferenceTime);
-        Assert.AreEqual(0.7, confidence);
-    }
-
-    [TestMethod]
-    public void RecordedAudioStillSupportsOriginalDeconstructionShape()
-    {
-        var audio = new RecordedAudio("utterance.wav", TimeSpan.FromSeconds(2), DeleteAfterUse: true);
-
-        var (path, duration, deleteAfterUse) = audio;
-
-        Assert.AreEqual("utterance.wav", path);
-        Assert.AreEqual(TimeSpan.FromSeconds(2), duration);
-        Assert.IsTrue(deleteAfterUse);
-    }
-
-    [TestMethod]
     public void ParakeetCliParserReturnsEmptyWordsForPlainText()
     {
         var result = ParakeetCliTranscriber.Parse("plain transcript", TimeSpan.FromMilliseconds(12));

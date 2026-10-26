@@ -1,4 +1,3 @@
-using System.Runtime.ExceptionServices;
 using PttDictation.App;
 using PttDictation.Core;
 
@@ -12,7 +11,7 @@ public sealed class SettingsPersistenceTests
     public void ExplicitDeviceSaveSurvivesFreshSettingsFormAndStore()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             using var fixture = new Fixture();
             fixture.Settings = fixture.Settings with { DevicePreference = DevicePreference.Cpu };
@@ -86,7 +85,7 @@ public sealed class SettingsPersistenceTests
     public void ChangingDeviceDiscardsOldRuntimePathButKeepsModel()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             using var fixture = new Fixture();
             using var form = new SettingsForm(fixture.Store, ModelRegistry.CreateDefault(), hasNvidiaGpu: true);
@@ -119,7 +118,7 @@ public sealed class SettingsPersistenceTests
     public void FailedSettingsSaveKeepsDeviceDraftAndReportsFailureForRetry()
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             var directory = Path.Combine(Path.GetTempPath(), $"ptt-save-failure-{Guid.NewGuid():N}");
             Directory.CreateDirectory(directory);
@@ -195,7 +194,7 @@ public sealed class SettingsPersistenceTests
     public void SettingsPublicationCompletesBeforeDerivedPathMerge(bool modelDownload)
     {
         VisibleUiTestGate.RequireOptIn();
-        RunOnSta(() =>
+        StaTest.Run(() =>
         {
             using var fixture = new Fixture();
             fixture.Settings = fixture.Settings with { RuntimePath = null };
@@ -275,14 +274,5 @@ public sealed class SettingsPersistenceTests
             yield return child;
             foreach (var nested in Descendants(child)) yield return nested;
         }
-    }
-    private static void RunOnSta(Action action)
-    {
-        Exception? failure = null;
-        var thread = new Thread(() => { try { action(); } catch (Exception error) { failure = error; } });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(15)));
-        if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 }

@@ -1,5 +1,9 @@
 # Qwen versus the installed Parakeet setup
 
+Historical report: the benchmark scripts referenced below were retired during
+the October 26 maintenance cleanup. Their last version is preserved at Git
+commit `679eeb9`; these commands are not current validation instructions.
+
 Date: 2026-09-11. Scope: an authorized, isolated inference benchmark. No PTT app integration or deployment was performed.
 
 ## Finding

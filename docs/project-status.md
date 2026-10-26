@@ -1,6 +1,17 @@
 # Project status
 
-Application baseline verified on October 26, 2026: [`e19dff4`](https://github.com/DiscoStew6082/ptt-dictation/commit/e19dff463fafb734ccfd06e71735ef6d0365f4bd). Use this page to distinguish completed work from the dated investigation records elsewhere in `docs/` and `DIAGNOSTICS.md`. Test totals below describe this baseline, not every later documentation or CI change.
+Last user-confirmed dictation baseline on October 26, 2026: [`e19dff4`](https://github.com/DiscoStew6082/ptt-dictation/commit/e19dff463fafb734ccfd06e71735ef6d0365f4bd). The later maintenance cleanup below preserves its active dictation behavior. Use this page to distinguish completed work from the dated investigation records elsewhere in `docs/` and `DIAGNOSTICS.md`. Historical test totals describe their named baseline.
+
+## October 26 maintenance cleanup
+
+- One installation engine in `scripts/Install-PttDictation.ps1` now handles public downloads, offline archives, staged local builds, verification, and recovery. `Update-LocalApp.ps1` is a compatibility wrapper. The existing installation destination is preserved when supplied with `-InstallDirectory`.
+- Removed unused chunk-publishing/buffering code, unused deconstruction compatibility, unreachable presentation fallback, and their exclusive tests. Active dictation, cancellation, waiting feedback, history, and error presentation are retained.
+- Repaired missing-event, Unicode, retention-capacity, and audio-ownership assertions; consolidated STA test helpers and bounded test cleanup.
+- Retired historical benchmark/context experiments and the proactive Firefox lock investigation. Their last source is recoverable at `679eeb9`; ordinary browser regression checks and failure diagnostics remain.
+- CI and release validation now run the shipped Qwen worker's 15 model-free Python tests. Superseded CI runs are cancelled; only documentation-only pull requests skip browser jobs. Main-branch pushes always validate browsers.
+- Local source validation: 635 .NET tests passed, 34 visible-UI cases deferred to the disposable CI desktop, and all 15 Python worker tests passed. Synthetic replay also passed. Installer validation covers 32 staged-update cases, 18 archive/download cases, and five snapshot checks.
+
+Source validation is separate from installation and microphone acceptance. The stable installation's `deployment-receipt.json` records its installed package hashes. The published `v0.1.3` assets below predate this cleanup; source changes do not replace an already published release.
 
 ## Completed and verified
 

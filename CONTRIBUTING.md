@@ -18,6 +18,7 @@ Run the default local checks before opening a pull request:
 dotnet restore PttDictation.sln --locked-mode
 dotnet test PttDictation.sln --configuration Release --no-restore
 dotnet list PttDictation.sln package --vulnerable --include-transitive
+python -B -m unittest discover -s tools/qwen-worker -p test_qwen_worker.py -v
 ```
 
 When updating an app dependency, refresh the dependent lockfiles in the solution
@@ -25,6 +26,13 @@ and the standalone Replay tool with `dotnet restore --force-evaluate`, then
 verify both with `--locked-mode`. Capture and Replay are outside the solution;
 CI checks their locked restores separately so tool dependencies cannot silently
 lag behind app updates.
+
+The Python worker tests use only the standard library; they need no downloaded
+model, GPU, microphone, or network connection. CI runs them alongside the .NET
+tests. Superseded CI runs are cancelled, and documentation-only pull requests
+skip the two browser jobs while retaining the ordinary checks. Pushes to the
+main branch always validate browsers so a later documentation push cannot
+cancel and bypass an earlier application change's browser checks.
 
 The default test command is window-free. Tests that intentionally show Settings,
 tray UI, history captures, or status overlays require explicit visible-UI opt-in.
@@ -63,7 +71,12 @@ dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x6
 pwsh -File scripts\Update-LocalApp.ps1 -StagedPath publish\next-build
 ```
 
-The deployment script defaults to `%LOCALAPPDATA%\Programs\PttDictation`, independent of the current directory or worktree. Pass `-InstallDirectory` to update an installation created elsewhere, and keep shortcuts pointed at that selected path. It requires an existing installation, rejects incomplete or linked packages, checks every installed file's SHA-256, and verifies exactly one normally launched process at that path with no arguments. An installation failure triggers restoration and restart of the previous package; recovery failures are reported explicitly. The previous package is retained in a `.backup-*` directory for recovery, and the installed package receives `deployment-receipt.json` with hashes and the selected executable path.
+`Install-PttDictation.ps1` owns the installation engine for downloaded releases,
+offline ZIPs, and staged local builds. `Update-LocalApp.ps1` is a compatibility
+wrapper that calls that engine for local updates and verification. Installation,
+backup, process handling, hashing, receipts, and rollback have one implementation.
+
+The installer defaults to `%LOCALAPPDATA%\Programs\PttDictation`, independent of the current directory or worktree. Pass `-InstallDirectory` to update an installation created elsewhere, and keep shortcuts pointed at that selected path. It rejects incomplete or linked packages, checks every installed file's SHA-256, and verifies exactly one normally launched process at that path with no arguments. An installation failure triggers restoration and restart of the previous package; recovery failures are reported explicitly. The previous package is retained in a `.backup-*` directory for recovery, and the installed package receives `deployment-receipt.json` with hashes and the selected executable path.
 
 Launches during installation and recovery go through Explorer's desktop automation object. Direct `Start-Process` and a newly created `Shell.Application` object's own `ShellExecute` can inherit the updater host's Windows jobs, allowing host shutdown to terminate the daily app later. The desktop broker keeps the launch independent of that host. Deployment fails if the broker is unavailable rather than silently reverting to an inherited launch. Startup-folder sign-in behavior remains a separate acceptance check from successful installation and process lifetime.
 

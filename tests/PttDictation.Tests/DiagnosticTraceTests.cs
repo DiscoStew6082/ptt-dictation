@@ -270,6 +270,21 @@ public sealed class DiagnosticTraceTests
         StringAssert.Contains(log, "audio.retention_failed");
         StringAssert.Contains(log, "IOException");
         Assert.HasCount(0, Directory.GetDirectories(root));
+
+        var retained = new List<string>();
+        for (var index = 0; index < 4; index++)
+        {
+            // Fixed, ordered timestamps keep retention deterministic even within one clock tick.
+            var next = $"recording-20990101000000{index:000}-{Guid.NewGuid():N}";
+            retained.Add(next);
+            DiagnosticTrace.RetainRecording(next, new MemoryStream([(byte)index]));
+            await DiagnosticTrace.FlushAsync();
+            var expected = retained.TakeLast(3).Select(session => Path.Combine(root, session, "audio.wav")).ToArray();
+            CollectionAssert.AreEquivalent(expected, Directory.GetFiles(root, "audio.wav", SearchOption.AllDirectories),
+                "A failed capture must not occupy one of the three successful retention slots.");
+            foreach (var audio in expected)
+                Assert.AreEqual((byte)retained.IndexOf(Path.GetFileName(Path.GetDirectoryName(audio))!), File.ReadAllBytes(audio).Single());
+        }
     }
 
     [TestMethod]

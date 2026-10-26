@@ -84,11 +84,17 @@ public sealed class LiveDictationWorkflowTests
         var workflow = new DictationWorkflow(new SingleDictationSessionFactory(session), output, new SessionHistory());
         await workflow.HandleAsync(DictationIntent.BeginHold, CancellationToken.None);
         var cancel = workflow.HandleAsync(DictationIntent.Cancel, CancellationToken.None);
-        await session.Cancelling.Task;
-        Assert.IsTrue(output.Ended);
-        Assert.IsFalse(cancel.IsCompleted);
-        session.Release.TrySetResult();
-        await cancel;
+        try
+        {
+            await session.Cancelling.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsTrue(output.Ended);
+            Assert.IsFalse(cancel.IsCompleted);
+        }
+        finally
+        {
+            session.Release.TrySetResult();
+            await cancel.WaitAsync(TimeSpan.FromSeconds(2));
+        }
     }
 
     private sealed class SlowCancelSession : IDictationSession
