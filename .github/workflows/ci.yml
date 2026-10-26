@@ -31,6 +31,14 @@ jobs:
       - name: Audit NuGet packages
         run: dotnet list PttDictation.sln package --vulnerable --include-transitive
 
+      - name: Restore standalone diagnostic tools
+        shell: pwsh
+        run: |
+          dotnet restore tools/PttDictation.Capture/PttDictation.Capture.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore tools/PttDictation.Replay/PttDictation.Replay.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   test:
     name: Test
     runs-on: windows-latest
@@ -88,7 +96,7 @@ jobs:
 
       - name: Upload Firefox cold-start evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firefox-cold-start-evidence-${{ github.run_attempt }}
           path: artifacts/firefox-cold-start/
@@ -103,7 +111,7 @@ jobs:
 
       - name: Upload Firefox native stacks
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firefox-native-stacks-${{ github.run_attempt }}
           path: |
@@ -137,7 +145,7 @@ jobs:
 
       - name: Upload Chrome cold-start evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: chrome-cold-start-evidence-${{ github.run_attempt }}
           path: artifacts/chrome-cold-start/

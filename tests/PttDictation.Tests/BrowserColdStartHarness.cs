@@ -335,6 +335,9 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
             if (kind == ColdStartBrowser.Firefox) File.WriteAllText(Path.Combine(_profile, "user.js"), """
                 user_pref("browser.aboutwelcome.enabled", false);
                 user_pref("browser.preonboarding.enabled", false);
+                // Firefox 154+ can trigger OS pinning prompts despite the onboarding prefs.
+                // https://bugzilla.mozilla.org/show_bug.cgi?id=2065938
+                user_pref("browser.bypassAutoTriggerActions", true);
                 user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
                 user_pref("browser.shell.checkDefaultBrowser", false);
                 user_pref("browser.startup.homepage_override.mstone", "ignore");

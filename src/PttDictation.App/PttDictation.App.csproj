@@ -3,10 +3,11 @@
   <ItemGroup>
     <ProjectReference Include="..\PttDictation.Core\PttDictation.Core.csproj" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NAudio.Wasapi" Version="3.1.0" />
+    <PackageReference Include="NAudio.Wasapi" Version="3.3.0" />
   </ItemGroup>
 
   <ItemGroup>
