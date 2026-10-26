@@ -11,6 +11,7 @@ Application baseline verified on October 26, 2026: [`e19dff4`](https://github.co
 - After installation, the user confirmed two successive dictations and another dictation immediately after cancellation: all three inserted correctly, and cancellation produced no duplicate or late text. This closes ordinary desktop dictation/cancellation acceptance for that build. It does not certify every historical editor-specific edge case or phone interaction.
 - The Firefox CI harness now allows transient unowned processes to exit naturally within a fixed twenty-second startup budget, then performs a fresh strict check immediately before launch. Persistent, unknown-state or late observations still fail; no unowned process is terminated and no failed dictation is retried. See [browser CI](browser-cold-start-ci.md). This is a test-harness change; the application baseline above is unchanged.
 - Repository cleanup removed six obsolete remote branches (four matching merged trees, one merged branch and one superseded SDK update), two merged local branches, and the unpublished `v0.1.0` draft release. Published releases and deployment rollback backups were retained.
+- [Release v0.1.3](https://github.com/DiscoStew6082/ptt-dictation/releases/tag/v0.1.3) publishes all these fixes from [`45333ff`](https://github.com/DiscoStew6082/ptt-dictation/commit/45333ff70a3e4972ea83e6ef2f13022769582b42), plus verified installer backup/rollback, fully qualified destination checks, and owned-worker cleanup. It is the latest stable release. [CI](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390687561), [CodeQL](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390687692), and the [release build](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390730203) passed. The installer passed 18 failure/success scenarios under both Windows PowerShell 5.1 and PowerShell 7. The actual public latest-release downloads passed checksum, source revision, SBOM, package-content and signed-provenance verification; the ZIP contains 604 files and .NET 10.0.14.
 
 ## Remaining work and priority
 
@@ -18,7 +19,6 @@ Application baseline verified on October 26, 2026: [`e19dff4`](https://github.co
 | --- | --- |
 | Android/S25 voice keyboard | The PC service is implemented and deployed. A real phone recording followed by insertion into an Android text field remains unverified. Finish this only if phone dictation is still wanted; PC-local API success is not phone acceptance. |
 | Launch at Windows sign-in | Check once at the next normal sign-in if automatic startup is needed. Normal installer restart and a valid shortcut do not prove sign-in behavior. |
-| Public release | The latest published package at this checkpoint is `v0.1.2` from September 29, 2026. Publish a new tested release if other users need the later fixes; the local installation already includes them. |
 | Code signing | The app and installer are unsigned. Consider signing for broad distribution; it is optional for the working local installation. |
 
 ## Parked investigations
