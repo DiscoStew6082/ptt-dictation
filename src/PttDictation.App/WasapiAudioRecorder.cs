@@ -4,7 +4,7 @@ using PttDictation.Core;
 
 namespace PttDictation.App;
 
-internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
+internal sealed class WasapiAudioRecorder : ICumulativeAudioRecorder, IDisposable
 {
     private const int BytesPerSecond = 32000;
     private const int ChunkDurationMilliseconds = 2000;
@@ -15,19 +15,18 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
     private readonly object _gate = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
-    private readonly AudioChunkPublicationQueue _chunkPublications = new();
     private readonly string _appData;
     private WasapiRecorder? _recorder;
     private TaskCompletionSource<Exception?>? _recordingStopped;
-    private PcmChunkBuffer? _pcm;
+    private CumulativePcmBuffer? _pcm;
     private DateTimeOffset _startedAt;
     private bool _recording;
     private bool _disposed;
-    private int _chunkSequence;
+    private Guid _recordingId;
 
     public event Action<double>? AudioLevelChanged;
 
-    public event Action<RecordedAudio>? AudioChunkReady;
+    public event Action<CumulativeAudioSnapshot>? SnapshotReady;
 
     internal static TimeSpan ChunkDurationForTest => TimeSpan.FromMilliseconds(ChunkDurationMilliseconds);
 
@@ -43,13 +42,15 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
         _appData = appData;
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken) => StartAsync(Guid.NewGuid(), cancellationToken);
+
+    public async Task StartAsync(Guid recordingId, CancellationToken cancellationToken)
     {
         await _lifecycle.WaitAsync(cancellationToken);
         try
         {
             ThrowIfDisposed();
-            await Task.Run(StartCore, cancellationToken);
+            await Task.Run(() => StartCore(recordingId), cancellationToken);
         }
         finally
         {
@@ -57,7 +58,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
         }
     }
 
-    private void StartCore()
+    private void StartCore(Guid recordingId)
     {
         lock (_gate)
         {
@@ -70,7 +71,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
         Directory.CreateDirectory(_appData);
         WasapiRecorder? recorder = null;
-        PcmChunkBuffer? pcm = null;
+        CumulativePcmBuffer? pcm = null;
         try
         {
             recorder = new WasapiRecorderBuilder()
@@ -82,7 +83,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             recorder.DataAvailable += OnDataAvailable;
             recorder.RecordingStopped += OnRecordingStopped;
 
-            pcm = new PcmChunkBuffer(BytesPerSecond, ChunkBytes, ChunkOverlapBytes, cumulative: true);
+            pcm = new CumulativePcmBuffer(recordingId, ChunkBytes / 2, (ChunkBytes - ChunkOverlapBytes) / 2);
             lock (_gate)
             {
                 ThrowIfDisposed();
@@ -90,9 +91,8 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
                 _recordingStopped = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _pcm = pcm;
                 _startedAt = DateTimeOffset.UtcNow;
-                _chunkSequence = 0;
+                _recordingId = recordingId;
                 _recording = true;
-                _chunkPublications.Open();
             }
 
             recorder.StartRecording();
@@ -103,15 +103,12 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             lock (_gate)
             {
                 _recording = false;
-                _chunkPublications.StopAccepting();
                 _recorder = null;
                 _recordingStopped = null;
                 _pcm = null;
             }
 
-            pcm?.Dispose();
             DetachAndDispose(recorder);
-            _chunkPublications.Drain();
             throw new InvalidOperationException(DescribeCaptureFailure(deviceName), ex);
         }
     }
@@ -134,7 +131,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
     {
         WasapiRecorder recorder;
         TaskCompletionSource<Exception?> stopped;
-        PcmChunkBuffer pcm;
+        CumulativePcmBuffer pcm;
         TimeSpan duration;
 
         lock (_gate)
@@ -146,7 +143,6 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             }
 
             _recording = false;
-            _chunkPublications.StopAccepting();
             recorder = _recorder;
             stopped = _recordingStopped;
             pcm = _pcm;
@@ -175,18 +171,18 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             DetachAndDispose(recorder);
         }
 
-        _chunkPublications.Drain();
-
         if (stopError is not null)
         {
-            pcm.Dispose();
             throw new InvalidOperationException(DescribeCaptureFailure(deviceName), stopError);
         }
 
-        var wavPath = Path.Combine(_appData, $"utterance-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss-fff}.wav");
-        WriteWav(wavPath, pcm.ToArray());
-        pcm.Dispose();
-        return new RecordedAudio(wavPath, duration, DeleteAfterUse: true);
+        var wavPath = Path.Combine(_appData, $"utterance-{_recordingId:N}.wav");
+        try
+        {
+            WriteWav(wavPath, pcm.ToArray());
+            return new RecordedAudio(wavPath, duration, DeleteAfterUse: true);
+        }
+        catch { TryDelete(wavPath); throw; }
     }
 
     private void OnDataAvailable(
@@ -204,7 +200,7 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             ? new byte[buffer.Length]
             : buffer.ToArray();
         double? level = null;
-        PendingAudioChunk? pendingChunk = null;
+        CumulativeAudioSnapshot? snapshot = null;
 
         lock (_gate)
         {
@@ -215,14 +211,11 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
             _pcm.Append(data);
             level = AudioLevelCalculator.CalculatePeakLevel(data);
-            pendingChunk = TryCreatePendingChunk();
+            if (_recording && SnapshotReady is not null) snapshot = _pcm.TryCreateSnapshot();
         }
 
         AudioLevelChanged?.Invoke(level.Value);
-        if (pendingChunk is not null)
-        {
-            _chunkPublications.TryQueue(() => WriteChunkAndPublish(pendingChunk));
-        }
+        if (snapshot is not null) SnapshotReady?.Invoke(snapshot);
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs eventArgs)
@@ -236,26 +229,29 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
         stopped?.TrySetResult(eventArgs.Exception);
     }
 
-    private PendingAudioChunk? TryCreatePendingChunk()
+    public RecordedAudio MaterializeSnapshot(CumulativeAudioSnapshot snapshot, CancellationToken cancellationToken)
     {
-        if (AudioChunkReady is null || _pcm is null)
+        CumulativePcmBuffer pcm;
+        lock (_gate)
         {
-            return null;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_pcm is null || snapshot.RecordingId != _recordingId)
+                throw new InvalidOperationException("Snapshot recording is no longer available.");
+            pcm = _pcm;
         }
-
-        var path = Path.Combine(_appData, $"chunk-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss-fff}-{_chunkSequence:000}.wav");
-        var chunk = _pcm.TryCreateChunk(path);
-        if (chunk is not null)
+        // Neither the growing prefix copy nor WAV I/O runs on the capture callback.
+        // The local buffer reference survives Stop/Dispose and pins its blocks.
+        var path = Path.Combine(_appData, $"chunk-{snapshot.RecordingId:N}-{snapshot.EndSample}.wav");
+        try
         {
-            _chunkSequence++;
+            var data = pcm.CopyPrefix(snapshot, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            WriteWav(path, data);
+            cancellationToken.ThrowIfCancellationRequested();
+            return new RecordedAudio(path, TimeSpan.FromSeconds(snapshot.EndSample / 16000d),
+                DeleteAfterUse: true, IsCumulative: true);
         }
-
-        return chunk;
-    }
-
-    private void WriteChunkAndPublish(PendingAudioChunk chunk)
-    {
-        AudioChunkPublisher.Publish(chunk, AudioChunkReady, WriteWav, TryDelete);
+        catch { TryDelete(path); throw; }
     }
 
     public void Dispose()
@@ -275,7 +271,6 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
     {
         WasapiRecorder? recorder;
         TaskCompletionSource<Exception?>? stopped;
-        PcmChunkBuffer? pcm;
         lock (_gate)
         {
             if (_disposed)
@@ -285,11 +280,9 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
 
             _disposed = true;
             _recording = false;
-            _chunkPublications.StopAccepting();
             recorder = _recorder;
             _recorder = null;
             stopped = _recordingStopped;
-            pcm = _pcm;
             _pcm = null;
         }
 
@@ -318,9 +311,6 @@ internal sealed class WasapiAudioRecorder : IChunkedAudioRecorder, IDisposable
             _recordingStopped = null;
         }
 
-        _chunkPublications.Drain();
-
-        pcm?.Dispose();
     }
 
     internal static WaveFormat CreateCaptureFormat()

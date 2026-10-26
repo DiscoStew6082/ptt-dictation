@@ -96,7 +96,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private readonly Func<long>? _readInputGeneration;
     private readonly TextTargetSnapshot? _initial;
     private readonly TextTargetSnapshot? _capturedSelection;
-    private TextTargetSnapshot? _preparedSelection;
+    private SelectionWrite? _write;
     private TextTargetSnapshot? _selectionBeforeRequest;
     private bool _selectionPatternRequeryAttempted;
     private bool _selectionPatternRefreshed;
@@ -111,8 +111,6 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     private TextTargetSnapshot? _unsentRetrySelection;
     private DateTimeOffset _unsentRetrySince;
     private string _ownedText = "";
-    private string? _pendingText;
-    private DateTimeOffset _pendingSince;
     private bool _conflicted;
     private bool _hasAcknowledgedWrite;
     private bool _initialDecorationDisappeared;
@@ -268,7 +266,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     public bool SupportsReplacement => _initial is not null;
     public bool CanPasteFallback => _surface.CanPasteFallback;
     public bool HasAttemptedWrite { get; private set; }
-    public bool IsAwaitingWriteAcknowledgement => _pendingText is not null;
+    public bool IsAwaitingWriteAcknowledgement => _write?.IsAwaitingAcknowledgement == true;
     public NativeSelectionRequest? SelectionRequestProgress => Volatile.Read(ref _selectionRequestProgress);
     public NativeFocusRead? FocusReadProgress => _surface.FocusReadProgress;
     public void BeginReadyOperation(long startedAt)
@@ -283,15 +281,16 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
         {
             try
             {
-                if (!OperationInputUnchanged() || _preparedSelection is not null && !SelectionInputUnchanged()) return false;
+                if (_write is not null && !_write.CanValidateSubmission) return false;
+                if (!OperationInputUnchanged() || _write?.Selection is not null && !SelectionInputUnchanged()) return false;
                 if (!IsFocused) { Trace("target.prepared_invalid", new { reason = "unfocused" }); return false; }
-                var expected = _preparedSelection ?? _capturedSelection;
+                var expected = _write?.Selection ?? _capturedSelection;
                 // Some unsupported editors expose no readable selection at all;
                 // their fallback still requires the exact captured field.
                 if (expected is null) return CanPasteFallback && IsFocused;
                 var current = ReadOriginalSurface(_surface.Read);
                 var valid = current.IsConsistent && current == expected && IsFocused
-                    && OperationInputUnchanged() && (_preparedSelection is null || SelectionInputUnchanged());
+                    && OperationInputUnchanged() && (_write?.Selection is null || SelectionInputUnchanged());
                 if (valid && _surface.FocusReadProgress is { CompletedAt: not null })
                 {
                     // The last original-focus read may itself have stalled.
@@ -306,7 +305,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                         && _surface.IsOriginalForegroundCurrent
                         && ReadFocusGenerationForDiagnostics() == generation
                         && OperationInputUnchanged()
-                        && (_preparedSelection is null || SelectionInputUnchanged());
+                        && (_write?.Selection is null || SelectionInputUnchanged());
                 }
                 if (!valid)
                 {
@@ -326,15 +325,18 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 
     public TextTargetUpdateResult TryReplace(string previousText, string replacementText, Action<string> paste)
     {
-        if (_pendingText is null && !OperationInputUnchanged()) return Conflict("operation_input_changed");
+        if (!IsAwaitingWriteAcknowledgement && !OperationInputUnchanged()) return Conflict("operation_input_changed");
         // Observing an already-submitted write grants no permission for new
         // input. A focus query here can block Firefox's queued paste processing.
         // Read only the captured original document until that write is settled.
-        if (_pendingText is null && !IsFocused) return TextTargetUpdateResult.Unfocused;
+        if (!IsAwaitingWriteAcknowledgement && !IsFocused) return TextTargetUpdateResult.Unfocused;
         if (_initial is null) return TextTargetUpdateResult.Unsupported;
         if (_conflicted) { Trace("target.conflict", new { reason = "previous_conflict" }); return TextTargetUpdateResult.Conflict; }
         try
         {
+            // A reentrant observation cannot acknowledge a call that has not
+            // returned from submission, and can never acquire write permission.
+            if (_write?.IsSubmitting == true) return TextTargetUpdateResult.Pending;
             var snapshot = ReadOriginalSurface(_surface.Read);
             if (_unsentRetrySelection is { } retrySelection)
             {
@@ -342,8 +344,9 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 if (_clock() - _unsentRetrySince >= ShortRetryTimeout)
                     return Conflict("clipboard_read_timeout");
             }
-            if (_pendingText is { } pending)
+            if (_write is { IsAwaitingAcknowledgement: true } receipt)
             {
+                var pending = receipt.Text;
                 // Chromium includes CSS-generated empty-editor placeholders in TextPattern.
                 // They disappear on input. Adopt no surrounding text only when the first
                 // verified collapsed-caret paste leaves exactly our payload and an end caret.
@@ -361,7 +364,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                     // startup pause. Observe the original editor within the same
                     // bounded response budget as a ready provider operation.
                     // Polls never reset the submission clock or resend input.
-                    if (_clock() - _pendingSince < WriteAcknowledgementTimeout)
+                    if (_clock() - receipt.SubmittedAt < WriteAcknowledgementTimeout)
                         return TextTargetUpdateResult.Pending;
                     TraceSnapshotDifference("target.write_acknowledgement_timeout",
                         new(ExpectedDocument(pending), Prefix + pending, "", Suffix), snapshot);
@@ -370,8 +373,8 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
 
                 _ownedText = pending;
                 _hasAcknowledgedWrite = true;
-                _pendingText = null;
-                _preparedSelection = null;
+                receipt.Acknowledge();
+                _write = null;
                 Trace("target.write_acknowledged", new { ownedLength = _ownedText.Length });
                 // The caller still holds the last acknowledged text while a paste
                 // is pending. Acknowledge that update before accepting another one.
@@ -506,19 +509,14 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             TraceSelectionObservation("target.selection_acknowledged", currentOwned, selected, _selectionBeforeRequest!,
                 _clock() - _selectionSince);
             _selectionBeforeRequest = null;
-            _preparedSelection = selected;
+            var write = SelectionWrite.Verify(selected, replacementText);
+            _write = write;
             var previouslyAttemptedWrite = HasAttemptedWrite;
             HasAttemptedWrite = true;
-            _pendingText = replacementText;
             Trace("target.write_pending", new { replacementLength = replacementText.Length });
             try
             {
-                paste(replacementText);
-                // Clipboard preparation revalidates the original target and can
-                // block in a cold provider. The browser cannot acknowledge input
-                // until it has actually been submitted. This timestamp is set
-                // once, never by subsequent acknowledgement polls.
-                _pendingSince = _clock();
+                write.Submit(paste, _clock);
                 _unsentRetrySelection = null;
             }
             catch (ClipboardReadUnavailableException)
@@ -527,10 +525,19 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
                 // deadline and the exact selected range still required. Never
                 // retry an exception from SendPaste or an unacknowledged write.
                 HasAttemptedWrite = previouslyAttemptedWrite;
-                _pendingText = null;
+                write.Retire();
+                _write = null;
                 if (_unsentRetrySelection is null) _unsentRetrySince = _clock();
                 _unsentRetrySelection = selected;
                 Trace("target.unsent_paste_retry");
+            }
+            catch
+            {
+                // Anything except the explicit no-input clipboard failure is
+                // ambiguous. Retire it permanently, including non-provider errors.
+                write.Retire();
+                _conflicted = true;
+                throw;
             }
             return TextTargetUpdateResult.Pending;
         }
@@ -695,7 +702,7 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
             originalReferenceRefreshAttempted = _originalReferenceRefreshAttempted,
             selectionRequeryAttempted = _selectionPatternRequeryAttempted,
             selectionRequestOrdinal = _selectionRequestOrdinal,
-            writeAwaitingAcknowledgement = _pendingText is not null,
+            writeAwaitingAcknowledgement = IsAwaitingWriteAcknowledgement,
             hasAcknowledgedWrite = _hasAcknowledgedWrite }, error);
         return new TextTargetUnavailableException(error);
     }
@@ -704,7 +711,45 @@ internal sealed class WindowsTextTarget : IWindowsTextTarget
     {
         Trace("target.conflict", new { reason }, error);
         _conflicted = true;
+        _write?.Retire();
         return TextTargetUpdateResult.Conflict;
+    }
+
+    // First consolidation step: one owner for a verified range, its single
+    // submission and its receipt. Native identity/input checks and all outer
+    // operation deadlines remain at their existing MTA/STA boundaries.
+    private sealed class SelectionWrite
+    {
+        private enum Phase { Verified, Submitting, Submitted, Acknowledged, Retired }
+        private int _phase;
+        private SelectionWrite(TextTargetSnapshot selection, string text)
+        { Selection = selection; Text = text; }
+        public TextTargetSnapshot Selection { get; }
+        public string Text { get; }
+        public DateTimeOffset SubmittedAt { get; private set; }
+        public bool IsSubmitting => Volatile.Read(ref _phase) == (int)Phase.Submitting;
+        public bool CanValidateSubmission => IsSubmitting;
+        public bool IsAwaitingAcknowledgement => IsSubmitting || Volatile.Read(ref _phase) == (int)Phase.Submitted;
+        public static SelectionWrite Verify(TextTargetSnapshot selection, string text) => new(selection, text);
+
+        public void Submit(Action<string> paste, Func<DateTimeOffset> clock)
+        {
+            if (Interlocked.CompareExchange(ref _phase, (int)Phase.Submitting, (int)Phase.Verified) != (int)Phase.Verified)
+                throw new InvalidOperationException("A verified selection can be submitted only once.");
+            paste(Text);
+            // Preparation may block; acknowledgement gets the original budget
+            // only after submission returns. Polls cannot restart this clock.
+            SubmittedAt = clock();
+            Interlocked.CompareExchange(ref _phase, (int)Phase.Submitted, (int)Phase.Submitting);
+        }
+
+        public void Acknowledge()
+        {
+            if (Interlocked.CompareExchange(ref _phase, (int)Phase.Acknowledged, (int)Phase.Submitted) != (int)Phase.Submitted)
+                throw new InvalidOperationException("Only a submitted write can be acknowledged.");
+        }
+
+        public void Retire() => Interlocked.Exchange(ref _phase, (int)Phase.Retired);
     }
 
     internal static bool IsProviderFailure(Exception ex) => ex is ElementNotAvailableException

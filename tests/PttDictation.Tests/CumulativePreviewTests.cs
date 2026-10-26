@@ -89,6 +89,197 @@ public sealed class CumulativePreviewTests
         finally { foreach (var path in paths) File.Delete(path); }
     }
 
+    [TestMethod]
+    public async Task DescriptorsCoalesceBeforeBothMaterializationAndRecognition()
+    {
+        using var recorder = new DescriptorRecorder();
+        var recognizer = new ControlledRecognizer(recorder.PathFor(32000));
+        var session = new ChunkedTranscribingDictationSession(recorder, recognizer, new FinalRecognizer());
+        var previews = Channel.CreateUnbounded<string>();
+        session.TranscriptUpdated += update => previews.Writer.TryWrite(update.StableText);
+        await session.StartAsync(CancellationToken.None);
+        try
+        {
+            recorder.Publish(32000);
+            await recorder.MaterializationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            for (var sample = 44800; sample <= 960000; sample += 12800) recorder.Publish(sample);
+            CollectionAssert.AreEqual(new long[] { 32000 }, recorder.Materialized.ToArray(),
+                "Pending descriptors must not copy PCM or write WAVs while materialization is busy.");
+            recorder.ReleaseMaterialization.Set();
+            await recognizer.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            recorder.Publish(972800);
+            recorder.Publish(44800); // Out-of-order callback from this recording.
+            recorder.Publish(1000000, Guid.NewGuid()); // Stale callback from another recording.
+            CollectionAssert.AreEqual(new long[] { 32000 }, recorder.Materialized.ToArray(),
+                "Recognition and publication share one scheduler.");
+            recognizer.ReleaseFirst.TrySetResult();
+            await previews.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+            await previews.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+            await session.StopAsync(CancellationToken.None);
+            CollectionAssert.AreEqual(new long[] { 32000, 972800 }, recorder.Materialized.ToArray());
+            Assert.IsEmpty(Directory.GetFiles(recorder.DirectoryPath), "All selected WAVs must be released.");
+        }
+        finally
+        {
+            recorder.ReleaseMaterialization.Set();
+            recognizer.ReleaseFirst.TrySetResult();
+            await session.CancelAsync(CancellationToken.None);
+        }
+    }
+
+    [TestMethod]
+    public async Task CancelDuringMaterializationDropsPendingDescriptorsAndReleasesSelectedWav()
+    {
+        using var recorder = new DescriptorRecorder();
+        var recognizer = new ControlledRecognizer(recorder.PathFor(32000));
+        var session = new ChunkedTranscribingDictationSession(recorder, recognizer, new FinalRecognizer());
+        await session.StartAsync(CancellationToken.None);
+        recorder.Publish(32000);
+        await recorder.MaterializationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        recorder.Publish(44800);
+        // This materializer deliberately returns its owned file after cancellation.
+        // The session must release it without calling recognition or publishing.
+        var cancel = session.CancelAsync(CancellationToken.None);
+        recorder.ReleaseMaterialization.Set();
+        await cancel;
+        CollectionAssert.AreEqual(new long[] { 32000 }, recorder.Materialized.ToArray());
+        Assert.IsEmpty(recognizer.Calls);
+        Assert.IsEmpty(Directory.GetFiles(recorder.DirectoryPath));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FactorySessionsShareRecorderWithoutSharingLatePreviewOrWavOwnership(bool finishNewSessionBeforeOldRecognizer)
+    {
+        using var recorder = new DescriptorRecorder(bindNames: true);
+        recorder.ReleaseMaterialization.Set();
+        var recognizer = new LateRecognizer();
+        var factory = new ChunkedTranscribingDictationSessionFactory(recorder, recognizer, new FinalRecognizer());
+        var first = factory.CreateSession();
+        var second = factory.CreateSession();
+        var oldUpdates = 0;
+        first.TranscriptUpdated += _ => oldUpdates++;
+        var newUpdate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        second.TranscriptUpdated += _ => newUpdate.TrySetResult();
+        try
+        {
+            await first.StartAsync(CancellationToken.None);
+            var oldId = recorder.RecordingId;
+            recorder.Publish(32000);
+            var oldPath = await recognizer.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await first.CancelAsync(CancellationToken.None);
+            Assert.IsTrue(File.Exists(oldPath));
+            Assert.AreEqual(oldPath, first.CleanupWarningPath);
+
+            await second.StartAsync(CancellationToken.None);
+            Assert.AreNotEqual(oldId, recorder.RecordingId);
+            recorder.Publish(32000);
+            var newPath = await recognizer.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.AreNotEqual(oldPath, newPath);
+            recorder.Publish(1000000, oldId); // Late callback routed to the current subscriber.
+            if (finishNewSessionBeforeOldRecognizer)
+            {
+                recognizer.ReleaseSecond.TrySetResult();
+                await newUpdate.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                var result = await second.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3));
+                Assert.AreEqual("monkeys burger at all", result.Transcript.Text);
+                Assert.IsNull(second.CleanupWarningPath);
+                Assert.IsTrue(File.Exists(oldPath), "The next recording must finish without deleting the old recognizer's audio.");
+                Assert.IsFalse(File.Exists(newPath));
+                Assert.IsFalse(recognizer.ReleaseFirst.Task.IsCompleted);
+                Assert.AreEqual(0, oldUpdates);
+            }
+            recognizer.ReleaseFirst.TrySetResult();
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (File.Exists(oldPath) && DateTime.UtcNow < deadline) await Task.Delay(10);
+            Assert.IsFalse(File.Exists(oldPath));
+            if (!finishNewSessionBeforeOldRecognizer)
+                Assert.IsTrue(File.Exists(newPath), "Old cleanup cannot delete the next recording's active WAV.");
+            Assert.AreEqual(0, oldUpdates);
+            if (!finishNewSessionBeforeOldRecognizer)
+            {
+                recognizer.ReleaseSecond.TrySetResult();
+                await newUpdate.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                await second.StopAsync(CancellationToken.None);
+            }
+            CollectionAssert.AreEqual(new long[] { 32000, 32000 }, recorder.Materialized.ToArray());
+            Assert.IsEmpty(Directory.GetFiles(recorder.DirectoryPath));
+        }
+        finally
+        {
+            recognizer.ReleaseFirst.TrySetResult();
+            recognizer.ReleaseSecond.TrySetResult();
+            await first.CancelAsync(CancellationToken.None);
+            await second.CancelAsync(CancellationToken.None);
+        }
+    }
+
+    private sealed class LateRecognizer : ITranscriber
+    {
+        private int _calls;
+        public TaskCompletionSource<string> FirstStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<string> SecondStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseFirst { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseSecond { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<TranscriptResult> TranscribeAsync(string path, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                FirstStarted.TrySetResult(path);
+                await ReleaseFirst.Task; // Model a provider that ignores cancellation.
+            }
+            else
+            {
+                SecondStarted.TrySetResult(path);
+                await ReleaseSecond.Task;
+            }
+            Assert.IsTrue(File.Exists(path));
+            return new("owned preview", null, null);
+        }
+    }
+
+    private sealed class DescriptorRecorder(bool bindNames = false) : ICumulativeAudioRecorder, IDisposable
+    {
+        public string DirectoryPath { get; } = Path.Combine(Path.GetTempPath(), "ptt-descriptors-" + Guid.NewGuid().ToString("N"));
+        public Guid RecordingId { get; private set; }
+        public ConcurrentQueue<long> Materialized { get; } = new();
+        public TaskCompletionSource MaterializationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim ReleaseMaterialization { get; } = new(false);
+        public event Action<CumulativeAudioSnapshot>? SnapshotReady;
+        public string PathFor(long sample, Guid? recording = null) => Path.Combine(DirectoryPath,
+            (bindNames ? (recording ?? RecordingId).ToString("N") + "-" : "") + sample + ".wav");
+        public Task StartAsync(CancellationToken cancellationToken) => throw new AssertFailedException("Session must bind recording identity.");
+        public Task StartAsync(Guid recordingId, CancellationToken cancellationToken)
+        {
+            RecordingId = recordingId;
+            Directory.CreateDirectory(DirectoryPath);
+            return Task.CompletedTask;
+        }
+        public void Publish(long sample, Guid? recording = null) => SnapshotReady?.Invoke(new(recording ?? RecordingId, sample));
+        public RecordedAudio MaterializeSnapshot(CumulativeAudioSnapshot snapshot, CancellationToken cancellationToken)
+        {
+            Materialized.Enqueue(snapshot.EndSample);
+            Assert.AreEqual(RecordingId, snapshot.RecordingId);
+            var path = PathFor(snapshot.EndSample, snapshot.RecordingId);
+            MaterializationStarted.TrySetResult();
+            if (!ReleaseMaterialization.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Test materialization was not released.");
+            File.WriteAllBytes(path, [0, 0]);
+            return new(path, TimeSpan.FromSeconds(snapshot.EndSample / 16000d), DeleteAfterUse: true, IsCumulative: true);
+        }
+        public Task<RecordedAudio> StopAsync(CancellationToken cancellationToken)
+        {
+            var path = Path.Combine(DirectoryPath, "final.wav");
+            File.WriteAllBytes(path, [0, 0]);
+            return Task.FromResult(new RecordedAudio(path, TimeSpan.FromSeconds(61), DeleteAfterUse: true));
+        }
+        public void Dispose()
+        {
+            ReleaseMaterialization.Dispose();
+            if (Directory.Exists(DirectoryPath)) Directory.Delete(DirectoryPath, true);
+        }
+    }
+
     private sealed class SnapshotRecorder : IChunkedAudioRecorder
     {
         public event Action<RecordedAudio>? AudioChunkReady;
