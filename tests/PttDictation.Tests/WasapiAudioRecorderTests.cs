@@ -1,6 +1,7 @@
 using NAudio.Wave;
 using PttDictation.App;
 using PttDictation.Core;
+using System.Threading.Channels;
 
 namespace PttDictation.Tests;
 
@@ -49,6 +50,61 @@ public sealed class WasapiAudioRecorderTests
         CollectionAssert.AreEqual(pcm[..20], buffer.CopyPrefix(first, CancellationToken.None),
             "A selected prefix remains immutable while capture appends newer blocks.");
         CollectionAssert.AreEqual(pcm, buffer.ToArray(), "Final audio retains every captured sample.");
+    }
+
+    [TestMethod]
+    public async Task LongRecordingSnapshotsRemainExactWhileCaptureAppends()
+    {
+        // Five minutes of 16-kHz PCM, delivered in 100-ms capture blocks.
+        const int blockBytes = 3200;
+        var expected = new byte[32000 * 60 * 5];
+        for (var index = 0; index < expected.Length; index++)
+            expected[index] = (byte)(index * 31 + index / 251);
+        var buffer = new CumulativePcmBuffer(Guid.NewGuid(), firstSamples: 32000, intervalSamples: 12800);
+        var selected = Channel.CreateBounded<CumulativeAudioSnapshot>(1);
+        using var stop = new CancellationTokenSource();
+        CumulativeAudioSnapshot? first = null;
+        var capture = Task.Run(async () =>
+        {
+            try
+            {
+                for (var offset = 0; offset < expected.Length; offset += blockBytes)
+                {
+                    buffer.Append(expected[offset..(offset + blockBytes)]);
+                    var snapshot = buffer.TryCreateSnapshot();
+                    if (snapshot is null) continue;
+                    first ??= snapshot;
+                    // A slow preview worker selects occasional prefixes while capture continues.
+                    if (snapshot == first || (offset + blockBytes) % (32000 * 30) == 0)
+                        await selected.Writer.WriteAsync(snapshot, stop.Token);
+                }
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+            finally { selected.Writer.TryComplete(); }
+        });
+        var copied = 0;
+        try
+        {
+            await foreach (var snapshot in selected.Reader.ReadAllAsync())
+            {
+                var prefix = buffer.CopyPrefix(snapshot, CancellationToken.None);
+                Assert.AreEqual(snapshot.EndSample * 2, (long)prefix.Length);
+                Assert.IsTrue(expected.AsSpan(0, prefix.Length).SequenceEqual(prefix),
+                    "Concurrent appends must not change any sample of a selected prefix.");
+                copied++;
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            await capture;
+        }
+        Assert.IsTrue(copied > 1);
+        Assert.IsNotNull(first);
+        Assert.IsTrue(expected.AsSpan(0, checked((int)first.EndSample * 2))
+            .SequenceEqual(buffer.CopyPrefix(first, CancellationToken.None)),
+            "The first preview must remain readable after five minutes of newer audio.");
+        Assert.IsTrue(expected.AsSpan().SequenceEqual(buffer.ToArray()), "Final audio must contain every sample.");
     }
 
     [TestMethod]

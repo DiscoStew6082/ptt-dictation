@@ -148,7 +148,9 @@ public sealed class CumulativePreviewTests
     }
 
     [TestMethod]
-    public async Task FactorySessionsShareRecorderWithoutSharingLatePreviewOrWavOwnership()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FactorySessionsShareRecorderWithoutSharingLatePreviewOrWavOwnership(bool finishNewSessionBeforeOldRecognizer)
     {
         using var recorder = new DescriptorRecorder(bindNames: true);
         recorder.ReleaseMaterialization.Set();
@@ -168,6 +170,7 @@ public sealed class CumulativePreviewTests
             var oldPath = await recognizer.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
             await first.CancelAsync(CancellationToken.None);
             Assert.IsTrue(File.Exists(oldPath));
+            Assert.AreEqual(oldPath, first.CleanupWarningPath);
 
             await second.StartAsync(CancellationToken.None);
             Assert.AreNotEqual(oldId, recorder.RecordingId);
@@ -175,15 +178,31 @@ public sealed class CumulativePreviewTests
             var newPath = await recognizer.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.AreNotEqual(oldPath, newPath);
             recorder.Publish(1000000, oldId); // Late callback routed to the current subscriber.
+            if (finishNewSessionBeforeOldRecognizer)
+            {
+                recognizer.ReleaseSecond.TrySetResult();
+                await newUpdate.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                var result = await second.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3));
+                Assert.AreEqual("monkeys burger at all", result.Transcript.Text);
+                Assert.IsNull(second.CleanupWarningPath);
+                Assert.IsTrue(File.Exists(oldPath), "The next recording must finish without deleting the old recognizer's audio.");
+                Assert.IsFalse(File.Exists(newPath));
+                Assert.IsFalse(recognizer.ReleaseFirst.Task.IsCompleted);
+                Assert.AreEqual(0, oldUpdates);
+            }
             recognizer.ReleaseFirst.TrySetResult();
             var deadline = DateTime.UtcNow.AddSeconds(3);
             while (File.Exists(oldPath) && DateTime.UtcNow < deadline) await Task.Delay(10);
             Assert.IsFalse(File.Exists(oldPath));
-            Assert.IsTrue(File.Exists(newPath), "Old cleanup cannot delete the next recording's active WAV.");
+            if (!finishNewSessionBeforeOldRecognizer)
+                Assert.IsTrue(File.Exists(newPath), "Old cleanup cannot delete the next recording's active WAV.");
             Assert.AreEqual(0, oldUpdates);
-            recognizer.ReleaseSecond.TrySetResult();
-            await newUpdate.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            await second.StopAsync(CancellationToken.None);
+            if (!finishNewSessionBeforeOldRecognizer)
+            {
+                recognizer.ReleaseSecond.TrySetResult();
+                await newUpdate.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                await second.StopAsync(CancellationToken.None);
+            }
             CollectionAssert.AreEqual(new long[] { 32000, 32000 }, recorder.Materialized.ToArray());
             Assert.IsEmpty(Directory.GetFiles(recorder.DirectoryPath));
         }

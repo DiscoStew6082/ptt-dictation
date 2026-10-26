@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading.Channels;
 using NAudio.Wave;
 using PttDictation.App;
+using PttDictation.Core;
 
 internal static class CaptureStopProbe
 {
@@ -127,7 +129,71 @@ internal static class CaptureStopProbe
                 finally { recorder.Dispose(); }
             });
         await Run("production-normal-250ms", result => CaptureAsync(scratch, result, 250));
+        await Run("production-cumulative-snapshots-across-recordings", result => CaptureSnapshotsAsync(scratch, result));
         return results.All(result => result.Status == "passed") ? 0 : 1;
+    }
+
+    private static async Task CaptureSnapshotsAsync(string scratch, ProbeResult result)
+    {
+        using var recorder = new WasapiAudioRecorder(scratch);
+        var snapshots = Channel.CreateUnbounded<CumulativeAudioSnapshot>();
+        recorder.SnapshotReady += snapshot => snapshots.Writer.TryWrite(snapshot);
+        CumulativeAudioSnapshot? previous = null;
+        var paths = new List<string>();
+        try
+        {
+            for (var recording = 0; recording < 2; recording++)
+            {
+                while (snapshots.Reader.TryRead(out _)) { }
+                var recordingId = Guid.NewGuid();
+                await recorder.StartAsync(recordingId, CancellationToken.None);
+                if (previous is not null)
+                {
+                    try
+                    {
+                        var stale = recorder.MaterializeSnapshot(previous, CancellationToken.None);
+                        paths.Add(stale.Path);
+                        throw new InvalidDataException("The new recording accepted an old recording's snapshot.");
+                    }
+                    catch (InvalidOperationException) { }
+                }
+                var snapshot = await snapshots.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+                if (snapshot.RecordingId != recordingId || snapshot.EndSample < 32000)
+                    throw new InvalidDataException("Capture published an invalid recording identity or an early preview.");
+                var preview = recorder.MaterializeSnapshot(snapshot, CancellationToken.None);
+                paths.Add(preview.Path);
+                var final = await recorder.StopAsync(CancellationToken.None);
+                paths.Add(final.Path);
+                var prefix = ReadPcm(preview.Path);
+                var complete = ReadPcm(final.Path);
+                if (!preview.IsCumulative || prefix.LongLength != snapshot.EndSample * 2
+                    || complete.Length < prefix.Length || !complete.AsSpan(0, prefix.Length).SequenceEqual(prefix))
+                    throw new InvalidDataException("Materialized preview differs from the exact final recording prefix.");
+                result.SnapshotRecordings++;
+                result.SnapshotSamples.Add(snapshot.EndSample);
+                result.RecordingIds.Add(snapshot.RecordingId);
+                result.WavBytes = new FileInfo(final.Path).Length;
+                previous = snapshot;
+            }
+        }
+        finally
+        {
+            recorder.Dispose();
+            foreach (var path in paths) File.Delete(path);
+        }
+        if (Directory.EnumerateFiles(scratch, "*.wav").Any())
+            throw new InvalidDataException("The snapshot probe left temporary audio behind.");
+    }
+
+    private static byte[] ReadPcm(string path)
+    {
+        using var reader = new WaveFileReader(path);
+        if (reader.WaveFormat.Encoding != WaveFormatEncoding.Pcm || reader.WaveFormat.SampleRate != 16000
+            || reader.WaveFormat.BitsPerSample != 16 || reader.WaveFormat.Channels != 1)
+            throw new InvalidDataException("Captured audio is not PCM16 at 16 kHz mono.");
+        var data = new byte[checked((int)reader.Length)];
+        reader.ReadExactly(data);
+        return data;
     }
 
     private static async Task CaptureAsync(string scratch, ProbeResult result, int captureMilliseconds)
@@ -158,6 +224,9 @@ internal static class CaptureStopProbe
         public string? StateAfterSingleStop { get; set; }
         public bool? BaselineTimedOut { get; set; }
         public long? WavBytes { get; set; }
+        public int SnapshotRecordings { get; set; }
+        public List<long> SnapshotSamples { get; } = [];
+        public List<Guid> RecordingIds { get; } = [];
         public string? Error { get; set; }
     }
 }
