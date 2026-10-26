@@ -52,7 +52,10 @@ internal sealed class ConfiguredFinalTranscriber : ITranscriber, IWarmableTransc
     public Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken) =>
         TranscribeAsync(_settings().FinalTranscriptionEngine, wavPath, cancellationToken);
 
-    private async Task<TranscriptResult> TranscribeAsync(FinalTranscriptionEngine engine, string wavPath, CancellationToken cancellationToken)
+    public Task<TranscriptResult> TranscribeQwenFromPhoneAsync(string wavPath, CancellationToken token) =>
+        TranscribeAsync(FinalTranscriptionEngine.Qwen, wavPath, token, fromPhone: true);
+
+    private async Task<TranscriptResult> TranscribeAsync(FinalTranscriptionEngine engine, string wavPath, CancellationToken cancellationToken, bool fromPhone = false)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
@@ -67,10 +70,12 @@ internal sealed class ConfiguredFinalTranscriber : ITranscriber, IWarmableTransc
                     RetireQwen();
                 return await _preview.TranscribeAsync(wavPath, linked.Token);
             }
-            _report("Finishing transcription with Qwen.");
+            if (!fromPhone) _report("Finishing transcription with Qwen.");
             var inner = EnsureQwen();
             DiagnosticTrace.Write("qwen.final_requested");
-            var result = await inner.TranscribeAsync(wavPath, linked.Token);
+            var result = fromPhone && inner is PersistentQwenTranscriber persistent
+                ? await persistent.TranscribePrivateAsync(wavPath, linked.Token)
+                : await inner.TranscribeAsync(wavPath, linked.Token);
             DiagnosticTrace.Write("qwen.final_completed", new { characters = result.Text.Length });
             return result;
         }
