@@ -62,7 +62,7 @@ class WorkerTests(unittest.TestCase):
 
         def factory(path):
             self.assertEqual(destination.getvalue(), "")
-            self.assertEqual(path, self.model)
+            self.assertTrue(path.samefile(self.model), "Worker must load the requested model directory.")
             self.assertEqual(os.environ["HF_HUB_OFFLINE"], "1")
             self.assertEqual(os.environ["TRANSFORMERS_OFFLINE"], "1")
             loads.append(path)
@@ -73,7 +73,7 @@ class WorkerTests(unittest.TestCase):
             result = worker.run_worker(str(self.model), source, destination, factory)
         messages = [json.loads(line) for line in destination.getvalue().splitlines()]
         self.assertEqual(result, 0)
-        self.assertEqual(loads, [self.model])
+        self.assertEqual(len(loads), 1)
         self.assertEqual(messages, [
             {"type": "ready", "protocol": 1},
             {"id": "one", "type": "result", "text": "spoken words"},
