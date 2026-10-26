@@ -6,9 +6,11 @@ PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs 
 
 It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. An optional local Qwen3-ASR 1.7B worker can provide the final transcript after Stop, using CUDA when available and CPU otherwise. Existing installations continue using Parakeet until Qwen is selected in Settings. See [Qwen final transcription](docs/qwen-final-transcription.md) for setup and behavior. Optional [Android LAN dictation](docs/qwen-lan.md) shares the same Qwen worker with a phone voice keyboard.
 
+See [project status](docs/project-status.md) for the verified application baseline, deployment and live acceptance, and the remaining work. Dated investigation notes describe their original checkpoints, not the current backlog.
+
 ## Overview
 
-- **Local by design:** Audio and transcripts stay on the machine during transcription. Network access is used only to download selected runtime and model assets.
+- **Local by design:** Recognition runs on the PC. Desktop audio and transcripts stay there during transcription; the optional authenticated LAN service accepts phone audio and returns its transcript to that phone. Internet access downloads selected runtime and model assets.
 - **Native Windows workflow:** Global push-to-talk capture, local inference, live transcript display, and automatic paste work from the system tray without requiring a browser tab.
 - **Replaceable AI boundary:** Dictation orchestration depends on `ITranscriber`; the current adapter provisions `parakeet.cpp` and Parakeet GGUF models.
 - **Defensive asset handling:** Built-in downloads use pinned SHA-256 hashes, runtime archives are checked before extraction, and temporary recordings are deleted after use.
@@ -57,7 +59,7 @@ The current app downloads and runs `parakeet.cpp` with a supported Parakeet GGUF
 
 ## Privacy
 
-PTT Dictation is designed for local dictation. Temporary recordings are made on the local machine while dictation is active, transcription is performed by a local `parakeet-cli` runtime, and transcript history is session-only. The app does download runtime/model assets on first use or when you choose a model download in settings.
+PTT Dictation is designed for local dictation. Temporary recordings are made on the local machine while desktop dictation is active, recognition uses the configured local Parakeet/Qwen runtime, and transcript history is session-only. The optional LAN service receives phone audio and returns its transcript to that phone without adding it to desktop history. The app downloads runtime/model assets on first use or when you choose a model download in Settings.
 
 Trust-boundary notes:
 
@@ -198,10 +200,10 @@ Model: `tdt_ctc-110m-f16.gguf` (`f16`)
 | chunk 2 | 149 ms | to talk. |
 | full sample | 199 ms | Hello parakeet push to talk. |
 
-Manual microphone validation using the default keys still needs to confirm end-to-end overlay latency and final paste quality on a real input device:
+The October 26 installed build passed user-confirmed successive dictation and cancellation acceptance; see [project status](docs/project-status.md). For a new build or input device, use this repeatable microphone check. Live text appears in the destination textbox, not a floating transcript overlay:
 
 ```text
-1. Start PTT Dictation from a local build.
+1. Start the tested PTT Dictation package from its selected stable installation path.
 2. Hold Right Ctrl and speak for at least 8 seconds with a pause near a chunk boundary.
 3. Confirm partial text appears while recording remains active.
 4. Release Right Ctrl and confirm the final pasted transcript is clean.

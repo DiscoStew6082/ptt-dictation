@@ -1,25 +1,27 @@
 # Experimental dictation diagnostics — 2026-09-07
 
-## Current state after the 2026-09-07 afternoon retry
+This is a historical investigation log. Its process IDs, launch commands, staging paths, test totals, and deployment/acceptance statements describe September 2026 observations and must not be used as current operational instructions. Use [project status](docs/project-status.md) for the October 26 verified application baseline and [CONTRIBUTING.md](CONTRIBUTING.md) for the current installer/Explorer launch procedure. Ordinary desktop dictation and cancellation have since passed user acceptance; that does not retroactively establish every specific scenario below.
+
+## State recorded after the 2026-09-07 afternoon retry
 
 The user explicitly requested restoring live transcription in the selected destination textbox and rejected an upper-right overlay. The morning experiment had been rolled back in full after a clipboard validation failure. The historical process/staging details below describe earlier runs and are not the current deployment.
 
 - Source consolidation on 2026-09-08: the live textbox source was brought into the primary checkout for the requested Git checkpoint, preserving the correction-editor and recording-capture work. Use the primary checkout for subsequent builds. `publish/experimental-tracing-source` remains a preserved historical worktree. This consolidation did not replace or restart the deployed executable.
-- Current staging: `publish/textbox-live-recovery-20260907`. Deployed to `publish/ptt-dictation-win-x64` and verified running as one process, PID 114656, with no arguments. App DLL SHA256 `99AE99C8EB37D276C4E5227DC9D388E093B5C52C89F09DAE6504E667FEE777E0`; Core DLL SHA256 `BCBAEC36C832062BF24E0975A1DA4A23B6DBCB2D245588200C66B9D10C80F1EB`. Startup build `experimental-live-insertion-7288e0fb-d370-4698-a8d1-a76db990477b`.
+- Staging recorded for that run: `publish/textbox-live-recovery-20260907`. Deployed to `publish/ptt-dictation-win-x64` and verified running as one process, PID 114656, with no arguments. App DLL SHA256 `99AE99C8EB37D276C4E5227DC9D388E093B5C52C89F09DAE6504E667FEE777E0`; Core DLL SHA256 `BCBAEC36C832062BF24E0975A1DA4A23B6DBCB2D245588200C66B9D10C80F1EB`. Startup build `experimental-live-insertion-7288e0fb-d370-4698-a8d1-a76db990477b`.
 - Exact normal launch: `Start-Process -FilePath 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe' -WorkingDirectory 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64'`.
 - Live workflow recording/processing no longer opens a floating overlay, including during asynchronous target capture. Existing transition sounds and tray cancellation remain. Source-only fallback overlay tests are not the live workflow's presentation policy.
 - Saved failure trace: `publish/diagnostic-cases/codex-clipboard-20260907-161933/events.jsonl`. At 20.109 seconds clipboard validation returned false before input; restoration then confirmed the same owned clipboard sequence. Recognition continued, but the old target permanently conflicted. The trace does not identify which clipboard read failed. New diagnostics distinguish sequence changes, unavailable text, and text mismatch without logging prior clipboard contents.
 - Fix: only an unsent clipboard read failure with the same owned sequence and still-valid target may retry on the existing 200 ms pump. The exact selected snapshot must remain unchanged and the existing two-second deadline bounds recovery. Clipboard replacement, selection changes, ambiguous input failures, and acknowledgement failures do not gain retries. Clipboard restoration remains 750 ms.
 - Regression evidence: three red cases (overlay plus initial/subsequent update recovery) before the fix; all 253 release tests pass afterward. Guard cases cover actual clipboard replacement, moved caret, persistent read failure, and failure after input.
 - Native insertion evidence: `publish/textbox-recovery-native-01`. The saved 28-update sequence ran through production Windows UIA/clipboard workers in a new empty Notepad tab, with one deliberately injected clipboard read failure. It recovered and completed; the accessibility document exactly matched the expected 120-character final transcript. This is controlled insertion evidence, not Codex hotkey acceptance.
-- Live Codex hotkey acceptance remains unverified. The user stopped Computer Use with physical Escape during the post-deployment UI check; no further UI input was attempted. The refreshed live app remains running. The original `.backup-before-live-dictation` and earlier experimental stages remain retained.
+- Live Codex hotkey acceptance was unverified at this checkpoint. The user stopped Computer Use with physical Escape during the post-deployment UI check; no further UI input was attempted. The refreshed app was running when this checkpoint was recorded. The original `.backup-before-live-dictation` and earlier experimental stages remain retained.
 
 ## Historical investigation
 
 ## Running and separate artifacts
 
-- Canonical app: `publish/ptt-dictation-win-x64/PttDictation.exe`, now running cumulative revisable previews as PID 126532 when verified. Normal launch, no arguments. Earlier experimental PIDs 140428 and 23940, and restored PID 14884, were replaced after validation. Do not rebuild the working rollback from current HEAD: PDB analysis identified three actual source mismatches with that binary.
-- Current stage: `publish/experimental-cumulative-fixed`. App DLL SHA256 `70A7B8EE93AA7B6E98F9BEF7E4DA75194639DF98B5188B87ED249251D0D5B5EA`; Core DLL SHA256 `BCBAEC36C832062BF24E0975A1DA4A23B6DBCB2D245588200C66B9D10C80F1EB`; startup trace build ID `experimental-live-insertion-2b944a44-98e8-4b1f-812e-d762cba0b984`. All three deployed binary hashes match staging; capture helper remains PID 142356.
+- Canonical app: `publish/ptt-dictation-win-x64/PttDictation.exe`, recorded running cumulative revisable previews as PID 126532 when verified. Normal launch, no arguments. Earlier experimental PIDs 140428 and 23940, and restored PID 14884, were replaced after validation. Do not rebuild the working rollback from current HEAD: PDB analysis identified three actual source mismatches with that binary.
+- Stage recorded for that run: `publish/experimental-cumulative-fixed`. App DLL SHA256 `70A7B8EE93AA7B6E98F9BEF7E4DA75194639DF98B5188B87ED249251D0D5B5EA`; Core DLL SHA256 `BCBAEC36C832062BF24E0975A1DA4A23B6DBCB2D245588200C66B9D10C80F1EB`; startup trace build ID `experimental-live-insertion-2b944a44-98e8-4b1f-812e-d762cba0b984`. All three deployed binary hashes match staging; capture helper remains PID 142356.
 - Previous context stage: `publish/experimental-context-fixed`, retained for rollback. App DLL SHA256 `5972C4620C4A6A6FFB106BB4959D6F96A310A7FBC24069995E9BEF9CE4AFE969`.
 - Keep rollback backup: `publish/.backup-before-live-dictation`.
 - Background audio helper: `publish/ptt-dictation-capture-win-x64/PttDictation.Capture.exe`, PID 142356 when started. This is a separate console process, launched hidden. It observes full WAV files; it does not record the microphone, control input, change settings, or restart the app. No login/startup registration was added.
@@ -79,7 +81,7 @@ The complete approximately 56-second WAV was retained before rollback. Its size 
 
 The actual failure is now reproduced: `target.conflict` reports `acknowledgement_timeout` two seconds after the first paste, then `workflow.finish_failed` reports `The original textbox changed, so dictation stopped replacing text.` Recognition continued and final transcription completed. No recognition/chunk exception caused this recorded failure. Initial UIA snapshot: document length 12, prefix 0, selection 0, suffix 12. The first 13-character preview was sent with clipboard and focus checks passing; no write was acknowledged afterward.
 
-The working app was restored immediately after verifying the saved audio; backup/live EXE, App DLL, and Core DLL hashes match. No functional fix has been deployed.
+The working app was restored immediately after verifying the saved audio; backup/live EXE, App DLL, and Core DLL hashes match. No functional fix had been deployed at this checkpoint.
 
 Read-only inspection of the installed Codex package found the `Do anything` placeholder and CSS `content:attr(data-placeholder)` on a `:before` pseudo-element in `webview/assets/app-primary-7fe7c6486695.css`. The saved Codex trace does not contain the actual surrounding text, so identifying its 12 characters as the placeholder remains an inference.
 
@@ -89,7 +91,7 @@ The controlled local Chromium fixture at `publish/placeholder-fixture.html` repr
 
 Experimental `WindowsTextTarget` now acknowledges this transition only on the first write, from an originally empty selection, when the entire current document is exactly the pending payload with a collapsed end caret. It then treats the initial surrounding decoration as gone. Subsequent writes retain document, selection, and focus guards; timeout and clipboard timing are unchanged. Two placeholder regression cases failed before the fix and pass afterward. Negative cases cover unexpected content, selected text, a nonempty original selection, and surroundings disappearing after a previously acknowledged write.
 
-Native green validation was blocked when Computer Use stopped the turn because it could not determine the current browser URL confidently enough to enforce policy. No further computer input was attempted after that stop. The fix is not deployed to the daily app and full Codex hotkey acceptance remains unverified. The pinned recording and trace remain available for continued validation without repeated speech.
+Native green validation was blocked when Computer Use stopped the turn because it could not determine the current browser URL confidently enough to enforce policy. No further computer input was attempted after that stop. At this checkpoint, the fix had not been deployed to the daily app and full Codex hotkey acceptance was unverified. The pinned recording and trace remain available for continued validation without repeated speech.
 
 ### Native follow-through after resuming
 
@@ -103,7 +105,7 @@ The experimental target now waits for that selection acknowledgement only when t
 
 The full saved sequence passed in `publish/placeholder-saved-green-03`: 69 updates over 56 seconds, no conflicts, final expected length 486. Native accessibility document text compared exactly equal to `expected.txt`. The delayed-selection path was exercised repeatedly and recovered. This run began with the prior fixture output selected; the earlier empty-placeholder probe separately passed. Independent review found no deployment blocker. The review-added assertion that polling never reselects also passed.
 
-The tested package was copied to the canonical directory after stopping only its verified previous process. Exact normal launch: `Start-Process -FilePath 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe' -WorkingDirectory 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64'`. One canonical process, matching binary hashes, startup trace, and capture helper PID 142356 were verified. This proves deployment and the controlled native insertion path; the user's Codex hotkey interaction remains the final manual acceptance gate. The saved failure WAV remains pinned with its original hash.
+The tested package was copied to the canonical directory after stopping only its verified previous process. Exact normal launch: `Start-Process -FilePath 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64\PttDictation.exe' -WorkingDirectory 'C:\Users\stewa\projects\par-win-ptt\publish\ptt-dictation-win-x64'`. One canonical process, matching binary hashes, startup trace, and capture helper PID 142356 were verified. This proves deployment and the controlled native insertion path; the user's Codex hotkey interaction was still unverified at that checkpoint. The saved failure WAV remains pinned with its original hash.
 
 ## Launch record
 
@@ -131,7 +133,7 @@ The source change grows recognition lookback up to six seconds while preserving 
 
 The original long recording also replayed successfully in `publish/long-six-second-replay`: 68 previews, average chunk processing 229 ms, maximum 297 ms, maximum queue wait 16 ms. Independent review found no actionable defect. The full suite passed 240/240 on rerun; the prior run had one transient file-sharing error in the existing security-test helper (`WaitForFileTextAsync`), with the other 239 tests passing. That helper was not changed.
 
-The context fix is deployed with one canonical PID 140428, normal launch using the same exact command recorded above, no arguments, matching EXE/App/Core hashes, and verified startup tracing. Its recovery of the phrase is proven by saved-audio production replay; the user's next natural dictation is the remaining live observation. No additional recording was requested for development.
+The context fix is deployed with one canonical PID 140428, normal launch using the same exact command recorded above, no arguments, matching EXE/App/Core hashes, and verified startup tracing. Its recovery of the phrase is proven by saved-audio production replay; the user's next natural dictation was the remaining live observation at that checkpoint. No additional recording was requested for development.
 
 Helper was started with the following exact PowerShell command (hidden applies only to the background helper):
 

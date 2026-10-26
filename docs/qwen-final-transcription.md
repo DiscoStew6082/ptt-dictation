@@ -1,5 +1,7 @@
 # Qwen final transcription
 
+Qwen final recognition is part of the merged and locally deployed [October 26 application baseline](project-status.md). The installed recognizer and ordinary desktop dictation/cancellation checks passed. The September validation and rollback notes below describe their original trials; they are not current deployment blockers or default rollback instructions.
+
 Select **Qwen3-ASR 1.7B (CPU or CUDA)** under **Final recognition** in Settings to retain Parakeet live preview and use Qwen after stopping. The existing hold/toggle keys, corrections, cancellation, textbox protections, and Session History remain in use. Settings changes apply to the next recording.
 
 When Qwen is selected, the app starts loading its resident local Python worker in the background after startup settings are applied. Selecting Qwen later also schedules a preload. Repeated settings saves share the pending or completed preload; Parakeet-only startup does not resolve or download Qwen assets. A preload failure is traced without opening a dialog, and ordinary dictation warmup can retry. Dictation started before loading finishes can still wait for the remaining startup time.
@@ -57,7 +59,9 @@ dotnet run --project tools/PttDictation.Replay -c Release -- --qwen-probe C:\Pro
 
 The configuration contains `pythonPath`, `qwenModelPath`, `workerPath`, `parakeetRuntimePath`, `parakeetModelPath`, and `samples` (each with `id`, `path`, and optional `expectedFragment`). It opens no microphone or textbox, changes no app settings, and starts its own recognizer workers. It verifies actual Parakeet previews followed by Qwen finals, near-silence, cancelling real inference, and recovery after cancellation and malformed audio. Output includes private transcripts: keep it in an ignored local directory. This is production code-path evidence, not proof of the user's exact native hotkey/textbox interaction.
 
-## Roll back this local Qwen trial
+## Historical rollback snapshots from the local Qwen trial
+
+These snapshots predate later fixes and replace the saved settings as well as the app. They are retained recovery options for their original trials, not the default rollback for the current installation. Verify a chosen snapshot before use; the most recent updater backup and deployment receipt describe the latest installed update. Selecting Parakeet in Settings is sufficient to stop using Qwen without reverting unrelated fixes.
 
 For the prepared local trial, double-click `Rollback-Qwen.cmd` in the main checkout. It validates `publish/rollback-before-qwen` against its saved hashes, restores the previous app and exact saved settings through `Update-LocalApp.ps1`, and restarts the app at the permanent pinned executable path. Finish or cancel any active dictation before running it. The ignored snapshot is stored under the main checkout.
 
@@ -87,7 +91,7 @@ Validation on September 11, 2026:
 - Real existing-model/runtime validation passed with all HTTP requests blocked and registration redirected to a scratch location.
 - Real portable Python download, hash verification, extraction, and one pinned wheel installation passed. A complete fresh 58-wheel installation was not repeated.
 - The cached CUDA runtime transcribed a saved 7.758-second recording successfully; its server log confirmed CUDA0 on the RTX 3060. This does not establish transcription accuracy.
-- Exact native tray-menu and hotkey/textbox acceptance remains unverified. Available automation cannot right-click the notification-area icon; isolated form tests and layout images are supporting evidence only.
+- At the September 11 checkpoint, exact native tray-menu and hotkey/textbox acceptance was unverified because available automation could not right-click the notification-area icon. Later ordinary desktop dictation/cancellation acceptance is recorded in [project status](project-status.md); isolated form tests still do not prove a specific tray gesture.
 
 ## September 17 CPU fallback
 
@@ -95,4 +99,4 @@ The worker now preserves the validated CUDA/BF16 fast path and automatically use
 
 On the existing RTX 3060 desktop, the same public LibriSpeech clip produced the same reference transcript on both backends. With a resident model, CPU inference took 13.120 seconds and CUDA took 1.950 seconds, so CUDA remains worthwhile on supported machines. Model loading took 10.082 seconds on CPU and 13.683 seconds on CUDA in those runs. A separate clean-room check installed all 58 hash-pinned managed-runtime wheels, confirmed `torch 2.11.0+cpu` with CUDA unavailable, and completed a cold worker transcription of that clip in 29.537 seconds. These are single-machine measurements, not a promise for the AMD laptop; the laptop will use CPU unless its registered PyTorch environment exposes supported CUDA.
 
-For rollback of this repair, double-click Rollback-Settings-Changes.cmd. It restores the verified app and settings from immediately before these changes (commit 49008e2), using the snapshot at C:\Users\stewa\projects\par-win-ptt\publish\rollback-before-settings-recovery. Finish or cancel dictation first. Settings edits made after that snapshot are replaced. The earlier pre-Qwen snapshot and Rollback-Qwen.cmd are also available in the main checkout.
+The September 17 repair retained `Rollback-Settings-Changes.cmd` and the snapshot `publish/rollback-before-settings-recovery` from commit `49008e2`. That historical rollback replaces later app fixes and settings edits; it is not the normal recovery route for today's installation. The earlier pre-Qwen snapshot has the same limitation. Verify any deliberately selected snapshot before restoring it, and finish or cancel dictation first.

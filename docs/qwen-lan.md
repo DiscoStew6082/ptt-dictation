@@ -1,5 +1,7 @@
 # Android dictation through the PC's Qwen model
 
+The service is merged and deployed in the October 26 [verified application baseline](project-status.md). PC-local authenticated transcription has passed; recording and insertion through the actual S25 voice keyboard remain unverified. The October 17 network notes below are historical observations, not a statement of the current firewall or phone configuration.
+
 The optional LAN endpoint lets an Android voice keyboard send recordings to the Qwen3-ASR 1.7B model already used by PTT Dictation. Both callers share the same resident worker and serialization gate. Phone results return to Android; they never enter the desktop paste workflow or Session History. The tray app must be running, and the PC must be awake.
 
 This is complete-recording English transcription, not live streaming. One phone request is accepted at a time; another receives HTTP 429. Desktop and phone recognition run sequentially. Cancelling a queued request does not cancel the active caller. Cancelling active Qwen inference retires its worker; the next request reloads it, as with desktop cancellation.
@@ -23,9 +25,9 @@ HTTP is unencrypted: use only a trusted home network, with no router port forwar
 
 FFmpeg must already be installed at the configured absolute local path. WAV, MP3, FLAC, AAC/M4A, Ogg/Opus, and WebM are decoded to PCM16 mono 16 kHz. Network protocols and playlist demuxers are disabled. Uploads are limited to 20 MiB including multipart overhead and five minutes of decoded audio; longer recordings are rejected, not silently truncated. Temporary audio is deleted after each request; startup cleans the service's recognized residue files after an interrupted run. Phone transcript text is omitted from Qwen completion diagnostics.
 
-## Dictate Keyboard
+## Android voice keyboard configuration
 
-In [Dictate Keyboard](https://github.com/DevEmperor/DictateKeyboard), choose a dark theme and its voice-only layout if desired. Add your own server under Settings / AI providers:
+Use a voice keyboard that accepts a custom OpenAI-compatible transcription server and LAN HTTP. Choose a dark theme and a voice-only layout where available. Configure its custom provider with:
 
 - Base URL: `http://PC_ADDRESS:8765/v1/`
 - API key: the local configuration's `apiKey`
@@ -33,25 +35,27 @@ In [Dictate Keyboard](https://github.com/DevEmperor/DictateKeyboard), choose a d
 - Language: English
 - Real-time streaming and optional AI rewording: off for this setup
 
-Enable Dictate as an Android keyboard, select it in a normal text field, record, and stop. Text should return to that Android field. The API format is OpenAI-compatible but audio goes to the specified PC, not OpenAI. The native app supports LAN HTTP; a browser microphone page is not needed.
+Enable the chosen app as an Android keyboard, select it in a normal text field, record, and stop. Text should return to that Android field. The API format is OpenAI-compatible but audio goes to the specified PC, not OpenAI. A browser microphone page is not needed. Protocol compatibility alone is not evidence that a particular phone/keyboard combination has passed this test.
 
 `GET /v1/models` and `GET /v1/audio/models` list the model. `POST /v1/audio/transcriptions` accepts multipart fields `file`, `model`, optional `language=en`, and `response_format=json` or `text`. Arbitrary language selection, streaming, timestamps, translation, and prompt-based rewriting are not implemented.
 
 ## Verification boundary
 
-Automated tests cover authentication, multipart handling, response formats, invalid requests, request contention, cancellation, cleanup, and shared desktop/phone worker ownership. Test the live endpoint with real compressed audio after deployment. Neither that test nor package/process checks establish S25 keyboard acceptance: verify recording and text insertion on the phone separately. Source changes do not imply publication to GitHub.
+Automated tests cover authentication, multipart handling, response formats, invalid requests, request contention, cancellation, cleanup, and shared desktop/phone worker ownership. The installed endpoint passed a public-fixture transcription and temporary-file cleanup check on October 26. Neither that test nor package/process checks establish S25 keyboard acceptance: verify recording and text insertion on the phone separately. PR #51 is merged; phone acceptance is the remaining service-integration check.
 
-## Local verification on October 17, 2026
+## Historical local verification on October 17, 2026
+
+These observations apply to that date. A later October 20 handoff recorded a direct-LAN firewall repair; the current network state must be rechecked when setting up the phone. The October 17 Tailscale workaround is not required for a same-network setup.
 
 - Release suite: 631 passed, 39 interactive tests skipped. After the final startup-cleanup addition, all eight LAN/shared-worker tests passed.
 - Staged self-contained package installed through the repository updater at the existing installation path; all 604 package files verified, with the previous package retained for recovery.
 - The live authenticated endpoint transcribed one existing public LibriSpeech sample from WAV, M4A/AAC, and Ogg/Opus, with identical text. Request times were 3.03, 1.85, and 1.93 seconds respectively; these are single-machine observations, not latency guarantees.
 - Missing authorization returned 401; malformed audio returned 400; no temporary request directories remained. Process ancestry showed one desktop-owned Qwen worker (Python launcher plus runtime child), not a second model service.
-- The user was on the phone and could not approve a Windows desktop prompt. The pending firewall command was stopped; no Qwen firewall rule was created. Instead, an existing private Tailscale network was used with a persistent TCP Serve proxy on port 8765 to the LAN endpoint. Authenticated discovery and an M4A transcription through the PC's Tailscale address passed; transcription took 2.13 seconds, and missing authorization returned 401. These checks originated on the PC: actual S25 connectivity/insertion and desktop hotkey interaction after deployment remain pending.
+- The user was on the phone and could not approve a Windows desktop prompt. The pending firewall command was stopped; no Qwen firewall rule was created in that session. Instead, an existing private Tailscale network was used with a persistent TCP Serve proxy on port 8765 to the LAN endpoint. Authenticated discovery and an M4A transcription through the PC's Tailscale address passed; transcription took 2.13 seconds, and missing authorization returned 401. These checks originated on the PC: actual S25 connectivity/insertion and desktop hotkey interaction were unverified at that checkpoint. Desktop dictation/cancellation has since passed the October 26 user check; phone acceptance remains separate.
 
-## Existing Tailscale connection (no desktop firewall approval)
+## Optional existing Tailscale connection
 
-When the PC and phone already belong to the same Tailscale network, a TCP Serve proxy can carry the authenticated API over that encrypted network. Check existing Serve configuration first so another service is not overwritten:
+Use direct LAN when the PC and phone are on the intended trusted local network. If a private Tailscale route is explicitly wanted and both devices already belong to that network, a TCP Serve proxy can carry the authenticated API over it. Check existing Serve configuration first so another service is not overwritten:
 
 ```powershell
 tailscale serve status --json
