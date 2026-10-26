@@ -7,6 +7,29 @@ namespace PttDictation.Tests;
 public sealed class WindowsTextTargetTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void AmbiguousNonProviderFailureCannotAuthorizeAnotherPaste(bool inputWasSent)
+    {
+        var surface = new FakeSurface("", "", "");
+        var target = new WindowsTextTarget(surface);
+        var submissions = 0;
+        Assert.ThrowsExactly<IOException>(() => target.TryReplace("", "words", text =>
+        {
+            submissions++;
+            if (inputWasSent) surface.Paste(text);
+            throw new IOException("The caller cannot establish whether input was submitted.");
+        }));
+
+        Assert.IsFalse(target.IsPreparedSelectionCurrent);
+        Assert.IsFalse(target.IsAwaitingWriteAcknowledgement);
+        Assert.AreEqual(TextTargetUpdateResult.Conflict,
+            target.TryReplace("", "words", _ => Assert.Fail("Ambiguous input must never be replayed.")));
+        Assert.AreEqual(1, submissions);
+        Assert.AreEqual(inputWasSent ? "words" : "", surface.Document);
+    }
+
+    [TestMethod]
     public void VerifiedWriteIsSingleUseAndSubmittedReceiptCannotAuthorizeMoreInput()
     {
         var surface = new FakeSurface("", "", "") { DelayPaste = true };
