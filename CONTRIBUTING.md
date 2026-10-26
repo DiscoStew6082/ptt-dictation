@@ -20,6 +20,12 @@ dotnet test PttDictation.sln --configuration Release --no-restore
 dotnet list PttDictation.sln package --vulnerable --include-transitive
 ```
 
+When updating an app dependency, refresh the dependent lockfiles in the solution
+and the standalone Replay tool with `dotnet restore --force-evaluate`, then
+verify both with `--locked-mode`. Capture and Replay are outside the solution;
+CI checks their locked restores separately so tool dependencies cannot silently
+lag behind app updates.
+
 The default test command is window-free. Tests that intentionally show Settings,
 tray UI, history captures, or status overlays require explicit visible-UI opt-in.
 Tests that save through Settings also require opt-in because a failed hotkey

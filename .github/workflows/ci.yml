@@ -31,6 +31,14 @@ jobs:
       - name: Audit NuGet packages
         run: dotnet list PttDictation.sln package --vulnerable --include-transitive
 
+      - name: Restore standalone diagnostic tools
+        shell: pwsh
+        run: |
+          dotnet restore tools/PttDictation.Capture/PttDictation.Capture.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore tools/PttDictation.Replay/PttDictation.Replay.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   test:
     name: Test
     runs-on: windows-latest
