@@ -325,20 +325,41 @@ public sealed class CoreBehaviorTests
     }
 
     [TestMethod]
-    public async Task ChunkedSessionWarmsPreviewTranscriberWithoutDelayingRecordingStart()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ChunkedSessionWarmsPreviewTranscriberWithoutDelayingRecordingStart(bool separateFinalTranscriber)
     {
-        var recorder = new FakeChunkedAudioRecorder("final.wav");
+        var recorder = new FakeChunkedAudioRecorder(Path.Combine(Path.GetTempPath(), $"ptt-warmup-{Guid.NewGuid():N}.wav"));
         var previewTranscriber = new FakeWarmableTranscriber();
-        var session = new ChunkedTranscribingDictationSession(
-            recorder,
-            previewTranscriber,
-            new FakeTranscriber("final text"));
-
-        await session.StartAsync(CancellationToken.None);
-
-        Assert.AreEqual(1, recorder.StartCount);
-        await WaitUntilAsync(() => previewTranscriber.WarmUpCount == 1);
-        await session.StopAsync(CancellationToken.None);
+        var session = separateFinalTranscriber
+            ? new ChunkedTranscribingDictationSession(recorder, previewTranscriber, new FakeTranscriber("final text"))
+            : new ChunkedTranscribingDictationSession(recorder, previewTranscriber);
+        // Run the start on a worker so even a synchronous warmup wait can be
+        // released by the test's finally block after the bounded assertion fails.
+        var start = Task.Run(() => session.StartAsync(CancellationToken.None));
+        try
+        {
+            await previewTranscriber.WarmUpStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await start.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.AreEqual(1, recorder.StartCount);
+            Assert.AreEqual(1, previewTranscriber.WarmUpCount);
+            Assert.IsFalse(previewTranscriber.WarmUpFinished.Task.IsCompleted,
+                "Recording must start while model warmup is still blocked.");
+        }
+        finally
+        {
+            previewTranscriber.ReleaseWarmUp.TrySetResult();
+            try
+            {
+                await start.WaitAsync(TimeSpan.FromSeconds(5));
+                if (previewTranscriber.WarmUpStarted.Task.IsCompleted)
+                    await previewTranscriber.WarmUpFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                await session.CancelAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
     }
 
     [TestMethod]
@@ -1390,12 +1411,18 @@ internal sealed class FakeProcessRunner(string standardOutput) : IProcessRunner
 
 internal sealed class FakeWarmableTranscriber : ITranscriber, IWarmableTranscriber
 {
-    public int WarmUpCount { get; private set; }
+    private int _warmUpCount;
+    public int WarmUpCount => Volatile.Read(ref _warmUpCount);
+    public TaskCompletionSource WarmUpStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource ReleaseWarmUp { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource WarmUpFinished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public Task WarmUpAsync(CancellationToken cancellationToken)
+    public async Task WarmUpAsync(CancellationToken cancellationToken)
     {
-        WarmUpCount++;
-        return Task.CompletedTask;
+        Interlocked.Increment(ref _warmUpCount);
+        WarmUpStarted.TrySetResult();
+        try { await ReleaseWarmUp.Task.WaitAsync(cancellationToken); }
+        finally { WarmUpFinished.TrySetResult(); }
     }
 
     public Task<TranscriptResult> TranscribeAsync(string wavPath, CancellationToken cancellationToken)

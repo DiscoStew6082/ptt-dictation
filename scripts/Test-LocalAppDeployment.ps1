@@ -251,15 +251,19 @@ function Invoke-Fixture([string]$Scenario) {
                 1102 -in @($global:pttTestWorkers | ForEach-Object ProcessId)) 'Owned worker survived or an unrelated/older worker was stopped.'
         }
         Assert ((Get-FileHash -LiteralPath (Join-Path $live 'PttDictation.dll')).Hash -eq $newHash) 'New package was not installed.'
-        $verified = & $testScript -VerifyOnly -InstallDirectory $live
-        Assert $verified.DeploymentReceiptVerified 'Receipt verification failed.'
-        Assert ($verified.FilesHashed -eq 6) 'Nested package files were not verified.'
         Assert (-not (Test-Path -LiteralPath (Join-Path $live 'old-only.dat'))) 'Obsolete package file was not removed.'
-        Set-Content -LiteralPath (Join-Path $live 'nested\asset.dat') -Value 'tampered'
-        $tamperError = $null
-        try { $null = & $testScript -VerifyOnly -InstallDirectory $live } catch { $tamperError = $_ }
-        Assert ($null -ne $tamperError -and "$tamperError" -like '*hash mismatch*') 'Tampered asset was not rejected.'
-        Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'VerifyOnly changed process state.'
+        if ($Scenario -eq 'success') {
+            # Exercise receipt verification and tamper detection once; the other
+            # success scenarios retain their own installation and settings checks.
+            $verified = & $testScript -VerifyOnly -InstallDirectory $live
+            Assert $verified.DeploymentReceiptVerified 'Receipt verification failed.'
+            Assert ($verified.FilesHashed -eq 6) 'Nested package files were not verified.'
+            Set-Content -LiteralPath (Join-Path $live 'nested\asset.dat') -Value 'tampered'
+            $tamperError = $null
+            try { $null = & $testScript -VerifyOnly -InstallDirectory $live } catch { $tamperError = $_ }
+            Assert ($null -ne $tamperError -and "$tamperError" -like '*hash mismatch*') 'Tampered asset was not rejected.'
+            Assert ($global:pttTestStartCount -eq 1 -and $global:pttTestStopCount -eq $expectedStops) 'VerifyOnly changed process state.'
+        }
     }
     elseif ($Scenario -eq 'verify-existing') {
         Assert ($null -eq $caught) "Read-only verification failed: $caught"

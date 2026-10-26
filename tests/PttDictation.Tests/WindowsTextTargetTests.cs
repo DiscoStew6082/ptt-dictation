@@ -44,9 +44,12 @@ public sealed class WindowsTextTargetTests
         }));
         Assert.IsFalse(target.IsPreparedSelectionCurrent, "A submitted receipt grants observation, never new input.");
         Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "words", _ => Assert.Fail("Cannot replay submission.")));
+        Assert.AreEqual(1, surface.Pastes);
         surface.ApplyDelayedPaste();
         Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "words", _ => Assert.Fail("Acknowledgement cannot paste.")));
         Assert.AreEqual(1, submissions);
+        Assert.AreEqual(1, surface.Pastes);
+        Assert.AreEqual("words", surface.Document);
     }
 
     [TestMethod]
@@ -347,6 +350,7 @@ public sealed class WindowsTextTargetTests
             surface.AfterSnapshotRead = () => now += TimeSpan.FromMilliseconds(1);
         }
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
+        Assert.IsTrue(target.HasAttemptedWrite);
         Assert.AreEqual(1, surface.Pastes);
         var reads = surface.Reads;
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "words", surface.Paste));
@@ -470,33 +474,6 @@ public sealed class WindowsTextTargetTests
         surface.Suffix = surface.Document;
         surface.Prefix = "";
         Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("first words", "revised words", surface.Paste));
-        Assert.AreEqual(1, surface.Pastes);
-    }
-
-    [TestMethod]
-    public void DelayedEditorAcknowledgementDoesNotDuplicateInput()
-    {
-        var surface = new FakeSurface("", "", "") { DelayPaste = true };
-        var target = new WindowsTextTarget(surface);
-        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "speech", surface.Paste));
-        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "speech", surface.Paste));
-        Assert.AreEqual(1, surface.Pastes);
-        surface.ApplyDelayedPaste();
-        Assert.AreEqual(TextTargetUpdateResult.Success, target.TryReplace("", "speech", surface.Paste));
-        Assert.AreEqual(1, surface.Pastes);
-        Assert.AreEqual("speech", surface.Document);
-    }
-
-    [TestMethod]
-    public void UnacknowledgedPasteBecomesConflictWithoutRetrying()
-    {
-        var now = DateTimeOffset.UtcNow;
-        var surface = new FakeSurface("", "", "") { DelayPaste = true };
-        var target = new WindowsTextTarget(surface, () => now);
-        Assert.AreEqual(TextTargetUpdateResult.Pending, target.TryReplace("", "speech", surface.Paste));
-        now += WindowsTextTarget.WriteAcknowledgementTimeout;
-        Assert.AreEqual(TextTargetUpdateResult.Conflict, target.TryReplace("", "speech", surface.Paste));
-        Assert.IsTrue(target.HasAttemptedWrite);
         Assert.AreEqual(1, surface.Pastes);
     }
 

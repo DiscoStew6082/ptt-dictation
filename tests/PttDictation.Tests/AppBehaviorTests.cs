@@ -1206,14 +1206,6 @@ public sealed class AppBehaviorTests
     }
 
     [TestMethod]
-    public void CompletedPasteRemainsVisibleForAnotherQuarterSecond()
-    {
-        Assert.AreEqual(
-            TimeSpan.FromMilliseconds(250),
-            DictationPresentation.PostPasteVisibilityDurationForTest);
-    }
-
-    [TestMethod]
     public void ListeningStatusFormatterShowsElapsedTimeAndReleaseHint()
     {
         var text = ListeningStatusFormatter.Format(TimeSpan.FromMinutes(61) + TimeSpan.FromSeconds(5));

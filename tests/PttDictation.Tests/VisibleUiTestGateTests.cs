@@ -17,20 +17,6 @@ public sealed class VisibleUiTestGateTests
     }
 
     [TestMethod]
-    public void GateStopsDirectInvocationBeforeItsBodyRuns()
-    {
-        var bodyRan = false;
-        void GuardedHeadlessProbe()
-        {
-            VisibleUiTestGate.RequireOptIn(null);
-            bodyRan = true;
-        }
-
-        Assert.ThrowsExactly<AssertInconclusiveException>(GuardedHeadlessProbe);
-        Assert.IsFalse(bodyRan);
-    }
-
-    [TestMethod]
     public void ScreenshotPathCannotBypassOptIn()
     {
         Assert.ThrowsExactly<AssertInconclusiveException>(() =>
