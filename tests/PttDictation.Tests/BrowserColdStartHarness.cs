@@ -38,8 +38,9 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         await OnStaAsync(async () =>
         {
             // Start PTT before any process of the browser under test exists.
-            // A surprise runner browser fails the gate without being terminated.
-            AssertNoExistingBrowser(browserKind, output);
+            // Transient Firefox background work may exit naturally; never kill
+            // an unowned process or start the test while one is still running.
+            await WaitForNoExistingBrowserAsync(browserKind, output, CancellationToken.None);
             using var overlay = new StatusOverlayForm();
             using var paster = new LiveClipboardPaster(() => overlay.IsHandleCreated ? overlay.Handle : IntPtr.Zero);
             var started = Stopwatch.StartNew();
@@ -114,7 +115,7 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         try
         {
             hotkey.Start();
-            browser.Start();
+            await browser.StartAsync(token);
             await Until(() => browser.TryActivate(), "browser native foreground window", 20000);
             // Only the page's DOM reports readiness. No test UIA query, WebDriver
             // attachment, provider probing, or arbitrary warmup delay precedes PTT.
@@ -284,6 +285,23 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         await completed.Task.WaitAsync(TimeSpan.FromSeconds(300));
     }
 
+    private static async Task WaitForNoExistingBrowserAsync(ColdStartBrowser kind, string output,
+        CancellationToken cancellationToken)
+    {
+        if (kind != ColdStartBrowser.Firefox)
+        {
+            AssertNoExistingBrowser(kind, output);
+            return;
+        }
+        var started = Stopwatch.StartNew();
+        await ColdStartProcessGate.WaitUntilNoneRunningAsync(
+            () => Process.GetProcessesByName("firefox"), kind.ToString(), observations =>
+                File.AppendAllText(Path.Combine(output, "cold-process-precondition.jsonl"),
+                    JsonSerializer.Serialize(new { observedUtc = DateTime.UtcNow, browser = kind.ToString(),
+                        elapsedMilliseconds = started.ElapsedMilliseconds, observations }) + Environment.NewLine),
+            TimeSpan.FromSeconds(20), cancellationToken);
+    }
+
     private static void AssertNoExistingBrowser(ColdStartBrowser kind, string output)
     {
         var existing = Process.GetProcessesByName(kind.ToString().ToLowerInvariant());
@@ -327,9 +345,9 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         public FirefoxWaitChainDiagnostics.ProcessTarget WaitChainTarget =>
             new(ProcessId, _boundStartedUtc, _boundThreadId);
 
-        public void Start()
+        public async Task StartAsync(CancellationToken cancellationToken)
         {
-            AssertNoExistingBrowser(kind, output);
+            await WaitForNoExistingBrowserAsync(kind, output, cancellationToken);
             Directory.CreateDirectory(_profile);
             // Suppress first-run chrome only. Never force/enable accessibility.
             if (kind == ColdStartBrowser.Firefox) File.WriteAllText(Path.Combine(_profile, "user.js"), """
@@ -346,6 +364,10 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
             string[] arguments = kind == ColdStartBrowser.Firefox
                 ? ["--no-remote", "--profile", _profile, "--new-window", url.AbsoluteUri]
                 : [$"--user-data-dir={_profile}", "--no-first-run", "--no-default-browser-check", "--force-dark-mode", "--new-window", url.AbsoluteUri];
+            cancellationToken.ThrowIfCancellationRequested();
+            // Re-enumerate immediately before launch: a prior empty observation
+            // cannot authorize attaching to a newly appeared browser process.
+            AssertNoExistingBrowser(kind, output);
             _started = DateTime.UtcNow;
             _job = new ColdStartBrowserJob(executable, arguments, observation =>
                 File.AppendAllText(Path.Combine(output, "owned-process-cleanup.jsonl"),

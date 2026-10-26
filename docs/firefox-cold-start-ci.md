@@ -1,5 +1,31 @@
 # Firefox cold-start CI
 
+## Transient runner processes: October 26, 2026
+
+[PR #49's first CI attempt](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40384350978/attempts/1)
+completed ten dictations successfully but rejected the third textarea launch
+because three Firefox processes outside the preceding trial's owned job were
+alive. That job had already proved all member exits and zero active processes
+in 120 milliseconds. The other processes were absent at the next editor's
+precondition check, 12.855 seconds later. Their exact purpose is unknown; the
+saved metadata does not identify the executable that created their root PID.
+The unchanged rerun and post-merge CI passed.
+
+The harness now waits at most twenty seconds for Firefox to become cold before
+initializing PTT and before each trial launch. Each poll re-enumerates processes
+and records identity, exit state and elapsed time. The deadline never restarts
+for a new PID. It then rechecks immediately before launching its isolated
+browser. Any process still running or in an unknown state blocks launch;
+unowned processes are never terminated. The existing ninety-second trial,
+capture, insertion and owned-job-cleanup limits are unchanged. This handles a
+transient startup precondition, not Firefox insertion failures or their retries.
+
+A real-process regression first reproduced the immediate-gate failure, then
+passed when its child exited naturally during the wait. Additional tests cover
+persistent processes, unknown exit state, replacement PIDs, cancellation and
+owned-job cleanup. The older investigations below are dated evidence, not a
+list of unfinished repairs.
+
 Chrome now exercises the same insertion contract in a separate CI job. See
 [browser cold-start CI](browser-cold-start-ci.md) for the shared coverage and
 entry points; this document retains the Firefox-specific diagnosis.

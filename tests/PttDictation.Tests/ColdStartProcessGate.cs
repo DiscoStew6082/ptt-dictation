@@ -67,6 +67,39 @@ internal static class ColdStartProcessGate
             $"Cold test requires no running {browserName} processes on its dedicated runner. Unrelated processes will not be terminated.");
     }
 
+    public static async Task WaitUntilNoneRunningAsync(Func<Process[]> enumerate, string browserName,
+        Action<Observation[]> report, TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(timeout, TimeSpan.Zero);
+        var started = Stopwatch.StartNew();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var processes = enumerate();
+            Observation[] observations;
+            try { observations = processes.Select(Observe).ToArray(); }
+            finally { foreach (var process in processes) process.Dispose(); }
+            report(observations);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (observations.All(value => value.HasExited == true))
+            {
+                // Zero requests one immediate observation; a positive budget
+                // must still be valid when the observation is ready to use.
+                Assert.IsTrue(timeout == TimeSpan.Zero || started.Elapsed < timeout,
+                    $"The empty {browserName} observation arrived after the cold-start deadline.");
+                return;
+            }
+
+            // A busy runner may become cold naturally. Never reset this budget
+            // for a new PID, terminate unowned work, or treat unknown as exited.
+            var remaining = timeout - started.Elapsed;
+            Assert.IsTrue(remaining > TimeSpan.Zero,
+                $"Cold test requires no running {browserName} processes after waiting {timeout.TotalSeconds:0.###} seconds. Unrelated processes will not be terminated.");
+            await Task.Delay(remaining < TimeSpan.FromMilliseconds(100) ? remaining : TimeSpan.FromMilliseconds(100),
+                cancellationToken);
+        }
+    }
+
     private static Observation Observe(Process process)
     {
         int? id = null;

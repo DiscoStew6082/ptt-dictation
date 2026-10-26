@@ -7,6 +7,17 @@ of three launches per editor type. Both textarea and contenteditable editors
 receive two dictations per launch: six cold launches and twelve dictations per
 browser per CI run.
 
+Before PTT initialization and each Firefox launch, the harness allows up to
+twenty seconds for unrelated Firefox processes to exit naturally. It re-enumerates
+every poll, records exit state and elapsed time, and does not reset the budget
+when process IDs change. A final fresh check immediately before launch still
+requires no running or unknown-state browser processes. The harness never
+terminates an unowned process. Persistent or inaccessible processes fail the job;
+Chrome retains its immediate cold-process check. This wait occurs before browser
+launch; each per-trial wait counts toward the existing ninety-second trial
+limit. The initial wait before PTT initialization has its own twenty-second
+limit. Neither wait retries a dictation or changes insertion assertions.
+
 The shared harness exercises PTT's production capture, workflow, UI Automation,
 native Right Ctrl hook, clipboard and Windows input path. Only microphone and
 recognition are replaced with deterministic transcript updates. A dark local
