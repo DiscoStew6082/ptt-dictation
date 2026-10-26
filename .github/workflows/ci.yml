@@ -67,6 +67,10 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-LocalAppDeployment.ps1
 
+      - name: Test public release installer
+        shell: powershell
+        run: ./scripts/Test-ReleaseInstaller.ps1
+
       - name: Test Qwen registration workflow
         shell: pwsh
         run: ./scripts/Test-QwenInstallation.ps1

@@ -38,6 +38,10 @@ jobs:
       - name: Test
         run: dotnet test PttDictation.sln --configuration Release --no-restore --filter "TestCategory!=FirefoxColdStart&TestCategory!=ChromeColdStart"
 
+      - name: Test public release installer
+        shell: powershell
+        run: ./scripts/Test-ReleaseInstaller.ps1
+
       - name: Publish
         run: dotnet publish src\PttDictation.App\PttDictation.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o publish\ptt-dictation-win-x64
 

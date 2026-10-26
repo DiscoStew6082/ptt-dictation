@@ -32,7 +32,9 @@ $liveExe = Join-Path $liveDirectory 'PttDictation.exe'
 
 function Assert-SafeLocalDirectory([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
-    if (-not [IO.Path]::IsPathRooted($Path) -or $Path.StartsWith('\\') -or $Path.StartsWith('//') -or
+    # Windows PowerShell 5.1 lacks Path.IsPathFullyQualified. A drive and root
+    # separator reject relative and drive-relative inputs before normalization.
+    if ($Path -notmatch '^[A-Za-z]:[\\/]' -or $Path.StartsWith('\\') -or $Path.StartsWith('//') -or
         $full -eq [IO.Path]::GetPathRoot($full)) {
         throw 'InstallDirectory must be a fully qualified local directory below a drive root.'
     }
@@ -67,24 +69,26 @@ function Get-RelativeName([string]$Root, [string]$Path) {
     return $full.Substring($prefix.Length)
 }
 
-function Get-PackageHashes([string]$Directory) {
-    foreach ($required in @('PttDictation.exe', 'PttDictation.dll', 'PttDictation.Core.dll', 'System.Private.CoreLib.dll')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Directory $required) -PathType Leaf)) {
-            throw "Incomplete self-contained package: missing $required"
+function Get-PackageHashes([string]$Directory, [switch]$Backup) {
+    if (-not $Backup) {
+        foreach ($required in @('PttDictation.exe', 'PttDictation.dll', 'PttDictation.Core.dll', 'System.Private.CoreLib.dll')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $Directory $required) -PathType Leaf)) {
+                throw "Incomplete self-contained package: missing $required"
+            }
         }
     }
     $hashes = [ordered]@{}
     foreach ($file in Get-ChildItem -LiteralPath $Directory -Recurse -File -Force | Sort-Object FullName) {
         $relative = Get-RelativeName $Directory $file.FullName
-        if ($relative -ne $receiptName) {
+        if ($Backup -or $relative -ne $receiptName) {
             $hashes[$relative] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
         }
     }
     return $hashes
 }
 
-function Assert-PackageHashes([string]$Directory, $Expected) {
-    $actual = Get-PackageHashes $Directory
+function Assert-PackageHashes([string]$Directory, $Expected, [switch]$Backup) {
+    $actual = Get-PackageHashes $Directory -Backup:$Backup
     if ($actual.Count -ne $Expected.Count) { throw 'Installed package file count does not match.' }
     foreach ($name in $Expected.Keys) {
         if ($actual[$name] -ne $Expected[$name]) { throw "Installed file hash mismatch: $name" }
@@ -132,15 +136,39 @@ function Get-PttProcesses {
         if ($commandLine -notin @($liveExe, ('"' + $liveExe + '"'))) {
             throw "Unexpected arguments on PTT Dictation process $($nativeProcess.Id)."
         }
-        $result += [pscustomobject]@{ ProcessId = $nativeProcess.Id; ExecutablePath = $nativePath; CommandLine = $commandLine }
+        $result += [pscustomobject]@{ ProcessId = $nativeProcess.Id; ExecutablePath = $nativePath;
+            CommandLine = $commandLine; CreationDate = $details[0].CreationDate }
     }
     return $result
 }
 
 function Stop-PttProcesses {
     foreach ($process in @(Get-PttProcesses)) {
+        $current = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ProcessId)")
+        if ($current.Count -eq 0) { continue }
+        if ($current[0].ExecutablePath -ne $liveExe -or $current[0].CreationDate -ne $process.CreationDate) {
+            throw 'The live process identity changed before shutdown.'
+        }
+        # Snapshot only this app's workers. Recheck identity after the parent
+        # exits so PID reuse cannot stop another app's transcription process.
+        $workers = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($process.ProcessId) AND Name = 'parakeet-server.exe'" |
+            Where-Object { $_.CreationDate -ge $process.CreationDate })
+        $script:stopAttempted = $true
         Stop-Process -Id $process.ProcessId -ErrorAction Stop
         Wait-Process -Id $process.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+        $remainingApp = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ProcessId)")
+        if ($remainingApp.Count -eq 1 -and $remainingApp[0].CreationDate -eq $process.CreationDate) {
+            throw 'PTT Dictation did not stop before installation.'
+        }
+        foreach ($worker in $workers) {
+            $remaining = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($worker.ProcessId)")
+            if ($remaining.Count -eq 1 -and $remaining[0].ParentProcessId -eq $process.ProcessId -and
+                $remaining[0].CreationDate -eq $worker.CreationDate -and
+                $remaining[0].ExecutablePath -eq $worker.ExecutablePath) {
+                Stop-Process -Id $worker.ProcessId -ErrorAction Stop
+                Wait-Process -Id $worker.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+            }
+        }
     }
     if (@(Get-PttProcesses).Count -ne 0) { throw 'PTT Dictation did not stop before installation.' }
 }
@@ -172,16 +200,20 @@ function Write-StartMenuShortcut {
 }
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'PTT Dictation supports Windows only.' }
-Assert-SafeLocalDirectory $liveDirectory
+Assert-SafeLocalDirectory $InstallDirectory
 
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('PttDictation-install-' + [Guid]::NewGuid().ToString('N'))
 $stage = Join-Path $temporaryRoot 'stage'
 $downloadedPackage = Join-Path $temporaryRoot $packageName
 $downloadedChecksum = Join-Path $temporaryRoot $checksumName
 $backup = $null
+$backupVerified = $false
+$oldHashes = $null
 $hadLive = Test-Path -LiteralPath $liveDirectory -PathType Container
+$createdLive = $false
 $installStarted = $false
 $oldWasRunning = $false
+$stopAttempted = $false
 
 try {
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -220,13 +252,17 @@ try {
     $oldWasRunning = $running.Count -eq 1
     if ($hadLive) {
         Assert-NoLinks $liveDirectory
+        $oldHashes = Get-PackageHashes $liveDirectory -Backup
         $backup = Join-Path (Split-Path $liveDirectory -Parent) ('.backup-' + [Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $backup | Out-Null
         Get-ChildItem -LiteralPath $liveDirectory -Force | Copy-Item -Destination $backup -Recurse -Force
+        Assert-PackageHashes $backup $oldHashes -Backup
+        $backupVerified = $true
     }
     else {
         New-Item -ItemType Directory -Path (Split-Path $liveDirectory -Parent) -Force | Out-Null
         New-Item -ItemType Directory -Path $liveDirectory | Out-Null
+        $createdLive = $true
     }
 
     Stop-PttProcesses
@@ -256,16 +292,20 @@ catch {
     $installError = $_
     try {
         if ($installStarted) {
-            foreach ($process in @(Get-PttProcesses)) {
-                Stop-Process -Id $process.ProcessId -ErrorAction Stop
-                Wait-Process -Id $process.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+            Stop-PttProcesses
+            if ($hadLive) {
+                if (-not $backupVerified) { throw 'A verified backup is unavailable for recovery.' }
+                Copy-Package $backup $liveDirectory
+                Assert-PackageHashes $liveDirectory $oldHashes -Backup
             }
         }
-        if ($null -ne $backup -and (Test-Path -LiteralPath $backup)) {
-            Copy-Package $backup $liveDirectory
-            if ($oldWasRunning -and -not $NoLaunch) { $null = Start-AndVerify }
+        # Backup creation failures leave the live package untouched. A shutdown
+        # failure may still have stopped the app, so restore its running state
+        # separately without copying a partial backup or launching a duplicate.
+        if ($oldWasRunning -and $stopAttempted -and -not $NoLaunch -and @(Get-PttProcesses).Count -eq 0) {
+            $null = Start-AndVerify
         }
-        elseif (-not $hadLive -and (Test-Path -LiteralPath $liveDirectory)) {
+        if ($createdLive -and (Test-Path -LiteralPath $liveDirectory)) {
             $resolvedLive = [IO.Path]::GetFullPath($liveDirectory)
             Assert-SafeLocalDirectory $resolvedLive
             Remove-Item -LiteralPath $resolvedLive -Recurse -Force

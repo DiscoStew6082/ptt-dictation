@@ -79,7 +79,10 @@ Run the deployment regression checks without touching the live installation:
 
 ```powershell
 pwsh -File scripts\Test-LocalAppDeployment.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Test-ReleaseInstaller.ps1
 ```
+
+The public-installer suite uses disposable packages and directories with simulated process boundaries. It covers installation and rollback failures without stopping the daily app. CI and release builds run it under Windows PowerShell 5.1, the installer's minimum supported version. Release acceptance also downloads the published assets through the public latest-release URLs, verifies the checksum and build provenance, and runs the downloaded installer against the selected stable installation path.
 
 Before publishing a release, verify the build and record a SHA-256 checksum for the zip:
 
