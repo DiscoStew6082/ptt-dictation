@@ -17,6 +17,44 @@ import wave
 import qwen_worker as worker
 
 
+class CudaNormalizationTests(unittest.TestCase):
+    """Optional real-kernel regression checks; run with the installed CUDA runtime."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import torch
+        except ImportError:
+            raise unittest.SkipTest("The model-free worker suite does not require PyTorch.")
+        if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+            raise unittest.SkipTest("CUDA BF16 is required for the native-normalization checks.")
+        cls.torch = torch
+
+    def test_native_normalization_preserves_bfloat16_rounding_before_weight(self):
+        torch = self.torch
+        from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
+
+        torch.manual_seed(124)
+        for shape in ((1, 1, 2048), (1, 16, 1, 128), (1, 127, 2048)):
+            with self.subTest(shape=shape), torch.inference_mode():
+                module = Qwen3RMSNorm(shape[-1], eps=1e-6).to(device="cuda", dtype=torch.bfloat16)
+                module.weight.copy_(torch.randn_like(module.weight))
+                values = torch.randn(shape, device="cuda", dtype=torch.bfloat16)
+                original = module(values)
+                weights = module.weight.clone()
+                worker.use_native_cuda_normalization(module, torch)
+                torch.testing.assert_close(module(values), original, rtol=0, atol=0)
+                torch.testing.assert_close(module.weight, weights, rtol=0, atol=0)
+                torch.testing.assert_close(module(values), original, rtol=0, atol=0)
+
+    def test_native_normalization_does_not_replace_other_normalization_layers(self):
+        torch = self.torch
+        module = torch.nn.LayerNorm(128).to(device="cuda", dtype=torch.bfloat16)
+        before = module.forward
+        worker.use_native_cuda_normalization(module, torch)
+        self.assertEqual(module.forward, before)
+
+
 class FakeBackend:
     def __init__(self):
         self.recordings = []
@@ -271,7 +309,8 @@ class WorkerTests(unittest.TestCase):
             AutoModelForMultimodalLM=AutoModel,
             AutoProcessor=AutoProcessor,
         )
-        with patch.dict(sys.modules, {"torch": torch, "transformers": transformers}):
+        with patch.dict(sys.modules, {"torch": torch, "transformers": transformers}), \
+                patch("qwen_worker.use_native_cuda_normalization"):
             worker.QwenBackend(self.model)
 
         self.assertEqual(calls["options"]["device_map"], {"": "cuda:0"})

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import traceback
+from types import MethodType
 from typing import Callable, TextIO
 import wave
 
@@ -93,6 +94,24 @@ def configure_offline_environment() -> None:
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+def use_native_cuda_normalization(model, torch) -> None:
+    """Fuse Qwen's CUDA RMS normalization while preserving its BF16 rounding."""
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
+
+    def forward(module, hidden_states):
+        # Qwen rounds the normalized values back to the input dtype *before*
+        # multiplying by weight. Passing weight to rms_norm would fuse that
+        # multiplication too and change BF16 output, so keep it separate.
+        normalized = torch.nn.functional.rms_norm(
+            hidden_states, (hidden_states.shape[-1],), None, module.variance_epsilon,
+        )
+        return module.weight * normalized
+
+    for module in model.modules():
+        if isinstance(module, Qwen3RMSNorm):
+            module.forward = MethodType(forward, module)
+
+
 class QwenBackend:
     def __init__(self, model_path: Path):
         import torch
@@ -111,6 +130,7 @@ class QwenBackend:
             dtype=torch.bfloat16, device_map={"": device}, attn_implementation="sdpa",
         ).eval()
         if use_cuda:
+            use_native_cuda_normalization(self.model, torch)
             torch.cuda.synchronize()
 
     def transcribe(self, recording: Recording) -> GeneratedTranscript:
