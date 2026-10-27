@@ -121,7 +121,7 @@ Parakeet-preview/native-final pipeline passed silence, cancellation, fresh-worke
 recovery and malformed-audio recovery; native cancellation returned in 4.9 ms.
 
 Final source validation passed 639 .NET tests, 31 worker Python tests (including
-the CUDA checks), 20 benchmark tests, one native-registration rejection test,
+the CUDA checks), 21 benchmark/corpus tests, one native-registration rejection test,
 and seven existing Qwen-registration checks. The 34 opt-in visible-UI tests were
 not run on the user's desktop. Independent review found no blocking issues.
 

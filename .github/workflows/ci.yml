@@ -108,7 +108,7 @@ jobs:
         run: python -B -m unittest discover -s tools/qwen-installer -p test_native_registration.py -v
 
       - name: Test Qwen benchmark measurements and worker cleanup
-        run: python -B -m unittest discover -s tools/qwen-benchmark -p test_benchmark.py -v
+        run: python -B -m unittest discover -s tools/qwen-benchmark -p test_*.py -v
 
   firefox-cold-start:
     name: Firefox cold start
