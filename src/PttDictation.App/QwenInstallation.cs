@@ -5,6 +5,7 @@ namespace PttDictation.App;
 internal static class QwenInstallation
 {
     public static string ManifestPath(string appData) => Path.Combine(appData, "qwen-installation.json");
+    internal static string NativeManifestPath(string appData) => Path.Combine(appData, "qwen-native-installation.json");
 
     internal static (string Python, string Model) ReadRegisteredPaths(string appData)
     {
@@ -37,9 +38,24 @@ internal static class QwenInstallation
         if (!File.Exists(Path.Combine(model, "model.safetensors"))
             && !File.Exists(Path.Combine(model, "model.safetensors.index.json")))
             throw new InvalidOperationException("The local Qwen model weights are missing.");
-        var worker = Path.Combine(AppContext.BaseDirectory, "qwen-worker", "qwen_worker.py");
+        string? native = NativeManifestPath(appData);
+        if (File.Exists(native))
+        {
+            using var nativeManifest = JsonDocument.Parse(File.ReadAllText(native));
+            var nativeEntry = nativeManifest.RootElement;
+            if (nativeEntry.GetProperty("schema").GetInt32() != 1
+                || nativeEntry.GetProperty("modelId").GetString() != "Qwen/Qwen3-ASR-1.7B-hf"
+                || nativeEntry.GetProperty("llamaCommit").GetString() != "620d2225cc436ab0b001e3200e590e3b286ef9ab"
+                || nativeEntry.GetProperty("modelRevision").GetString() != "36a678687ba7d07a74ca70ccb0e36902e005fb80")
+                throw new InvalidOperationException("The optional native Qwen installation is not supported. Re-register it or disable it to use the existing runtime.");
+            foreach (var property in new[] { "serverPath", "modelPath", "projectorPath" })
+                if (!File.Exists(LocalPath(nativeEntry.GetProperty(property).GetString())))
+                    throw new InvalidOperationException("An optional native Qwen asset is missing. Re-register it or disable it to use the existing runtime.");
+        }
+        else native = null;
+        var worker = Path.Combine(AppContext.BaseDirectory, "qwen-worker", native is null ? "qwen_worker.py" : "native_qwen.py");
         if (!File.Exists(worker)) throw new InvalidOperationException("The Qwen worker is missing from this app package.");
-        return new(python, model, worker);
+        return new(python, model, worker, native);
     }
 
     private static string LocalPath(string? path)

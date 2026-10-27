@@ -8,7 +8,8 @@ using PttDictation.Core;
 
 namespace PttDictation.App;
 
-internal sealed record QwenTranscriberOptions(string PythonPath, string ModelPath, string WorkerPath);
+internal sealed record QwenTranscriberOptions(string PythonPath, string ModelPath, string WorkerPath,
+    string? NativeConfigPath = null);
 
 /// <summary>Owns one offline, resident Qwen worker and serializes its JSON-lines protocol.</summary>
 internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscriber, IDisposable
@@ -40,7 +41,8 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
         _options = new(
             RequireLocalPath(options.PythonPath, directory: false),
             RequireLocalPath(options.ModelPath, directory: true),
-            RequireLocalPath(options.WorkerPath, directory: false));
+            RequireLocalPath(options.WorkerPath, directory: false),
+            options.NativeConfigPath is null ? null : RequireLocalPath(options.NativeConfigPath, directory: false));
         _processFactory = processFactory;
         _startupTimeout = startupTimeout;
         _requestTimeout = requestTimeout;
@@ -180,6 +182,21 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
         using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
         {
+            if (_options.NativeConfigPath is not null)
+            {
+                using var bootstrap = await worker.ReadMessageAsync(startup.Token).ConfigureAwait(false);
+                var message = bootstrap.RootElement;
+                if (ReadString(message, "type") != "bootstrap"
+                    || !message.TryGetProperty("protocol", out var nativeProtocol) || nativeProtocol.ValueKind != JsonValueKind.Number
+                    || !nativeProtocol.TryGetInt32(out var nativeVersion) || nativeVersion != 1
+                    || !message.TryGetProperty("pid", out var nativePid) || nativePid.ValueKind != JsonValueKind.Number
+                    || !nativePid.TryGetInt32(out var pid) || pid <= 0)
+                    throw new InvalidDataException("Native Qwen did not announce its startup process.");
+                worker.ContainNativeWrapper(pid);
+                await worker.Process.StandardInput.WriteLineAsync("{\"type\":\"start\",\"protocol\":1}".AsMemory(), startup.Token)
+                    .WaitAsync(startup.Token).ConfigureAwait(false);
+                await worker.Process.StandardInput.FlushAsync(startup.Token).WaitAsync(startup.Token).ConfigureAwait(false);
+            }
             using var response = await worker.ReadMessageAsync(startup.Token).ConfigureAwait(false);
             var root = response.RootElement;
             if (ReadString(root, "type") != "ready"
@@ -222,6 +239,11 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
         start.ArgumentList.Add(_options.WorkerPath);
         start.ArgumentList.Add("--model");
         start.ArgumentList.Add(_options.ModelPath);
+        if (_options.NativeConfigPath is not null)
+        {
+            start.ArgumentList.Add("--native-config");
+            start.ArgumentList.Add(_options.NativeConfigPath);
+        }
         start.Environment["HF_HUB_OFFLINE"] = "1";
         start.Environment["TRANSFORMERS_OFFLINE"] = "1";
         start.Environment["HF_HUB_DISABLE_TELEMETRY"] = "1";
@@ -286,6 +308,7 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
         private int _stopped;
         private readonly Task _errorDrain;
         private readonly QwenOwnedProcessJob _job;
+        private bool _nativeContained;
         public Process Process { get; }
 
         public Worker(Process process, QwenOwnedProcessJob job)
@@ -296,6 +319,15 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
         }
 
         public string ErrorTail { get { lock (_errors) return _errorTail; } }
+
+        public void ContainNativeWrapper(int pid)
+        {
+            using var wrapper = System.Diagnostics.Process.GetProcessById(pid);
+            if (!QwenOwnedProcessJob.IsProcessOrDescendant(Process, wrapper))
+                throw new InvalidDataException("Native Qwen reported an unrelated startup process.");
+            _job.AssignAdditional(wrapper);
+            _nativeContained = true;
+        }
 
         public async Task<JsonDocument> ReadMessageAsync(CancellationToken cancellationToken)
         {
@@ -343,9 +375,10 @@ internal sealed class PersistentQwenTranscriber : ITranscriber, IWarmableTranscr
             if (Interlocked.Exchange(ref _stopped, 1) != 0) return;
             // Closing the job is authoritative for the process tree, including
             // when the owning app is terminated abruptly by its updater.
-            _job.Dispose();
             try
             {
+                if (_nativeContained) _job.TerminateAndWait();
+                else _job.Dispose();
                 if (!Process.WaitForExit(3000))
                 {
                     Process.Kill(entireProcessTree: true);
@@ -385,6 +418,64 @@ internal sealed class QwenOwnedProcessJob : IDisposable
 
     public void Dispose() => _handle.Dispose();
 
+    public void TerminateAndWait()
+    {
+        try
+        {
+            if (!TerminateJobObject(_handle, 1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            var timer = Stopwatch.StartNew();
+            while (true)
+            {
+                if (!QueryInformationJobObject(_handle, 1, out var accounting, (uint)Marshal.SizeOf<BasicAccounting>(), IntPtr.Zero))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (accounting.ActiveProcesses == 0) return;
+                if (timer.Elapsed > TimeSpan.FromSeconds(3))
+                    throw new InvalidOperationException("The owned native Qwen process tree did not exit during cleanup.");
+                Thread.Sleep(10);
+            }
+        }
+        finally { _handle.Dispose(); }
+    }
+
+    public void AssignAdditional(Process process)
+    {
+        if (!IsProcessInJob(process.SafeHandle, _handle, out var contained))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (!contained && !AssignProcessToJobObject(_handle, process.SafeHandle))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    public static bool IsProcessOrDescendant(Process parent, Process candidate)
+    {
+        var parentStarted = parent.StartTime.ToUniversalTime();
+        var childStarted = candidate.StartTime.ToUniversalTime();
+        if (candidate.Id == parent.Id) return childStarted == parentStarted;
+        if (childStarted < parentStarted) return false;
+        using var snapshot = CreateToolhelp32Snapshot(2, 0); // TH32CS_SNAPPROCESS
+        if (snapshot.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf<ProcessEntry>() };
+        var parents = new Dictionary<uint, uint>();
+        if (!Process32First(snapshot, ref entry)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        do { parents[entry.ProcessId] = entry.ParentProcessId; } while (Process32Next(snapshot, ref entry));
+        var current = (uint)candidate.Id;
+        var seen = new HashSet<uint>();
+        while (seen.Add(current) && seen.Count <= 64 && parents.TryGetValue(current, out current))
+        {
+            if (current == parent.Id) return parentStarted <= childStarted;
+            // Windows retains parent PIDs after exit; creation-time ordering
+            // rejects a recycled PID that now belongs to an unrelated process.
+            try
+            {
+                using var ancestor = Process.GetProcessById((int)current);
+                var ancestorStarted = ancestor.StartTime.ToUniversalTime();
+                if (ancestorStarted < parentStarted || ancestorStarted > childStarted) return false;
+                childStarted = ancestorStarted;
+            }
+            catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception) { return false; }
+        }
+        return false;
+    }
+
     [DllImport("kernel32.dll", EntryPoint = "CreateJobObjectW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateJobObject(IntPtr securityAttributes, string? name);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -393,6 +484,41 @@ internal sealed class QwenOwnedProcessJob : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool AssignProcessToJobObject(SafeFileHandle job, SafeProcessHandle process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsProcessInJob(SafeProcessHandle process, SafeFileHandle job, [MarshalAs(UnmanagedType.Bool)] out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryInformationJobObject(SafeFileHandle job, int infoClass, out BasicAccounting accounting, uint length, IntPtr returnedLength);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeFileHandle CreateToolhelp32Snapshot(uint flags, uint processId);
+    [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32First(SafeFileHandle snapshot, ref ProcessEntry entry);
+    [DllImport("kernel32.dll", EntryPoint = "Process32NextW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32Next(SafeFileHandle snapshot, ref ProcessEntry entry);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ProcessEntry
+    {
+        public uint Size, Usage, ProcessId;
+        public nuint DefaultHeapId;
+        public uint ModuleId, Threads, ParentProcessId;
+        public int BasePriority;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string ExeFile;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicAccounting
+    {
+        public long TotalUserTime, TotalKernelTime, ThisPeriodUserTime, ThisPeriodKernelTime;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicLimits

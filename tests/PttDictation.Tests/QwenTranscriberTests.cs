@@ -224,6 +224,28 @@ public sealed class QwenTranscriberTests
         throw new InvalidOperationException();
     }
 
+    [TestMethod]
+    public async Task NativeBootstrapContainsWorkerBeforeAllowingItsChildToStart()
+    {
+        using var fixture = new WorkerFixture("native-child");
+        using var adapter = fixture.CreateNativeAdapter();
+        await adapter.TranscribeAsync(fixture.Audio(), CancellationToken.None);
+        Assert.AreEqual(2, fixture.ProcessIds.Length);
+        adapter.Dispose();
+        Assert.IsFalse(fixture.ProcessIds.Any(WorkerFixture.IsRunning), "Native cancellation must drain the entire tree before the next startup.");
+        await fixture.AssertOwnedProcessesExitedAsync();
+    }
+
+    [TestMethod]
+    public async Task NativeBootstrapRejectsUnrelatedPidBeforeAcknowledgingStartup()
+    {
+        using var fixture = new WorkerFixture("native-wrong-pid");
+        using var adapter = fixture.CreateNativeAdapter();
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => adapter.WarmUpAsync(CancellationToken.None));
+        Assert.AreEqual(1, fixture.ProcessIds.Length);
+        await fixture.AssertOwnedProcessesExitedAsync();
+    }
+
     private sealed class WorkerFixture : IDisposable
     {
         private readonly Queue<string> _modes;
@@ -244,7 +266,7 @@ public sealed class QwenTranscriberTests
             Directory.CreateDirectory(model);
             var script = Path.Combine(Root, "protocol fixture.ps1");
             File.WriteAllText(script, """
-                param([string]$Mode, [string]$RequestLog, [string]$ProcessLog)
+                param([string]$Mode, [string]$RequestLog, [string]$ProcessLog, [int]$ForbiddenPid)
                 $ErrorActionPreference = 'Stop'
                 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
                 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -253,6 +275,12 @@ public sealed class QwenTranscriberTests
                 # Readiness includes loading the JSON protocol cmdlets, as it does for the real worker.
                 $null = '{"warmup":true}' | ConvertFrom-Json
                 $null = @{ warmup = $true } | ConvertTo-Json -Compress
+                if ($Mode.StartsWith('native-')) {
+                    $reportedPid = if ($Mode -eq 'native-wrong-pid') { $ForbiddenPid } else { $PID }
+                    [Console]::WriteLine((@{type='bootstrap'; protocol=1; pid=$reportedPid} | ConvertTo-Json -Compress))
+                    $ack = [Console]::ReadLine() | ConvertFrom-Json
+                    if ($ack.type -ne 'start' -or $ack.protocol -ne 1) { exit 19 }
+                }
                 if ($Mode -eq 'bad-ready') { [Console]::WriteLine('{"type":"ready","protocol":2}') }
                 else { [Console]::WriteLine('{"type":"ready","protocol":1}') }
                 while ($null -ne ($line = [Console]::ReadLine())) {
@@ -262,7 +290,7 @@ public sealed class QwenTranscriberTests
                     if ($Mode -eq 'exit') { exit 17 }
                     if ($Mode -eq 'malformed') { [Console]::WriteLine('not JSON'); continue }
                     if ($Mode -eq 'stderr') { [Console]::Error.Write(('x' * 100000)); [Console]::Error.Flush() }
-                    if ($Mode -eq 'child') {
+                    if ($Mode -in @('child', 'native-child')) {
                         $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 60"' -PassThru -WindowStyle Hidden
                         [System.IO.File]::AppendAllText($ProcessLog, $child.Id.ToString() + [Environment]::NewLine)
                     }
@@ -283,6 +311,9 @@ public sealed class QwenTranscriberTests
         public PersistentQwenTranscriber CreateAdapter(TimeSpan? startupTimeout = null, TimeSpan? requestTimeout = null)
             => new(Options, CreateProcess, startupTimeout ?? TimeSpan.FromSeconds(15), requestTimeout ?? TimeSpan.FromSeconds(10));
 
+        public PersistentQwenTranscriber CreateNativeAdapter()
+            => new(Options with { NativeConfigPath = Options.WorkerPath }, CreateProcess, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(10));
+
         private Process CreateProcess(ProcessStartInfo requested)
         {
             FactoryCalls++;
@@ -300,7 +331,7 @@ public sealed class QwenTranscriberTests
             };
             foreach (var value in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-File", Options.WorkerPath, "-Mode", _modes.Count > 0 ? _modes.Dequeue() : "normal",
-                "-RequestLog", RequestLog, "-ProcessLog", ProcessLog })
+                "-RequestLog", RequestLog, "-ProcessLog", ProcessLog, "-ForbiddenPid", Environment.ProcessId.ToString() })
                 start.ArgumentList.Add(value);
             var process = new Process { StartInfo = start };
             _created.Add(process);
