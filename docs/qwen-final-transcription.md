@@ -1,6 +1,6 @@
 # Qwen final transcription
 
-Qwen final recognition is part of the merged and locally deployed [October 26 application baseline](project-status.md). The installed recognizer and ordinary desktop dictation/cancellation checks passed. The September validation and rollback notes below describe their original trials; they are not current deployment blockers or default rollback instructions.
+Qwen final recognition is part of the merged and locally deployed [October 26 application baseline](project-status.md). That baseline passed ordinary desktop dictation/cancellation checks. The later local native-runtime update has its own [performance and acceptance evidence](research/qwen-latency-2026-10-26.md). The September validation and rollback notes below describe their original trials; they are not current deployment blockers or default rollback instructions.
 
 Select **Qwen3-ASR 1.7B (CPU or CUDA)** under **Final recognition** in Settings to retain Parakeet live preview and use Qwen after stopping. The existing hold/toggle keys, corrections, cancellation, textbox protections, and Session History remain in use. Settings changes apply to the next recording.
 

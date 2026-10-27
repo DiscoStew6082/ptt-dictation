@@ -125,6 +125,29 @@ the CUDA checks), 21 benchmark/corpus tests, one native-registration rejection t
 and seven existing Qwen-registration checks. The 34 opt-in visible-UI tests were
 not run on the user's desktop. Independent review found no blocking issues.
 
-Deployment verification uses the existing stable installation and its receipt,
-followed by public-fixture requests to the installed app. Source and replay
-results do not establish physical microphone/hotkey/editor acceptance.
+## Installed verification
+
+Source commit `5397792` was staged, then installed with `Update-LocalApp.ps1` at
+this machine's existing stable `publish/ptt-dictation-win-x64/PttDictation.exe`
+path. The updater launched through Explorer normally with no arguments and
+verified all 605 package hashes; a separate `-VerifyOnly` pass confirmed the
+receipt and one canonical app process. Native assets were independently pinned,
+copied and verified under the permanent local application-data directory.
+
+Public-fixture requests through that running app produced these medians:
+
+| Recording | Before, worker | Installed, worker | Installed, whole endpoint |
+| --- | ---: | ---: | ---: |
+| 5.855 seconds | 1.680 s | 0.389 s | 0.469 s |
+| 29.4 seconds | 5.496 s | 1.320 s | 1.391 s |
+
+Each installed result exactly matched its original transcript; three silence
+requests remained empty. No request-audio directories remained afterward. The
+first short request after restart took 0.748 s in the worker; the table reports
+the median of all three requests, not a claim that startup has no cost.
+
+Physical microphone/hotkey/editor acceptance remains unverified for this build.
+The Wireless microphone was unmuted at full software volume but reported zero
+signal during the input check, including the earlier public-speaker probe.
+Source, pipeline replay and installed endpoint evidence do not replace that
+physical interaction. No microphone setting was changed.
