@@ -4,7 +4,7 @@ This work preserves Qwen3-ASR 1.7B final recognition and Parakeet live preview.
 The originally suggested [qwen3_tts_rs](https://github.com/badlogic/qwen3_tts_rs)
 produces speech from text; it cannot replace a speech recognizer. The native
 recognition candidate uses [llama.cpp b11669](https://github.com/ggml-org/llama.cpp/releases/tag/b11669)
-and the [official Qwen3-ASR GGUF conversion](https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF).
+and the [ggml-org Qwen3-ASR GGUF conversion](https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF).
 
 ## Baseline and decision
 
@@ -146,8 +146,9 @@ requests remained empty. No request-audio directories remained afterward. The
 first short request after restart took 0.748 s in the worker; the table reports
 the median of all three requests, not a claim that startup has no cost.
 
-Physical microphone/hotkey/editor acceptance remains unverified for this build.
-The Wireless microphone was unmuted at full software volume but reported zero
-signal during the input check, including the earlier public-speaker probe.
-Source, pipeline replay and installed endpoint evidence do not replace that
-physical interaction. No microphone setting was changed.
+The automation input check initially reported zero signal from the Wireless
+microphone, so physical microphone/hotkey/editor acceptance was left open at
+deployment. No microphone setting was changed. On October 27, the user responded
+“It's working” after the request to try normal dictation, closing ordinary live
+dictation acceptance for this installed build. This is user-confirmed interaction
+evidence, separate from the source, pipeline replay and endpoint checks.

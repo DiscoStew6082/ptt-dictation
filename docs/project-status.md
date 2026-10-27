@@ -1,15 +1,15 @@
 # Project status
 
-Last user-confirmed dictation baseline on October 26, 2026: [`e19dff4`](https://github.com/DiscoStew6082/ptt-dictation/commit/e19dff463fafb734ccfd06e71735ef6d0365f4bd). The later maintenance cleanup below preserves its active dictation behavior. Use this page to distinguish completed work from the dated investigation records elsewhere in `docs/` and `DIAGNOSTICS.md`. Historical test totals describe their named baseline.
+Last user-confirmed dictation baseline: installed source `5397792`, confirmed working on October 27, 2026 after the native Qwen latency update. Use this page to distinguish completed work from the dated investigation records elsewhere in `docs/` and `DIAGNOSTICS.md`. Historical test totals describe their named baseline.
 
 ## October 26 local Qwen latency update
 
-- Installed source `5397792` on local branch `codex/qwen-latency`; not pushed or released. Ordinary Qwen final inference now uses the optional native CUDA adapter with the same 1.7B model and BF16 weights. Parakeet preview and insertion behavior remain unchanged.
+- Installed source `5397792` contains the native Qwen latency update prepared on `codex/qwen-latency`. Ordinary Qwen final inference now uses the optional native CUDA adapter with the same 1.7B model and BF16 weights. Parakeet preview and insertion behavior remain unchanged.
 - Installed worker medians improved from 1.680 s to 0.389 s on a 5.855-second recording, and from 5.496 s to 1.320 s on a 29.4-second recording. The returned transcripts exactly matched the original engine. The corrected public corpus passed every per-case accuracy/stability gate; see the [full evaluation](research/qwen-latency-2026-10-26.md).
 - Recordings over five minutes retain the original whole-recording worker and its limits. That fallback, subsequent native reload, cancellation and descendant cleanup were verified. It does not receive the native-path speedup.
 - Source validation passed 639 .NET tests, 53 Python tests and seven existing registration checks. The 34 opt-in visible-UI tests were not run on this desktop. Independent review found no blockers.
 - The normal updater preserved this machine's existing stable executable path, verified 605 package files and one normally launched process, and retained the previous package. Installed public-fixture endpoint checks passed and left no temporary request audio.
-- Physical hotkey/microphone/editor acceptance for this new build remains unverified: the Wireless microphone reported zero signal. The earlier user-confirmed interaction below applies to its named baseline, not automatically to this update.
+- The user confirmed “It's working” on October 27 after being asked to try normal dictation. This closes ordinary live dictation acceptance for installed source `5397792`; the earlier zero-input automation probe remains historical evidence, not a current blocker. It does not establish every editor-specific edge case or phone interaction.
 
 ## October 26 maintenance cleanup
 

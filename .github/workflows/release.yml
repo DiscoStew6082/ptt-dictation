@@ -39,7 +39,10 @@ jobs:
         run: dotnet test PttDictation.sln --configuration Release --no-restore --filter "TestCategory!=FirefoxColdStart&TestCategory!=ChromeColdStart"
 
       - name: Test shipped Qwen worker
-        run: python -B -m unittest discover -s tools/qwen-worker -p test_qwen_worker.py -v
+        run: python -B -m unittest discover -s tools/qwen-worker -p test_*.py -v
+
+      - name: Test native Qwen asset registration
+        run: python -B -m unittest discover -s tools/qwen-installer -p test_native_registration.py -v
 
       - name: Test public release installer
         shell: powershell

@@ -44,8 +44,13 @@ same. See the [latency evaluation](research/qwen-latency-2026-10-26.md) for meas
 results and the limits of the quality comparison.
 
 This advanced installation uses the pinned Windows CUDA runtime and model files
-listed in `tools/qwen-installer/native-assets.json`. After obtaining those exact
-assets, register them with:
+listed in `tools/qwen-installer/native-assets.json`. The application ZIP contains
+the worker adapters, not the registration script or large native assets. Download
+and extract the **Source code (zip)** for the same release tag, or check out that
+tag, to obtain `scripts/Register-QwenNativeInstallation.ps1` together with its
+matching `tools/qwen-installer/native-assets.json`. Keep their source-directory
+layout. After obtaining the exact assets listed in that manifest, run from the
+extracted source root:
 
 ```powershell
 pwsh -File scripts/Register-QwenNativeInstallation.ps1 -SourceDirectory 'C:\Qwen\downloaded-native' -InstallDirectory 'C:\Qwen\native'
