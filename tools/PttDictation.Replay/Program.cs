@@ -11,6 +11,12 @@ if (args.Length == 3 && args[0] == "--capture-stop-probe-worker")
 
 if (args.Length == 3 && args[0] == "--qwen-probe")
     return await QwenIntegrationProbe.RunAsync(args[1], args[2]);
+if (args.Length == 3 && args[0] == "--qwen-setup-probe")
+    return await QwenSetupProbe.RunAsync(args[1], args[2]);
+if (args.Length == 3 && args[0] == "--qwen-setup-retry")
+    return await QwenSetupProbe.RunAsync(args[1], args[2], requireEmpty: false);
+if (args.Length == 3 && args[0] == "--qwen-setup-ui")
+    return await QwenSetupProbe.RunUiAsync(args[1], args[2]);
 
 if (args.Length == 2 && args[0] == "--notepad-probe")
     return NativeInsertionProbe.Run(args[1]);

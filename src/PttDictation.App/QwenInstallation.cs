@@ -79,8 +79,10 @@ internal static class QwenInstallation
     {
         try
         {
-            _ = Load(appData);
-            return "Configured locally. When selected, loads in the background after app startup or selection and stays ready for later dictations.";
+            var options = Load(appData);
+            return options.NativeConfigPath is not null
+                ? "Qwen is ready with the faster native CUDA engine. When selected, loads in the background and stays ready for later dictations."
+                : "Qwen is ready using the standard engine. Choose Check Qwen setup to enable native acceleration on supported NVIDIA hardware.";
         }
         catch (Exception error)
         {

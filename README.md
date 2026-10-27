@@ -4,7 +4,7 @@
 
 PTT Dictation is a dark-mode-first Windows push-to-talk dictation app that runs speech recognition locally. Hold your selected hold-to-talk key, speak, and release: the app records a temporary 16 kHz mono WAV and inserts live transcription into the original textbox when its editor supports safe text replacement. The final recognition result replaces that recording's text in place. Other supported editable fields receive one final paste. The defaults are Right Ctrl for hold-to-talk and Right Shift for toggle-to-talk.
 
-It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. An optional local Qwen3-ASR 1.7B worker can provide the final transcript after Stop, using CUDA when available and CPU otherwise. Existing installations continue using Parakeet until Qwen is selected in Settings. See [Qwen final transcription](docs/qwen-final-transcription.md) for setup and behavior. Optional [Android LAN dictation](docs/qwen-lan.md) shares the same Qwen worker with a phone voice keyboard.
+It is named for the workflow rather than a particular AI vendor or model. Parakeet through `parakeet.cpp` provides live preview. Optional Qwen3-ASR 1.7B provides the final transcript after Stop. **Download Qwen** automatically sets up native CUDA inference on supported NVIDIA hardware and the standard CPU backend otherwise. Existing Qwen users can choose **Check Qwen setup** to add native acceleration. Existing installations continue using Parakeet until Qwen is selected and Settings are saved. See [Qwen final transcription](docs/qwen-final-transcription.md) for hardware requirements, setup, and behavior. Optional [Android LAN dictation](docs/qwen-lan.md) shares the same Qwen worker with a phone voice keyboard.
 
 See [project status](docs/project-status.md) for the verified application baseline, deployment and live acceptance, and the remaining work. Dated investigation notes describe their original checkpoints, not the current backlog.
 
@@ -41,7 +41,7 @@ Implementation highlights:
 
 - **Native shell UX:** `NotifyIcon` tray app, dark Windows Forms settings/history windows, non-activating topmost status overlay, and audible state feedback.
 - **Audio path:** WASAPI shared-mode capture writes 16-bit, 16 kHz, mono PCM WAV files for `parakeet-cli`.
-- **Runtime management:** CPU is the safe first-run default. A saved CUDA choice remains authoritative across app updates, with an automatic CPU retry path if CUDA transcription fails.
+- **Runtime management:** Parakeet starts on CPU. Its saved CUDA choice remains authoritative across app updates, with an automatic CPU retry path if CUDA transcription fails. Qwen setup checks hardware separately and verifies native warmup before enabling acceleration.
 - **Asset integrity:** Runtime zip files and built-in GGUF models use pinned SHA-256 checks; extracted runtime files are revalidated through a manifest.
 - **Archive hardening:** Runtime zip entries are checked before extraction so archive paths cannot escape the runtime directory.
 - **Operational polish:** Process timeout/cancellation handling, single-instance guard, local transcript corrections with preview, best-effort clipboard restoration, session-only transcript history, and cleanup warnings if a temporary WAV cannot be deleted.
@@ -105,7 +105,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-PttDictation.ps1 `
 
 Release builds are self-contained, so users do not need to install the .NET SDK or runtime. The app is not code-signed yet, so Windows SmartScreen may display a warning.
 
-The runtime preference and other user settings are stored separately in `%LOCALAPPDATA%\PttDictation\settings.json`. A new profile starts on CPU. Reinstalling or updating the program files does not rewrite that file, so a later CPU or CUDA choice remains selected. The development updater changes settings only when `-SettingsSource` is explicitly supplied.
+The runtime preference and other user settings are stored separately in `%LOCALAPPDATA%\PttDictation\settings.json`. A new profile starts with Parakeet on CPU. Reinstalling or updating the program files does not rewrite that file, so a later CPU or CUDA preview choice remains selected. Qwen setup selects its inference backend independently. The development updater changes settings only when `-SettingsSource` is explicitly supplied.
 
 ## First Run
 
@@ -119,6 +119,12 @@ On first use the app downloads assets under `%LOCALAPPDATA%\PttDictation`:
 
 Expect first-run downloads to be hundreds of MB for the default model and runtime assets. The optional larger multilingual model is about 1.4 GB.
 
+For Qwen final recognition, choose **Download Qwen** in Settings, or **Check Qwen setup** for an existing installation. Native setup needs Windows x64 and NVIDIA CUDA device 0 with at least 8 GiB VRAM, compute capability 8.0 or newer, and a driver exposing CUDA 12.4 or newer. Setup downloads verified assets and tests native loading before activation. Unsupported hardware uses the standard backend; a temporary hardware or native-loading failure shows the fallback and reason, and **Check Qwen setup** retries it. Keep Qwen selected and save Settings to use it.
+
+Automatic detection requires `CUDA_VISIBLE_DEVICES` to be unset. If you use that environment override, clear it and restart the app before choosing **Check Qwen setup**, or retain the standard backend.
+
+Qwen setup is a substantial separate download: the HF model is about 4.1 GB, plus the Python runtime and packages; native acceleration adds about 5.37 GB of downloads. These assets are not bundled in the application ZIP. App startup does not silently download Qwen assets. Recordings over five minutes use the original whole-recording worker, which runs on CPU with the managed setup; they do not receive the native speedup.
+
 The tray icon is red while recording or processing and green when idle, including after completion, cancellation, or failure. Open the tray menu for settings, model downloads, transcript correction preview, and session-only transcript history.
 
 To try the low-latency realtime display, open settings and select one of the experimental realtime models:
@@ -126,7 +132,7 @@ To try the low-latency realtime display, open settings and select one of the exp
 - `Parakeet Realtime EOU 120M Q8_0`
 - `Parakeet Realtime EOU 120M F16`
 
-Leave transcription mode on `Auto`. The app warms one persistent local `parakeet-server` process when recording begins, reuses the loaded model for overlapping live updates, and sends the complete recording through that same loaded model after release. Realtime EOU models are continued after every pause marker until the entire recording has been consumed. This avoids both first-pause truncation and launching a separate CLI process for every update. If a downloaded runtime does not include the local server, the app falls back to the selected batch or `parakeet-cli --stream` mode.
+Leave transcription mode on `Auto`. The app warms one persistent local `parakeet-server` process when recording begins and reuses the loaded model for overlapping live updates. With Parakeet selected for final recognition, it also sends the complete recording through that same loaded model after release. Realtime EOU models are continued after every pause marker until the entire recording has been consumed. This avoids both first-pause truncation and launching a separate CLI process for every update. If a downloaded runtime does not include the local server, the app falls back to the selected batch or `parakeet-cli --stream` mode.
 
 ## Downloaded Assets
 
@@ -134,6 +140,7 @@ This repository is licensed under MIT. The runtime and model assets downloaded o
 
 - `parakeet.cpp` runtime archives are downloaded from the `mudler/parakeet.cpp` GitHub release `v0.4.0`. Runtime archives are verified with pinned SHA-256 hashes before extraction.
 - GGUF model files are downloaded from `mudler/parakeet-cpp-gguf` on Hugging Face. Built-in model downloads are checked for minimum expected size and pinned SHA-256 hashes; configure a local model path in settings only when you trust that local model file.
+- Qwen setup downloads pinned Python packages and the Qwen3-ASR 1.7B HF model. On supported hardware it also downloads the pinned llama.cpp CUDA runtime and ggml-org BF16 model/projector files, verifies sizes and SHA-256 hashes, and checks native warmup before activation. The same 1.7B model and BF16 weights are retained; setup does not switch to a smaller or quantized model.
 
 Review the upstream repositories for their own license terms before redistributing bundled runtime or model assets.
 

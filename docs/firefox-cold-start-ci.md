@@ -1,5 +1,7 @@
 # Firefox cold-start CI
 
+This page preserves dated browser investigation and acceptance evidence. The former **Firefox lock investigation** workflow described below has been retired; its manual trigger and investigation matrix are historical. The Firefox cold-start job in the current CI workflow remains the active browser acceptance check.
+
 ## Transient runner processes: October 26, 2026
 
 [PR #49's first CI attempt](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40384350978/attempts/1)

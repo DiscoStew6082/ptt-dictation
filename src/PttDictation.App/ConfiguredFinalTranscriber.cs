@@ -34,6 +34,19 @@ internal sealed class ConfiguredFinalTranscriber : ITranscriber, IWarmableTransc
 
     public Task WarmUpAsync(CancellationToken cancellationToken) => WarmUpAsync(_settings().FinalTranscriptionEngine, cancellationToken);
 
+    internal async Task RunWithQwenUnloadedAsync(Func<CancellationToken, Task> action, CancellationToken token)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _lifetime.Token);
+        await _gate.WaitAsync(linked.Token).ConfigureAwait(false);
+        try
+        {
+            RetireQwen();
+            await action(linked.Token).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
     private async Task WarmUpAsync(FinalTranscriptionEngine engine, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);

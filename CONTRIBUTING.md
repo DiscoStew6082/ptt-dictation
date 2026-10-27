@@ -18,7 +18,9 @@ Run the default local checks before opening a pull request:
 dotnet restore PttDictation.sln --locked-mode
 dotnet test PttDictation.sln --configuration Release --no-restore
 dotnet list PttDictation.sln package --vulnerable --include-transitive
-python -B -m unittest discover -s tools/qwen-worker -p test_qwen_worker.py -v
+python -B -m unittest discover -s tools/qwen-worker -p 'test_*.py' -v
+python -B -m unittest discover -s tools/qwen-installer -p test_native_registration.py -v
+python -B -m unittest discover -s tools/qwen-benchmark -p 'test_*.py' -v
 ```
 
 When updating an app dependency, refresh the dependent lockfiles in the solution

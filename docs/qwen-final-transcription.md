@@ -8,21 +8,27 @@ When Qwen is selected, the app starts loading its resident local Python worker i
 
 Later dictations reuse the loaded worker. The app remains cancellable during loading and final recognition; cancelling a Qwen request retires the worker, so a later Qwen dictation may need a fresh load. Switching away from Qwen cancels its pending preload without cancelling an active final transcription. A Qwen error is reported and the existing preview is retained in History rather than silently substituted as a successful Qwen transcript.
 
-Selecting Parakeet restores Parakeet final recognition on the next recording. An already loaded Qwen worker releases its model memory when that Parakeet recording requests final recognition while Parakeet remains selected, or when the app exits. An older Parakeet recording cannot discard Qwen preloaded after switching back to Qwen. Qwen uses CUDA/BF16 when the registered PyTorch runtime exposes a compatible CUDA device and otherwise runs BF16/SDPA on the CPU. The Parakeet device selector controls the preview/Parakeet engine only.
+Selecting Parakeet restores Parakeet final recognition on the next recording. An already loaded Qwen worker releases its model memory when that Parakeet recording requests final recognition while Parakeet remains selected, or when the app exits. An older Parakeet recording cannot discard Qwen preloaded after switching back to Qwen. Qwen setup selects the native CUDA backend on supported hardware. The standard HF worker uses CPU BF16/SDPA with the managed runtime; an existing validated CUDA PyTorch environment remains supported. The Parakeet device selector controls the preview/Parakeet engine only.
 
 Keep the destination textbox available until final recognition finishes. A submitted/rebuilt editor may no longer accept the Qwen revision; the completed transcript is preserved in History if insertion cannot safely finish. The tray remains active during processing, including the Qwen final pass.
 
 ## Local setup
 
-Open **Settings**, select Qwen under **Final recognition**, and choose **Download Qwen**. Setup reports progress and supports **Cancel**. Once ready, save Settings to use Qwen for final recognition; installation does not change the selected engine by itself. **Check Qwen setup** validates a registered installation and repairs a missing/broken runtime without modifying that existing Python environment.
+Open **Settings**, select Qwen under **Final recognition**, and choose **Download Qwen**. The same action installs the standard backend and automatically adds native acceleration on supported hardware; no source checkout or registration script is needed. Setup reports progress and supports **Cancel**. Once ready, keep Qwen selected and save Settings to use it for final recognition; installation does not change the selected final engine by itself.
 
-Setup first checks the registered model against the pinned file sizes and SHA-256 hashes. A healthy local model is reused directly, including the model downloaded for the isolated comparison. A healthy runtime is also reused after checking Python, Torch, Transformers, and the offline model processor. Both the pinned CPU PyTorch runtime and the previously validated CUDA 12.8 runtime are accepted. This check does not load the full model into memory.
+If Qwen is already installed, choose **Check Qwen setup** to check hardware and add native acceleration. It reuses verified assets and repairs a missing/broken runtime without modifying an existing user-owned Python environment. Automatic native setup requires Windows x64, NVIDIA CUDA device 0 with at least 8 GiB VRAM and compute capability 8.0 or newer, and a driver exposing CUDA API version 12.4 or newer. Unsupported hardware keeps the standard backend. If hardware detection temporarily fails or native warmup fails, setup displays the standard fallback and the reason; **Check Qwen setup** can retry later.
 
-For a new installation, setup uses a private directory under `%LOCALAPPDATA%\PttDictation\qwen`. It downloads [Astral's portable Python 3.12.14 Windows runtime](https://github.com/astral-sh/python-build-standalone/releases/tag/20260901), checks the published SHA-256, and extracts only ordinary files/directories inside that private location. It does not install global Python or change PATH. The first setup needs several GB of disk space; the model alone is approximately 4.1 GB. Managed setup installs the hardware-neutral CPU PyTorch wheel. A previously registered validated CUDA runtime remains supported and keeps the faster CUDA path.
+Automatic hardware detection requires `CUDA_VISIBLE_DEVICES` to be unset. If you use that environment override, clear it and restart the app before choosing **Check Qwen setup**, or retain the standard backend.
+
+Setup first checks the registered model against the pinned file sizes and SHA-256 hashes. A healthy local model is reused directly, including the model downloaded for the isolated comparison. A healthy runtime is also reused after checking Python, Torch, Transformers, and the offline model processor. Both the pinned CPU PyTorch runtime and the previously validated CUDA 12.8 runtime are accepted. The standard-runtime check does not load the full model; native activation additionally requires a successful real model warmup.
+
+For a new installation, setup uses a private directory under `%LOCALAPPDATA%\PttDictation\qwen`. It downloads [Astral's portable Python 3.12.14 Windows runtime](https://github.com/astral-sh/python-build-standalone/releases/tag/20260901), checks the published SHA-256, and extracts only ordinary files/directories inside that private location. It does not install global Python or change PATH. The HF model alone is approximately 4.1 GB, plus runtime and package downloads. Native acceleration adds approximately 5.37 GB of downloads and 5.91 GB of installed native assets. Allow additional space for download caches and staging copies. These assets are separate from the application ZIP. Managed setup installs CPU PyTorch for the standard backend and long-recording fallback; native CUDA inference does not require replacing it with CUDA PyTorch.
 
 The packaged setup resources pin all 58 dependency wheels to exact trusted URLs and SHA-256 hashes. Pip installs binary wheels with hash checking and no unpinned dependency resolution, following its [secure-install guidance](https://pip.pypa.io/en/stable/topics/secure-installs/). The selected versions are Python 3.12.14, [PyTorch 2.11.0 CPU](https://download.pytorch.org/whl/cpu/torch/), Transformers 5.13.0, and `Qwen/Qwen3-ASR-1.7B-hf` at revision `bcd2b5b7f32b480ab5790554cfa8347f246a14f3`. The original `qwen-asr` wrapper is not used.
 
-Completed model/runtime downloads are reused on retry; partial model downloads resume when the server supports ranges. Cancelling stops only setup's owned child processes. A failed or cancelled setup leaves the existing registration unchanged. The new `%LOCALAPPDATA%\PttDictation\qwen-installation.json` is replaced atomically only after validation succeeds. Setup has a two-hour overall deadline, a 45-minute package-install deadline, and a 90-second runtime-validation deadline. Downloads fail after 60 seconds without a response/data rather than hanging indefinitely.
+Completed model/runtime downloads are reused on retry; partial model downloads resume when the server supports ranges. Cancelling stops only setup's owned child processes. Registration is written only after the corresponding backend has been validated; incomplete native assets are not activated. Native preparation can fail while the standard backend remains available, and the setup result reports that fallback. Setup, downloads, package installation, and validation have bounded deadlines. App startup loads already configured assets; it does not silently start Qwen downloads.
+
+If an existing recognition request is still busy, setup can defer switching its registration to the standard backend. It preserves that request and reports that **Check Qwen setup** should be retried after recognition finishes. A disabled native registration is retained locally for recovery.
 
 Manual registration remains available for an already provisioned trusted local environment:
 
@@ -32,19 +38,23 @@ pwsh -File scripts/Register-QwenInstallation.ps1 -PythonPath 'C:\Qwen\runtime\Sc
 
 This advanced route downloads nothing and does not change the active engine. `-ValidateOnly` checks the supplied installation without registering it.
 
-Both transcription engines operate locally. The default Hugging Face worker forces offline model loading and does not bind a network port. Its owned Windows job releases the worker even if the app exits abruptly. Worker failure, malformed responses, wrong response IDs, startup timeout, and request timeout do not yield a fabricated successful transcript. CPU-capable deadlines allow five minutes for startup and ten minutes for each final request; cancellation remains immediate and retires the worker. A later request can start a fresh worker.
+Both transcription engines operate locally. The standard Hugging Face worker forces offline model loading and does not bind a network port. Its owned Windows job releases the worker even if the app exits abruptly. Worker failure, malformed responses, wrong response IDs, startup timeout, and request timeout do not yield a fabricated successful transcript. CPU-capable deadlines allow five minutes for startup and ten minutes for each final request; cancellation remains available and retires the worker. A later request can start a fresh worker.
 
-## Optional native CUDA inference
+## Native CUDA inference
 
-A separately registered native installation runs Qwen3-ASR 1.7B BF16 in a resident
+On supported hardware, setup installs Qwen3-ASR 1.7B BF16 for a resident
 llama.cpp server. Python remains a standard-library adapter for the existing
 JSON-lines protocol; ordinary model inference runs in native code. Parakeet
 preview, the selected final engine, hotkeys and insertion behavior remain the
 same. See the [latency evaluation](research/qwen-latency-2026-10-26.md) for measured
 results and the limits of the quality comparison.
 
-This advanced installation uses the pinned Windows CUDA runtime and model files
-listed in `tools/qwen-installer/native-assets.json`. The application ZIP contains
+The in-app setup downloads the pinned Windows CUDA runtime and model files listed
+in `tools/qwen-installer/native-assets.json`, validates their sizes and SHA-256
+hashes, and verifies real native warmup before activation. The model remains
+Qwen3-ASR 1.7B with BF16 weights. Existing manual installations remain supported.
+
+For advanced manual registration only, the application ZIP contains
 the worker adapters, not the registration script or large native assets. Download
 and extract the **Source code (zip)** for the same release tag, or check out that
 tag, to obtain `scripts/Register-QwenNativeInstallation.ps1` together with its
@@ -63,12 +73,12 @@ moves it to the permanent asset directory. `-StageOnly` installs verified assets
 without activating them; `-ValidateOnly` checks the source only. Do not register
 assets inside a disposable checkout or benchmark directory.
 
-Registration writes `qwen-native-installation.json` alongside the existing
+Manual registration writes `qwen-native-installation.json` alongside the existing
 `qwen-installation.json`, preserving the original model and runtime. Restart the
-canonical app normally to activate it. Without the optional manifest, the
-existing CPU/CUDA worker remains in use. An invalid or unavailable explicitly
-registered native runtime reports an error; it does not silently change engines.
-To restore the original route, rename the optional manifest and restart normally.
+canonical app normally after manual registration. Without a native registration,
+the standard CPU/CUDA worker remains in use. To restore that route manually,
+rename the native manifest and restart normally; a later **Check Qwen setup** may
+enable native acceleration again after successful validation.
 
 The native server binds only to `127.0.0.1`, uses a random port and per-process
 authentication key, disables its web interface and logs, and sends no audio to
@@ -81,15 +91,18 @@ abrupt parent exit.
 The native path uses an 8,192-token context without context shifting. Recordings
 over five minutes unload that server and use the original whole-recording
 worker in a separate process; the next shorter recording reloads native
-inference. This preserves full audio rather than cropping it to fit GPU memory.
+inference. With the managed CPU PyTorch installation, this fallback runs on CPU;
+an existing validated CUDA PyTorch installation retains its CUDA fallback.
+Recordings over five minutes do not receive the native speedup. This preserves
+full audio rather than cropping it to fit GPU memory.
 Both paths retain silence handling and explicit output-limit errors. A long
 recording is not guaranteed to complete: the existing time, token and available
 memory limits still apply.
 
 The original CUDA worker also uses native RMS normalization with separate BF16
 weight multiplication. Its CPU path and installed dependency versions are
-unchanged. This optimization also applies when the native adapter uses the
-whole-recording fallback.
+unchanged. This optimization also applies to the whole-recording fallback when
+an existing validated CUDA PyTorch runtime is registered.
 
 ## Silence and long recordings
 
@@ -102,11 +115,27 @@ Generation has duration-based headroom from 512 to 4096 new tokens. If it reache
 ```powershell
 dotnet restore PttDictation.sln --locked-mode
 dotnet test PttDictation.sln --configuration Release --no-restore
-python -B -m unittest discover -s tools/qwen-worker -p test_qwen_worker.py -v
+python -B -m unittest discover -s tools/qwen-worker -p 'test_*.py' -v
+python -B -m unittest discover -s tools/qwen-installer -p test_native_registration.py -v
+python -B -m unittest discover -s tools/qwen-benchmark -p 'test_*.py' -v
 pwsh -File scripts/Test-QwenInstallation.ps1
 ```
 
 The .NET tests exercise real bounded child processes for protocol validation, cancellation, recovery, and job ownership without requiring model downloads. Python worker tests cover PCM validation, near-silence, token-limit errors, persistent request handling, Unicode paths, and separation of protocol stdout from library output.
+
+To verify real setup from an empty, isolated app-data directory, build the replay
+tool and run the explicit download probe:
+
+```powershell
+dotnet run --project tools/PttDictation.Replay -c Release -- --qwen-setup-probe C:\Probes\fresh-qwen C:\Probes\fresh-qwen-report
+```
+
+Both directories must be empty and separate from the daily app's data. This uses
+the production installer, real hardware detection, downloads, package checks and
+native model warmup without injected substitutes. It then repeats setup to check
+asset/runtime reuse and writes a bounded report plus a benchmark command. Allow
+the download space described above and avoid competing GPU workloads. This is
+installer code-path evidence; it does not exercise the tray or Settings gestures.
 
 A real local-model pipeline replay is also available:
 
@@ -152,7 +181,9 @@ Validation on September 11, 2026:
 
 ## September 17 CPU fallback
 
-The worker now preserves the validated CUDA/BF16 fast path and automatically uses CPU BF16/SDPA when CUDA is unavailable or lacks BF16 support. No AMD-, Intel-, DirectML-, or ROCm-specific backend is required. Managed setup provisions CPU-only PyTorch for portable Windows installations; an existing or manually registered validated CUDA 12.8 environment remains accelerated.
+This dated section describes the standard HF worker and its original CPU/CUDA validation. Current setup also installs native CUDA inference automatically on supported hardware, as described above; CPU-only PyTorch remains its standard/long-recording fallback and does not prevent native acceleration.
+
+At that checkpoint, the worker preserved the validated CUDA/BF16 fast path and automatically used CPU BF16/SDPA when CUDA was unavailable or lacked BF16 support. No AMD-, Intel-, DirectML-, or ROCm-specific backend was required. Managed setup provisioned CPU-only PyTorch for portable Windows installations; an existing or manually registered validated CUDA 12.8 environment remained accelerated.
 
 On the existing RTX 3060 desktop, the same public LibriSpeech clip produced the same reference transcript on both backends. With a resident model, CPU inference took 13.120 seconds and CUDA took 1.950 seconds, so CUDA remains worthwhile on supported machines. Model loading took 10.082 seconds on CPU and 13.683 seconds on CUDA in those runs. A separate clean-room check installed all 58 hash-pinned managed-runtime wheels, confirmed `torch 2.11.0+cpu` with CUDA unavailable, and completed a cold worker transcription of that clip in 29.537 seconds. These are single-machine measurements, not a promise for the AMD laptop; the laptop will use CPU unless its registered PyTorch environment exposes supported CUDA.
 

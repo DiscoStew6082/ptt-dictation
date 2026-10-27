@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="..\..\tools\qwen-installer\assets.json" LogicalName="PttDictation.QwenSetup.assets.json" />
+    <EmbeddedResource Include="..\..\tools\qwen-installer\native-assets.json" LogicalName="PttDictation.QwenSetup.native-assets.json" />
     <EmbeddedResource Include="..\..\tools\qwen-installer\requirements-win-cpu.txt" LogicalName="PttDictation.QwenSetup.requirements-win-cpu.txt" />
     <Content Include="..\..\tools\qwen-worker\qwen_worker.py" Link="qwen-worker\qwen_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\tools\qwen-worker\native_qwen.py" Link="qwen-worker\native_qwen.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

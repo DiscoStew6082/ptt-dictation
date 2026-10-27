@@ -14,6 +14,106 @@ namespace PttDictation.Tests;
 public sealed class QwenInstallerTests
 {
     [TestMethod]
+    public async Task FreshSetupAutomaticallyConfiguresNativeAfterFallbackRegistration()
+    {
+        var nativeCalls = 0;
+        using var fixture = new Fixture(nativeSetup: (python, model, _, _) =>
+        {
+            nativeCalls++;
+            Assert.IsTrue(File.Exists(python));
+            Assert.IsTrue(Directory.Exists(model));
+            return Task.FromResult(new QwenSetupStatus(true, "Native CUDA ready."));
+        });
+        var result = await fixture.Installer.InstallAsync(null, CancellationToken.None);
+        Assert.AreEqual(1, nativeCalls, "The normal Download Qwen action must configure acceleration without a separate script.");
+        StringAssert.Contains(result.Message, "Native CUDA");
+    }
+
+    [TestMethod]
+    public async Task SetupLockCoversNativeStageAndFallbackRegistrationPrecedesIt()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Fixture? fixture = null;
+        using (fixture = new Fixture(nativeSetup: async (python, model, _, token) =>
+        {
+            Assert.AreEqual((python, model), QwenInstallation.ReadRegisteredPaths(fixture!.Root));
+            entered.SetResult();
+            await release.Task.WaitAsync(token);
+            return new(true, "Native ready.");
+        }))
+        {
+            var first = fixture.Installer.InstallAsync(null, CancellationToken.None);
+            try
+            {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => fixture.Installer.InstallAsync(null, CancellationToken.None));
+            }
+            finally { release.TrySetResult(); await first; }
+        }
+    }
+
+    [TestMethod]
+    public async Task NativeSetupFailureKeepsWorkingFallbackAndExplainsRetry()
+    {
+        using var fixture = new Fixture(nativeSetup: (_, _, _, _) =>
+            Task.FromException<QwenSetupStatus>(new InvalidOperationException("Native model could not load.")));
+        var result = await fixture.Installer.InstallAsync(null, CancellationToken.None);
+        Assert.IsTrue(result.IsReady);
+        StringAssert.Contains(result.Message, "standard engine");
+        StringAssert.Contains(result.Message, "Check Qwen setup");
+        Assert.IsTrue(File.Exists(QwenInstallation.ReadRegisteredPaths(fixture.Root).Python));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FailedOrCancelledNativeRepairDisablesBrokenRegistrationAndKeepsFallback(bool cancel)
+    {
+        using var fixture = new Fixture(nativeSetup: (_, _, _, _) => cancel
+            ? Task.FromException<QwenSetupStatus>(new OperationCanceledException())
+            : Task.FromException<QwenSetupStatus>(new InvalidOperationException("Native download failed.")));
+        var native = QwenInstallation.NativeManifestPath(fixture.Root);
+        File.WriteAllText(native, "broken previous manifest");
+        var result = await fixture.Installer.InstallAsync(null, CancellationToken.None);
+        Assert.IsTrue(result.IsReady);
+        Assert.IsNull(QwenInstallation.Load(fixture.Root).NativeConfigPath);
+        Assert.IsFalse(File.Exists(native));
+        var backup = Directory.GetFiles(fixture.Root, "qwen-native-installation.json.disabled-*").Single();
+        Assert.AreEqual("broken previous manifest", File.ReadAllText(backup));
+        StringAssert.Contains(result.Message, "standard engine");
+    }
+
+    [TestMethod]
+    public async Task CancelledDownloadDoesNotWaitIndefinitelyForBusyRecognitionOrChangeItsRegistration()
+    {
+        using var fixture = new Fixture(nativeSetup: (_, _, _, _) =>
+            Task.FromException<QwenSetupStatus>(new OperationCanceledException()),
+            withQwenUnloaded: (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token));
+        var native = QwenInstallation.NativeManifestPath(fixture.Root);
+        File.WriteAllText(native, "previous registration");
+        var result = await fixture.Installer.InstallAsync(null, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3));
+        StringAssert.Contains(result.Message, "still busy");
+        Assert.AreEqual("previous registration", File.ReadAllText(native));
+        Assert.IsTrue(File.Exists(QwenInstallation.ReadRegisteredPaths(fixture.Root).Python));
+    }
+
+    [TestMethod]
+    public async Task CancelledNativeSetupKeepsCompletedFallbackRuntime()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var fixture = new Fixture(nativeSetup: (_, _, _, _) =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+        var result = await fixture.Installer.InstallAsync(null, cancellation.Token);
+        Assert.IsTrue(result.IsReady);
+        StringAssert.Contains(result.Message, "cancelled");
+        Assert.IsTrue(File.Exists(QwenInstallation.ReadRegisteredPaths(fixture.Root).Python));
+    }
+
+    [TestMethod]
     public void PackagedSetupUsesPinnedCpuOnlyPyTorch()
     {
         var requirements = QwenInstallerPlan.Load().Requirements;
@@ -335,7 +435,9 @@ public sealed class QwenInstallerTests
         public Func<string, IReadOnlyList<string>, CancellationToken, Task>? OnRun { get; set; }
         private readonly HttpClient _http;
         private readonly Dictionary<string, byte[]> _assets;
-        public Fixture(TimeSpan? downloadTimeout = null)
+        public Fixture(TimeSpan? downloadTimeout = null,
+            Func<string, string, IProgress<QwenSetupProgress>?, CancellationToken, Task<QwenSetupStatus>>? nativeSetup = null,
+            Func<Func<CancellationToken, Task>, CancellationToken, Task>? withQwenUnloaded = null)
         {
             Directory.CreateDirectory(Root);
             _assets = new()
@@ -359,7 +461,8 @@ public sealed class QwenInstallerTests
             {
                 Commands.Add((python, arguments));
                 if (OnRun is not null) await OnRun(python, arguments, token);
-            }) { DownloadIdleTimeout = downloadTimeout ?? TimeSpan.FromSeconds(60) };
+            }, withQwenUnloaded) { DownloadIdleTimeout = downloadTimeout ?? TimeSpan.FromSeconds(60), NativeSetup = nativeSetup,
+                FallbackWaitTimeout = TimeSpan.FromMilliseconds(100) };
         }
         public void RegisterExisting()
         {

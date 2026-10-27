@@ -45,18 +45,28 @@ internal sealed class QwenInstaller : IQwenInstaller
     private readonly QwenInstallerPlan _plan;
     private readonly HttpClient _http;
     internal TimeSpan DownloadIdleTimeout { get; init; } = TimeSpan.FromSeconds(60);
+    internal TimeSpan FallbackWaitTimeout { get; init; } = TimeSpan.FromSeconds(5);
+    internal Func<string, string, IProgress<QwenSetupProgress>?, CancellationToken, Task<QwenSetupStatus>>? NativeSetup { get; init; }
     private readonly Func<string, IReadOnlyList<string>, IProgress<QwenSetupProgress>?, CancellationToken, Task> _run;
+    private readonly Func<Func<CancellationToken, Task>, CancellationToken, Task>? _withQwenUnloaded;
 
-    public QwenInstaller(string appData)
-        : this(appData, QwenInstallerPlan.Load(), Downloads, QwenSetupProcess.RunAsync) { }
+    public QwenInstaller(string appData,
+        Func<Func<CancellationToken, Task>, CancellationToken, Task>? withQwenUnloaded = null)
+        : this(appData, QwenInstallerPlan.Load(), Downloads, QwenSetupProcess.RunAsync)
+    {
+        _withQwenUnloaded = withQwenUnloaded;
+        NativeSetup = ConfigureNativeAsync;
+    }
 
     internal QwenInstaller(string appData, QwenInstallerPlan plan, HttpClient http,
-        Func<string, IReadOnlyList<string>, IProgress<QwenSetupProgress>?, CancellationToken, Task> run)
+        Func<string, IReadOnlyList<string>, IProgress<QwenSetupProgress>?, CancellationToken, Task> run,
+        Func<Func<CancellationToken, Task>, CancellationToken, Task>? withQwenUnloaded = null)
     {
         _appData = RequireLocalPath(appData);
         _plan = plan;
         _http = http;
         _run = run;
+        _withQwenUnloaded = withQwenUnloaded;
     }
 
     public QwenSetupStatus GetStatus() => new(QwenInstallation.IsAvailable(_appData), QwenInstallation.Describe(_appData));
@@ -68,7 +78,33 @@ internal sealed class QwenInstaller : IQwenInstaller
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromHours(2));
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(token, deadline.Token);
-        try { return await InstallWithinDeadlineAsync(progress, operation.Token).ConfigureAwait(false); }
+        try
+        {
+            operation.Token.ThrowIfCancellationRequested();
+            var setup = RequireLocalPath(Path.Combine(_appData, "qwen"));
+            Directory.CreateDirectory(setup);
+            using var setupLock = AcquireLock(Path.Combine(setup, "setup.lock"));
+            var result = await InstallWithinDeadlineAsync(progress, operation.Token).ConfigureAwait(false);
+            if (NativeSetup is null) return result;
+            // The standard runtime is a complete, usable installation before native
+            // setup begins. A cancelled/failed acceleration stage must not remove it.
+            try
+            {
+                var (python, model) = QwenInstallation.ReadRegisteredPaths(_appData);
+                result = await NativeSetup(python, model, progress, operation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                result = await NativeSetupFallbackAsync("Native setup was cancelled. Choose Check Qwen setup to resume.").ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                result = await NativeSetupFallbackAsync("Native setup did not finish: " + error.Message + " Choose Check Qwen setup to retry.").ConfigureAwait(false);
+            }
+            try { progress?.Report(new(result.Message, 100)); }
+            catch { /* Presentation cannot undo a completed installation. */ }
+            return result;
+        }
         catch (OperationCanceledException) when (!token.IsCancellationRequested && deadline.IsCancellationRequested)
         { throw new TimeoutException("Qwen setup exceeded its two-hour deadline. Completed downloads are retained; try setup again."); }
     }
@@ -80,7 +116,6 @@ internal sealed class QwenInstaller : IQwenInstaller
         Directory.CreateDirectory(_appData);
         var setup = RequireLocalPath(Path.Combine(_appData, "qwen"));
         Directory.CreateDirectory(setup);
-        using var setupLock = AcquireLock(Path.Combine(setup, "setup.lock"));
         var cache = RequireLocalPath(Path.Combine(setup, "downloads"));
         Directory.CreateDirectory(cache);
         string? registeredPython = null, registeredModel = null;
@@ -125,7 +160,12 @@ internal sealed class QwenInstaller : IQwenInstaller
 
         // Never pip-install into a registered/user-owned runtime. An interrupted
         // setup leaves its download cache reusable and the registration untouched.
-        var runtime = RequireLocalPath(Path.Combine(setup, "runtime-" + Guid.NewGuid().ToString("N")));
+        // Keep deep PyTorch wheel members below the legacy Windows path limit
+        // for typical user profiles. Do not use extended-path Python prefixes:
+        // some pinned wheels install scripts through relative '..' paths.
+        string runtime;
+        do { runtime = RequireLocalPath(Path.Combine(setup, "runtime-" + Guid.NewGuid().ToString("N")[..16])); }
+        while (Directory.Exists(runtime) || File.Exists(runtime));
         var registered = false;
         try
         {
@@ -202,11 +242,89 @@ internal sealed class QwenInstaller : IQwenInstaller
             File.Move(pending, target, overwrite: true);
             // Registration is committed. A cancellation arriving after this point
             // cannot turn a completed setup into a reported cancelled setup.
-            try { progress?.Report(new("Qwen is ready. Choose Qwen for final recognition and save Settings.", 100)); }
+            try { progress?.Report(NativeSetup is null
+                ? new("Qwen is ready. Choose Qwen for final recognition and save Settings.", 100)
+                : new("Standard Qwen is installed. Checking native acceleration…")); }
             catch { /* A presentation callback cannot undo committed registration. */ }
             return new(true, "Qwen is ready locally. Live preview continues using Parakeet.");
         }
         finally { if (File.Exists(pending)) File.Delete(pending); }
+    }
+
+    private async Task<QwenSetupStatus> NativeSetupFallbackAsync(string detail)
+    {
+        // The standard stage has already been verified. Do not let an obsolete,
+        // broken or unsupported native registration prevent that fallback loading.
+        // Keep the old registration for recovery instead of deleting it.
+        QwenSetupStatus? result = null;
+        Task SelectFallback(CancellationToken _)
+        {
+            DisableNativeRegistration();
+            var status = GetStatus();
+            result = new(status.IsReady, status.Message + " " + detail);
+            return Task.CompletedTask;
+        }
+        if (_withQwenUnloaded is null || !File.Exists(QwenInstallation.NativeManifestPath(_appData)))
+            await SelectFallback(CancellationToken.None).ConfigureAwait(false);
+        else
+        {
+            using var timeout = new CancellationTokenSource(FallbackWaitTimeout);
+            try { await _withQwenUnloaded(SelectFallback, timeout.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                var current = GetStatus();
+                return new(current.IsReady, current.Message + " " + detail
+                    + " The current recognition is still busy; its registration was retained. Retry setup after it finishes.");
+            }
+        }
+        return result!;
+    }
+
+    private void DisableNativeRegistration()
+    {
+        var native = RequireLocalPath(QwenInstallation.NativeManifestPath(_appData));
+        if (File.Exists(native))
+            File.Move(native, RequireLocalPath(native + ".disabled-" + Guid.NewGuid().ToString("N")));
+    }
+
+    private Task ActivateNativeAsync(Func<CancellationToken, Task> action, CancellationToken token)
+    {
+        async Task Activate(CancellationToken guardedToken)
+        {
+            try { await action(guardedToken).ConfigureAwait(false); }
+            catch
+            {
+                // Select the verified standard fallback before queued recognition
+                // can load the old native registration after failed activation.
+                DisableNativeRegistration();
+                throw;
+            }
+        }
+        return _withQwenUnloaded is null ? Activate(token) : _withQwenUnloaded(Activate, token);
+    }
+
+    private async Task<QwenSetupStatus> ConfigureNativeAsync(string python, string model,
+        IProgress<QwenSetupProgress>? progress, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        progress?.Report(new("Checking NVIDIA hardware for faster Qwen recognition…"));
+        var hardware = QwenNativeHardware.Probe();
+        if (!hardware.IsSupported)
+            return await NativeSetupFallbackAsync("Automatic native setup skipped: " + hardware.Reason).ConfigureAwait(false);
+        progress?.Report(new("Supported NVIDIA hardware found. Setting up faster native Qwen; the first download is about 5.4 GB."));
+        var installer = new QwenNativeInstaller(_appData, this, async (runtime, fallbackModel, manifest, updates, cancellation) =>
+        {
+            async Task Validate(CancellationToken validationToken)
+            {
+                updates?.Report(new("Testing the native Qwen model on your GPU…"));
+                var workerPath = Path.Combine(AppContext.BaseDirectory, "qwen-worker", "native_qwen.py");
+                using var worker = new PersistentQwenTranscriber(new(runtime, fallbackModel, workerPath, manifest));
+                await worker.WarmUpAsync(validationToken).ConfigureAwait(false);
+            }
+            await Validate(cancellation).ConfigureAwait(false);
+        }) { ActivationGuard = ActivateNativeAsync };
+        await installer.InstallAsync(python, model, progress, token).ConfigureAwait(false);
+        return new(true, "Qwen is ready with the faster native CUDA engine. Choose Qwen for final recognition and save Settings. Live preview continues using Parakeet.");
     }
 
     internal async Task DownloadAsync(Uri uri, string destination, string sha256, long expectedSize,
@@ -222,7 +340,8 @@ internal sealed class QwenInstaller : IQwenInstaller
         var pending = RequireLocalPath(destination + ".partial");
         var existing = File.Exists(pending) ? new FileInfo(pending).Length : 0;
         if (existing >= expectedSize) { File.Delete(pending); existing = 0; }
-        using var response = await SendDownloadAsync(uri, existing, token).ConfigureAwait(false);
+        using var response = await QwenDownloadRetry.SendAsync(
+            cancellation => SendDownloadAsync(uri, existing, cancellation), token).ConfigureAwait(false);
         var resume = existing > 0 && response.StatusCode == HttpStatusCode.PartialContent
             && response.Content.Headers.ContentRange?.From == existing;
         if (response.StatusCode == HttpStatusCode.PartialContent && !resume)

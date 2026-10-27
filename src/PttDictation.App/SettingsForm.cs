@@ -71,9 +71,10 @@ internal sealed class SettingsForm : Form
     {
     }
 
-    internal SettingsForm(AppSettingsStore settingsStore, ModelRegistry modelRegistry, bool hasNvidiaGpu)
+    internal SettingsForm(AppSettingsStore settingsStore, ModelRegistry modelRegistry, bool hasNvidiaGpu,
+        IQwenInstaller? qwenInstaller = null)
         : this(settingsStore, modelRegistry, DownloadModelWithDefaultManagerAsync, DefaultModelIsDownloaded,
-            new QwenInstaller(AppPaths.RootDirectory), hasNvidiaGpu)
+            qwenInstaller ?? new QwenInstaller(AppPaths.RootDirectory), hasNvidiaGpu)
     {
     }
 

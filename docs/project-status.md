@@ -2,6 +2,17 @@
 
 Last user-confirmed dictation baseline: installed source `5397792`, confirmed working on October 27, 2026 after the native Qwen latency update. Use this page to distinguish completed work from the dated investigation records elsewhere in `docs/` and `DIAGNOSTICS.md`. Historical test totals describe their named baseline.
 
+## October 27 automatic native Qwen setup
+
+- v0.1.5 adds native hardware detection, pinned asset downloads and real model validation to the existing Download Qwen / Check Qwen setup action. Fresh profiles still default to Parakeet; installing Qwen preserves the selected final engine.
+- A production installation from empty isolated app data passed on the RTX 3060, including repeat setup without replacing assets. The freshly installed native backend passed the 30-case accuracy/stability gate and was 3.81 times faster than the recorded original CUDA baseline. See the [fresh-install evidence and acceptance boundaries](research/qwen-automatic-setup-2026-10-27.md).
+- Local Release validation passed 705 .NET tests; 34 opt-in interactive cases were skipped on this desktop. Model-free Python, native registration, benchmark and installer checks passed. Native setup failures retain an explicit standard fallback, and backend activation is serialized with ongoing recognition.
+
+## Published October 27 native Qwen package
+
+- [Release v0.1.4](https://github.com/DiscoStew6082/ptt-dictation/releases/tag/v0.1.4) packages the native worker from source `0a28cc2`. Its CI, CodeQL, release build, public asset hashes, embedded source revision, SBOM and signed provenance were verified.
+- That release still requires separate native asset registration. Its [release notes](releases/v0.1.4.md) describe that limitation; later automatic-setup instructions do not change the behavior of an already downloaded v0.1.4 package.
+
 ## October 26 local Qwen latency update
 
 - Installed source `5397792` contains the native Qwen latency update prepared on `codex/qwen-latency`. Ordinary Qwen final inference now uses the optional native CUDA adapter with the same 1.7B model and BF16 weights. Parakeet preview and insertion behavior remain unchanged.
@@ -20,9 +31,9 @@ Last user-confirmed dictation baseline: installed source `5397792`, confirmed wo
 - CI and release validation now run the shipped Qwen worker's 15 model-free Python tests. Superseded CI runs are cancelled; only documentation-only pull requests skip browser jobs. Main-branch pushes always validate browsers.
 - Local source validation: 635 .NET tests passed, 34 visible-UI cases deferred to the disposable CI desktop, and all 15 Python worker tests passed. Synthetic replay also passed. Installer validation covers 32 staged-update cases, 18 archive/download cases, and five snapshot checks.
 
-Source validation is separate from installation and microphone acceptance. The stable installation's `deployment-receipt.json` records its installed package hashes. The published `v0.1.3` assets below predate this cleanup; source changes do not replace an already published release.
+Source validation is separate from installation and microphone acceptance. The stable installation's `deployment-receipt.json` records its installed package hashes. The historical `v0.1.3` assets below predate this cleanup; source changes do not replace an already published release.
 
-## Completed and verified
+## Earlier completed and verified baseline
 
 - PRs [#49](https://github.com/DiscoStew6082/ptt-dictation/pull/49), [#50](https://github.com/DiscoStew6082/ptt-dictation/pull/50), and [#51](https://github.com/DiscoStew6082/ptt-dictation/pull/51) are merged. They cover audio snapshot ownership and single-use paste authorization, synchronized NAudio dependency locks, and the shared authenticated Qwen LAN service.
 - The merged application was installed through `Update-LocalApp.ps1` at this machine's existing stable `publish/ptt-dictation-win-x64/PttDictation.exe` path. The deployment receipt, all 604 package hashes, and one normally launched process without arguments were verified. Other installations should preserve their own selected stable path.
@@ -31,7 +42,7 @@ Source validation is separate from installation and microphone acceptance. The s
 - After installation, the user confirmed two successive dictations and another dictation immediately after cancellation: all three inserted correctly, and cancellation produced no duplicate or late text. This closes ordinary desktop dictation/cancellation acceptance for that build. It does not certify every historical editor-specific edge case or phone interaction.
 - The Firefox CI harness now allows transient unowned processes to exit naturally within a fixed twenty-second startup budget, then performs a fresh strict check immediately before launch. Persistent, unknown-state or late observations still fail; no unowned process is terminated and no failed dictation is retried. See [browser CI](browser-cold-start-ci.md). This is a test-harness change; the application baseline above is unchanged.
 - Repository cleanup removed six obsolete remote branches (four matching merged trees, one merged branch and one superseded SDK update), two merged local branches, and the unpublished `v0.1.0` draft release. Published releases and deployment rollback backups were retained.
-- [Release v0.1.3](https://github.com/DiscoStew6082/ptt-dictation/releases/tag/v0.1.3) publishes all these fixes from [`45333ff`](https://github.com/DiscoStew6082/ptt-dictation/commit/45333ff70a3e4972ea83e6ef2f13022769582b42), plus verified installer backup/rollback, fully qualified destination checks, and owned-worker cleanup. It is the latest stable release. [CI](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390687561), [CodeQL](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390687692), and the [release build](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390730203) passed. The installer passed 18 failure/success scenarios under both Windows PowerShell 5.1 and PowerShell 7. The actual public latest-release downloads passed checksum, source revision, SBOM, package-content and signed-provenance verification; the ZIP contains 604 files and .NET 10.0.14.
+- [Release v0.1.3](https://github.com/DiscoStew6082/ptt-dictation/releases/tag/v0.1.3) publishes all these fixes from [`45333ff`](https://github.com/DiscoStew6082/ptt-dictation/commit/45333ff70a3e4972ea83e6ef2f13022769582b42), plus verified installer backup/rollback, fully qualified destination checks, and owned-worker cleanup. It was the stable release for that baseline and is now superseded. [CI](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390687561), [CodeQL](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390687692), and the [release build](https://github.com/DiscoStew6082/ptt-dictation/actions/runs/40390730203) passed. The installer passed 18 failure/success scenarios under both Windows PowerShell 5.1 and PowerShell 7. The actual public latest-release downloads passed checksum, source revision, SBOM, package-content and signed-provenance verification; the ZIP contains 604 files and .NET 10.0.14.
 
 ## Remaining work and priority
 
