@@ -32,7 +32,59 @@ pwsh -File scripts/Register-QwenInstallation.ps1 -PythonPath 'C:\Qwen\runtime\Sc
 
 This advanced route downloads nothing and does not change the active engine. `-ValidateOnly` checks the supplied installation without registering it.
 
-Both transcription engines operate locally. The Qwen worker forces offline model loading and does not bind a network port. Its owned Windows job releases the worker even if the app exits abruptly. Worker failure, malformed responses, wrong response IDs, startup timeout, and request timeout do not yield a fabricated successful transcript. CPU-capable deadlines allow five minutes for startup and ten minutes for each final request; cancellation remains immediate and retires the worker. A later request can start a fresh worker.
+Both transcription engines operate locally. The default Hugging Face worker forces offline model loading and does not bind a network port. Its owned Windows job releases the worker even if the app exits abruptly. Worker failure, malformed responses, wrong response IDs, startup timeout, and request timeout do not yield a fabricated successful transcript. CPU-capable deadlines allow five minutes for startup and ten minutes for each final request; cancellation remains immediate and retires the worker. A later request can start a fresh worker.
+
+## Optional native CUDA inference
+
+A separately registered native installation runs Qwen3-ASR 1.7B BF16 in a resident
+llama.cpp server. Python remains a standard-library adapter for the existing
+JSON-lines protocol; ordinary model inference runs in native code. Parakeet
+preview, the selected final engine, hotkeys and insertion behavior remain the
+same. See the [latency evaluation](research/qwen-latency-2026-10-26.md) for measured
+results and the limits of the quality comparison.
+
+This advanced installation uses the pinned Windows CUDA runtime and model files
+listed in `tools/qwen-installer/native-assets.json`. After obtaining those exact
+assets, register them with:
+
+```powershell
+pwsh -File scripts/Register-QwenNativeInstallation.ps1 -SourceDirectory 'C:\Qwen\downloaded-native' -InstallDirectory 'C:\Qwen\native'
+```
+
+The source directory contains the two GGUF files and a `bin` directory containing
+the listed runtime files. The script downloads nothing. It checks every pinned
+file's size and SHA-256, stages into a temporary sibling, verifies the copy, then
+moves it to the permanent asset directory. `-StageOnly` installs verified assets
+without activating them; `-ValidateOnly` checks the source only. Do not register
+assets inside a disposable checkout or benchmark directory.
+
+Registration writes `qwen-native-installation.json` alongside the existing
+`qwen-installation.json`, preserving the original model and runtime. Restart the
+canonical app normally to activate it. Without the optional manifest, the
+existing CPU/CUDA worker remains in use. An invalid or unavailable explicitly
+registered native runtime reports an error; it does not silently change engines.
+To restore the original route, rename the optional manifest and restart normally.
+
+The native server binds only to `127.0.0.1`, uses a random port and per-process
+authentication key, disables its web interface and logs, and sends no audio to
+external services. The adapter disables HTTP proxies and redirects. Before
+loading any children, it identifies its actual interpreter process and waits
+for the application to establish job ownership. Owned jobs also contain the
+native server and any fallback process, including through cancellation or an
+abrupt parent exit.
+
+The native path uses an 8,192-token context without context shifting. Recordings
+over five minutes unload that server and use the original whole-recording
+worker in a separate process; the next shorter recording reloads native
+inference. This preserves full audio rather than cropping it to fit GPU memory.
+Both paths retain silence handling and explicit output-limit errors. A long
+recording is not guaranteed to complete: the existing time, token and available
+memory limits still apply.
+
+The original CUDA worker also uses native RMS normalization with separate BF16
+weight multiplication. Its CPU path and installed dependency versions are
+unchanged. This optimization also applies when the native adapter uses the
+whole-recording fallback.
 
 ## Silence and long recordings
 
@@ -57,7 +109,7 @@ A real local-model pipeline replay is also available:
 dotnet run --project tools/PttDictation.Replay -c Release -- --qwen-probe C:\Probes\configuration.json C:\Probes\results
 ```
 
-The configuration contains `pythonPath`, `qwenModelPath`, `workerPath`, `parakeetRuntimePath`, `parakeetModelPath`, and `samples` (each with `id`, `path`, and optional `expectedFragment`). It opens no microphone or textbox, changes no app settings, and starts its own recognizer workers. It verifies actual Parakeet previews followed by Qwen finals, near-silence, cancelling real inference, and recovery after cancellation and malformed audio. Output includes private transcripts: keep it in an ignored local directory. This is production code-path evidence, not proof of the user's exact native hotkey/textbox interaction.
+The configuration contains `pythonPath`, `qwenModelPath`, `workerPath`, `parakeetRuntimePath`, `parakeetModelPath`, and `samples` (each with `id`, `path`, and optional `expectedFragment`). To probe native inference, set `workerPath` to `native_qwen.py` and supply `nativeConfigPath` pointing to its optional manifest. It opens no microphone or textbox, changes no app settings, and starts its own recognizer workers. It verifies actual Parakeet previews followed by Qwen finals, near-silence, cancelling real inference, and recovery after cancellation and malformed audio. Output includes private transcripts: keep it in an ignored local directory. This is production code-path evidence, not proof of the user's exact native hotkey/textbox interaction.
 
 ## Historical rollback snapshots from the local Qwen trial
 

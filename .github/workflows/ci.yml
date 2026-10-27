@@ -102,7 +102,13 @@ jobs:
         run: ./scripts/Test-QwenInstallation.ps1
 
       - name: Test resident Qwen worker
-        run: python -B -m unittest discover -s tools/qwen-worker -p test_qwen_worker.py -v
+        run: python -B -m unittest discover -s tools/qwen-worker -p test_*.py -v
+
+      - name: Test native Qwen asset registration
+        run: python -B -m unittest discover -s tools/qwen-installer -p test_native_registration.py -v
+
+      - name: Test Qwen benchmark measurements and worker cleanup
+        run: python -B -m unittest discover -s tools/qwen-benchmark -p test_benchmark.py -v
 
   firefox-cold-start:
     name: Firefox cold start

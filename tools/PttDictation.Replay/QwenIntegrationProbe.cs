@@ -20,7 +20,8 @@ internal static class QwenIntegrationProbe
         using var preview = new PersistentParakeetServerTranscriber(
             new(config.ParakeetRuntimePath, config.ParakeetModelPath, TimeSpan.FromMinutes(2)),
             Path.Combine(Path.GetDirectoryName(config.ParakeetRuntimePath)!, "parakeet-server.exe"));
-        var qwenOptions = new QwenTranscriberOptions(config.PythonPath, config.QwenModelPath, config.WorkerPath);
+        var qwenOptions = new QwenTranscriberOptions(config.PythonPath, config.QwenModelPath,
+            config.WorkerPath, config.NativeConfigPath);
         using var final = new ConfiguredFinalTranscriber(preview,
             () => AppSettings.Default with { FinalTranscriptionEngine = FinalTranscriptionEngine.Qwen },
             () => qwenOptions, options => new PersistentQwenTranscriber(options));
@@ -120,7 +121,7 @@ internal static class QwenIntegrationProbe
     }
 
     private sealed record Configuration(string PythonPath, string QwenModelPath, string WorkerPath,
-        string ParakeetRuntimePath, string ParakeetModelPath, Sample[] Samples);
+        string ParakeetRuntimePath, string ParakeetModelPath, Sample[] Samples, string? NativeConfigPath = null);
     private sealed record Sample(string Id, string Path, string? ExpectedFragment);
     private sealed class SavedRecorder(string path, TimeSpan duration) : IChunkedAudioRecorder
     {
