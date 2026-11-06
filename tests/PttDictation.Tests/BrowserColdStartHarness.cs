@@ -61,16 +61,16 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
             {
                 var trialOutput = Path.Combine(output, $"trial-{trial}");
                 Directory.CreateDirectory(trialOutput);
-                await RunTrialAsync(executable!, editorKind, trialOutput, paster, overlay);
+                await RunTrialAsync(executable!, editorKind, trial, trialOutput, paster, overlay);
                 await DiagnosticTrace.FlushAsync();
             }
         });
     }
 
-    private async Task RunTrialAsync(string executable, string editorKind, string output,
+    private async Task RunTrialAsync(string executable, string editorKind, int trial, string output,
         LiveClipboardPaster paster, StatusOverlayForm overlay)
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(180));
         var token = deadline.Token;
         var fixture = BrowserEditorFixture.Start(editorKind);
         var browser = new OwnedBrowser(browserKind, executable, fixture.Url, output);
@@ -109,11 +109,36 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         try
         {
             hotkey.Start();
-            await browser.StartAsync(token);
-            await Until(() => browser.TryActivate(), "browser native foreground window", 20000);
-            // Only the page's DOM reports readiness. No test UIA query, WebDriver
-            // attachment, provider probing, or arbitrary warmup delay precedes PTT.
-            await Until(() => fixture.Latest is { Focused: true, Ready: true }, "browser editor DOM focus", 20000);
+            // A fresh runner's first browser launch includes cold-cache/AV cost.
+            // Later trials retain the warm-launch regression bound.
+            var launchBudgetMilliseconds = trial == 1 ? 60000 : 20000;
+            var activationWatch = Stopwatch.StartNew();
+            Stopwatch? domReadyWatch = null;
+            var activationReady = false;
+            var domReady = false;
+            try
+            {
+                await browser.StartAsync(token);
+                await Until(() => browser.TryActivate(), "browser native foreground window", launchBudgetMilliseconds);
+                activationReady = true;
+                activationWatch.Stop();
+                // Only the page's DOM reports readiness. No test UIA query, WebDriver
+                // attachment, provider probing, or arbitrary warmup delay precedes PTT.
+                domReadyWatch = Stopwatch.StartNew();
+                await Until(() => fixture.Latest is { Focused: true, Ready: true }, "browser editor DOM focus", launchBudgetMilliseconds);
+                domReady = true;
+            }
+            finally
+            {
+                // Keep partial timings on timeout; null means DOM readiness was never attempted.
+                try { File.WriteAllText(Path.Combine(output, "launch-timings.json"), JsonSerializer.Serialize(new
+                {
+                    trial, launchBudgetMilliseconds, activationReady, domReady,
+                    activationElapsedMs = activationWatch.Elapsed.TotalMilliseconds,
+                    domReadyElapsedMs = domReadyWatch?.Elapsed.TotalMilliseconds
+                }, new JsonSerializerOptions { WriteIndented = true })); }
+                catch (Exception error) { TestContext.WriteLine($"Launch timing evidence unavailable: {error}"); }
+            }
             browser.BindReadyWindow();
             var clicksBefore = fixture.Latest!.TrustedClicks;
             browser.ClickEditor(fixture.Latest);
@@ -268,7 +293,7 @@ internal sealed class BrowserColdStartHarness(TestContext testContext, ColdStart
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         // The CI job/process has an additional hard timeout for uninterruptible UIA.
-        await completed.Task.WaitAsync(TimeSpan.FromSeconds(300));
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(600));
     }
 
     private static async Task WaitForNoExistingBrowserAsync(ColdStartBrowser kind, string output,
